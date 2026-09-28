@@ -1,0 +1,1872 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DB Console</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<style>
+  :root{
+    --bg:#f6f7f9;
+    --card:#ffffff;
+    --border:#e7e9ee;
+    --text:#1f2430;
+    --muted:#767c8c;
+    --accent:#4a5df9;
+    --accent-hover:#3c4fe0;
+    --accent-soft:#eef0ff;
+    --danger:#e5484d;
+    --success:#1fa971;
+    --sidebar-w:208px;
+  }
+  *{box-sizing:border-box}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:'Inter',system-ui,-apple-system,sans-serif;
+    font-size:.925rem;
+  }
+  [x-cloak]{display:none!important}
+
+  /* ---- Layout ---- */
+  .sidebar{
+    position:fixed; top:0; left:0; bottom:0; width:var(--sidebar-w);
+    background:var(--card); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; padding:1rem .75rem;
+  }
+  .main{
+    margin-left:var(--sidebar-w);
+    min-height:100vh;
+    display:flex; flex-direction:column;
+  }
+  .topbar{
+    background:var(--card); border-bottom:1px solid var(--border);
+    padding:.7rem 1.25rem; display:flex; align-items:center; justify-content:space-between;
+  }
+  .content{ padding:1.1rem 1.25rem; flex:1; }
+
+  .brand{ display:flex; align-items:center; gap:.55rem; padding:.3rem .2rem 1.1rem; }
+  .brand-icon{
+    width:30px;height:30px;border-radius:8px;background:var(--accent);
+    display:flex;align-items:center;justify-content:center;color:#fff;font-size:.9rem;
+  }
+  .nav-link-custom{
+    display:flex; align-items:center; gap:.6rem;
+    padding:.42rem .6rem; border-radius:8px; color:var(--muted);
+    font-weight:500; font-size:.87rem; cursor:pointer; text-decoration:none; margin-bottom:.1rem;
+  }
+  .nav-link-custom i{ font-size:.95rem; width:18px; text-align:center; }
+  .nav-link-custom:hover{ background:var(--bg); color:var(--text); }
+  .nav-link-custom.active{ background:var(--accent-soft); color:var(--accent); }
+  .sidebar-footer{ margin-top:auto; border-top:1px solid var(--border); padding-top:.6rem; }
+
+  /* ---- Cards / surfaces ---- */
+  .card-surface{
+    background:var(--card); border:1px solid var(--border); border-radius:12px;
+    box-shadow:0 1px 2px rgba(20,20,43,.03);
+  }
+  .section-title{ font-weight:600; font-size:.85rem; margin-bottom:.6rem; }
+  .text-muted-sm{ color:var(--muted); font-size:.79rem; }
+
+  /* ---- Buttons ---- */
+  .btn-accent{ background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; border-radius:9px; }
+  .btn-accent:hover{ background:var(--accent-hover); border-color:var(--accent-hover); color:#fff; }
+  .btn-outline-soft{ border:1px solid var(--border); color:var(--text); background:#fff; border-radius:9px; }
+  .btn-outline-soft:hover{ background:var(--bg); }
+  .btn-ghost-danger{ color:var(--danger); background:transparent; border:1px solid transparent; }
+  .btn-ghost-danger:hover{ background:#fdecec; }
+
+  /* ---- Tabs (Query Runner left panel) ---- */
+  .tab-switch{ display:flex; gap:.2rem; background:var(--bg); border-radius:9px; padding:.2rem; }
+  .tab-btn{
+    flex:1; border:none; background:transparent; color:var(--muted);
+    font-size:.79rem; font-weight:600; padding:.4rem .5rem; border-radius:7px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; gap:.35rem;
+  }
+  .tab-btn.active{ background:#fff; color:var(--text); box-shadow:0 1px 3px rgba(20,20,43,.1); }
+  .tab-count{
+    background:var(--accent-soft); color:var(--accent); font-size:.68rem; font-weight:700;
+    border-radius:999px; padding:.05rem .4rem; min-width:1.2rem; text-align:center;
+  }
+
+  /* ---- USE-database context bar ---- */
+  .use-db-bar{
+    display:flex; flex-wrap:wrap; align-items:center; gap:.4rem;
+    background:#fbfbfe; border:1px dashed #d7dafc; border-radius:9px;
+    padding:.4rem .6rem; font-size:.79rem; color:var(--muted);
+  }
+  .use-db-bar i{ color:var(--accent); }
+  .use-db-chip{
+    background:var(--accent-soft); color:var(--text); border-radius:7px;
+    padding:.15rem .5rem; font-size:.78rem; white-space:nowrap;
+  }
+  .use-db-chip code{ background:transparent; color:var(--accent); font-weight:600; }
+
+  .stmt-block{ border:1px solid var(--border); border-radius:9px; padding:.5rem .65rem; background:#fbfbfc; }
+  .stmt-block code.sql-preview{ background:transparent; padding:0; }
+  .selection-badge{
+    background:var(--accent-soft); color:var(--accent); font-size:.72rem; font-weight:600;
+    border-radius:999px; padding:.2rem .55rem; display:inline-flex; align-items:center; gap:.3rem;
+  }
+
+  .definition-block{
+    background:#fbfbfc; border:1px solid var(--border); border-radius:9px; padding:.75rem;
+    font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size:.8rem;
+    white-space:pre; overflow:auto; max-height:480px; margin:0; color:#2b3040;
+  }
+  .index-chip{
+    display:inline-flex; align-items:center; gap:.3rem; background:var(--bg);
+    border:1px solid var(--border); border-radius:999px; padding:.15rem .6rem;
+    font-size:.75rem; color:var(--text); white-space:nowrap;
+  }
+  .index-chip .idx-cols{ color:var(--muted); }
+  .index-chip.primary{ background:var(--accent-soft); border-color:#d7dafc; color:var(--accent); }
+  .index-chip.primary .idx-cols{ color:var(--accent); opacity:.8; }
+
+  /* ---- Connection row picker ---- */
+  .conn-row{
+    display:flex; align-items:center; gap:.55rem;
+    border:1px solid var(--border); border-radius:9px; padding:.4rem .55rem;
+    cursor:pointer; transition:.12s; background:#fff;
+  }
+  .conn-row:hover{ border-color:#c7ccff; }
+  .conn-row.selected{ border-color:var(--accent); background:var(--accent-soft); }
+  .conn-row .form-check-input{ margin:0; flex-shrink:0; }
+  .conn-row .conn-meta{ min-width:0; flex:1; line-height:1.25; }
+  .conn-row .conn-label{ font-weight:500; font-size:.85rem; }
+  .conn-row .conn-sub{ color:var(--muted); font-size:.74rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  /* ---- Table ---- */
+  .table-modern thead th{
+    font-size:.68rem; text-transform:uppercase; letter-spacing:.03em;
+    color:var(--muted); border-bottom:1px solid var(--border); font-weight:600;
+    position:sticky; top:0; background:var(--card); z-index:1;
+  }
+  .table-modern td, .table-modern th{ padding:.45rem .65rem; vertical-align:middle; font-size:.85rem; }
+  .table-modern tbody tr{ border-bottom:1px solid var(--border); }
+  .table-modern tbody tr:last-child{ border-bottom:none; }
+  .table-modern tbody tr:hover{ background:var(--bg); }
+
+  .saved-query-row{ cursor:pointer; }
+  .saved-query-row:hover{ background:var(--bg); }
+
+  code.sql-preview{
+    background:var(--bg); padding:.15rem .4rem; border-radius:6px; font-size:.78rem;
+    color:#4a4f5e; display:inline-block; max-width:420px; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; vertical-align:middle;
+  }
+
+  textarea.sql-editor{
+    font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+    font-size:.87rem; border-radius:12px; border:1px solid var(--border);
+    background:#fbfbfc;
+  }
+  textarea.sql-editor:focus{ border-color:var(--accent); box-shadow:0 0 0 .2rem rgba(74,93,249,.12); background:#fff; }
+
+  .badge-soft-success{ background:#e7f8f1; color:var(--success); font-weight:600; }
+  .badge-soft-danger{ background:#fdecec; color:var(--danger); font-weight:600; }
+
+  /* ---- Modal (custom, no bootstrap JS needed) ---- */
+  .modal-backdrop-custom{
+    position:fixed; inset:0; background:rgba(20,20,43,.35); z-index:1050;
+    display:flex; align-items:flex-start; justify-content:center; padding:4vh 1rem; overflow-y:auto;
+  }
+  .modal-panel{
+    background:#fff; border-radius:16px; width:100%; max-width:480px;
+    box-shadow:0 20px 60px rgba(20,20,43,.25);
+  }
+  .modal-panel-lg{ max-width:640px; }
+  .modal-header-custom{ padding:.9rem 1.1rem; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+  .modal-body-custom{ padding:1.1rem; }
+  .modal-footer-custom{ padding:.8rem 1.1rem; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:.5rem; }
+
+  /* ---- Toasts ---- */
+  .toast-stack{ position:fixed; bottom:1.25rem; right:1.25rem; z-index:1200; display:flex; flex-direction:column; gap:.5rem; }
+  .toast-item{
+    background:#1f2430; color:#fff; padding:.6rem .9rem; border-radius:10px;
+    font-size:.82rem; box-shadow:0 8px 24px rgba(20,20,43,.25); display:flex; align-items:center; gap:.5rem;
+  }
+  .toast-item.error{ background:var(--danger); }
+  .toast-item.success{ background:#16794f; }
+
+  /* ---- Confirm dialog (reuses modal-backdrop-custom) ---- */
+  .confirm-panel{ background:#fff; border-radius:14px; width:100%; max-width:360px; box-shadow:0 20px 60px rgba(20,20,43,.25); padding:1.25rem; }
+</style>
+</head>
+<body x-data="app()" x-init="init()" x-cloak>
+
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-icon"><i class="bi bi-hdd-network"></i></div>
+    <span class="fw-semibold">DB Console</span>
+  </div>
+
+  <nav>
+    <a class="nav-link-custom" :class="activeTab === 'runner' && 'active'" @click="activeTab = 'runner'">
+      <i class="bi bi-terminal"></i> Query Runner
+    </a>
+    <a class="nav-link-custom" :class="activeTab === 'explore' && 'active'" @click="activeTab = 'explore'">
+      <i class="bi bi-compass"></i> Explore
+    </a>
+    <a class="nav-link-custom" :class="activeTab === 'connections' && 'active'" @click="activeTab = 'connections'">
+      <i class="bi bi-hdd-stack"></i> Connections
+    </a>
+    <a class="nav-link-custom" :class="activeTab === 'queries' && 'active'" @click="activeTab = 'queries'">
+      <i class="bi bi-bookmark-star"></i> Saved Queries
+    </a>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="text-muted-sm mb-2 px-1" x-text="username"></div>
+    <a class="nav-link-custom" @click="logout">
+      <i class="bi bi-box-arrow-left"></i> Logout
+    </a>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <div>
+      <h1 class="h6 mb-0 fw-semibold" x-text="pageTitle()"></h1>
+      <div class="text-muted-sm" x-text="pageSubtitle()"></div>
+    </div>
+    <div>
+      <button class="btn btn-accent btn-sm" x-show="activeTab==='connections'" @click="openConnModal()">
+        <i class="bi bi-plus-lg me-1"></i> New connection
+      </button>
+      <button class="btn btn-accent btn-sm" x-show="activeTab==='queries'" @click="openQueryModal()">
+        <i class="bi bi-plus-lg me-1"></i> New saved query
+      </button>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- ================= QUERY RUNNER ================= -->
+    <template x-if="activeTab === 'runner'">
+      <div class="row g-3">
+        <div class="col-lg-4">
+          <div class="card-surface p-2">
+            <div class="tab-switch mb-2">
+              <button class="tab-btn" :class="leftTab==='databases' && 'active'" @click="leftTab='databases'">
+                Databases <span class="tab-count" x-show="selectedKeys.length" x-text="selectedKeys.length"></span>
+              </button>
+              <button class="tab-btn" :class="leftTab==='saved' && 'active'" @click="leftTab='saved'">
+                Saved <span class="tab-count" x-show="queries.length" x-text="queries.length"></span>
+              </button>
+              <button class="tab-btn" :class="leftTab==='history' && 'active'" @click="leftTab='history'">
+                History <span class="tab-count" x-show="history.length" x-text="history.length"></span>
+              </button>
+            </div>
+
+            <template x-if="leftTab === 'databases'">
+              <div>
+                <div class="d-flex align-items-center justify-content-end mb-2" x-show="connections.length">
+                  <button class="btn btn-link btn-sm p-0 me-2 text-decoration-none" style="font-size:.78rem" @click="selectedKeys = connections.map(c => c.key)">All</button>
+                  <button class="btn btn-link btn-sm p-0 text-decoration-none" style="font-size:.78rem" @click="selectedKeys = []">None</button>
+                </div>
+                <div class="text-muted-sm mb-2" x-show="connections.length === 0">
+                  No connections yet — add one in the Connections tab.
+                </div>
+                <div class="d-flex flex-column gap-1">
+                  <template x-for="c in connections" :key="c.key">
+                    <div class="conn-row" :class="selectedKeys.includes(c.key) && 'selected'" @click="toggleKey(c.key)">
+                      <input type="checkbox" class="form-check-input" :checked="selectedKeys.includes(c.key)" @click.stop="toggleKey(c.key)">
+                      <div class="conn-meta">
+                        <div class="conn-label text-truncate" x-text="c.label"></div>
+                        <div class="conn-sub" x-text="c.host + ':' + c.port + ' / ' + c.database"></div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+
+            <template x-if="leftTab === 'saved'">
+              <div>
+                <div class="text-muted-sm mb-1" x-show="queries.length === 0">No saved queries yet.</div>
+                <div class="d-flex flex-column gap-1" style="max-height:320px; overflow-y:auto;">
+                  <template x-for="q in queries" :key="q.id">
+                    <div class="d-flex align-items-center justify-content-between px-2 py-1 rounded-2 saved-query-row" @click="sql = q.sql">
+                      <div class="text-truncate me-2">
+                        <div class="fw-medium text-truncate" style="font-size:.83rem" x-text="q.name"></div>
+                        <code class="sql-preview" style="max-width:190px" x-text="q.sql"></code>
+                      </div>
+                      <i class="bi bi-arrow-right-circle text-muted"></i>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+
+            <template x-if="leftTab === 'history'">
+              <div>
+                <div class="d-flex justify-content-between align-items-center mb-2" x-show="history.length">
+                  <span class="text-muted-sm">Last <span x-text="history.length"></span> run(s)</span>
+                  <button class="btn btn-link btn-sm p-0 text-decoration-none" style="font-size:.78rem" @click="clearHistory">Clear all</button>
+                </div>
+                <div class="text-muted-sm" x-show="history.length === 0">No queries run yet.</div>
+                <div class="d-flex flex-column gap-1" style="max-height:320px; overflow-y:auto;">
+                  <template x-for="h in history" :key="h.id">
+                    <div class="d-flex align-items-start justify-content-between px-2 py-1 rounded-2 saved-query-row" @click="sql = h.sql">
+                      <div class="text-truncate me-2">
+                        <div class="d-flex align-items-center gap-1 mb-1">
+                          <span class="badge rounded-pill" :class="h.ok ? 'badge-soft-success' : 'badge-soft-danger'" style="font-size:.6rem; padding:.15rem .4rem" x-text="h.ok ? 'OK' : 'ERR'"></span>
+                          <span class="text-muted-sm" x-text="timeAgo(h.timestamp)"></span>
+                        </div>
+                        <code class="sql-preview d-block" style="max-width:190px" x-text="h.sql"></code>
+                        <div class="text-muted-sm text-truncate" x-text="h.dbLabels.join(', ')"></div>
+                      </div>
+                      <button class="btn btn-sm btn-ghost-danger flex-shrink-0" @click.stop="removeHistoryEntry(h.id)"><i class="bi bi-x"></i></button>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="col-lg-8">
+          <div class="card-surface p-2 mb-2">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <div class="section-title mb-0">SQL command</div>
+              <button class="btn btn-outline-soft btn-sm" @click="openQueryModal(null, sql)" :disabled="!sql.trim()">
+                <i class="bi bi-bookmark-plus me-1"></i> Save query
+              </button>
+            </div>
+
+            <div class="use-db-bar mb-2" x-show="selectedKeys.length">
+              <i class="bi bi-hdd-fill"></i>
+              <span class="text-muted-sm me-1">Running as if <code>USE</code>:</span>
+              <template x-for="c in selectedConnections()" :key="c.key">
+                <span class="use-db-chip"><span class="fw-medium" x-text="c.label"></span>&nbsp;→&nbsp;<code x-text="c.database"></code></span>
+              </template>
+            </div>
+            <div class="text-muted-sm mb-2" x-show="selectedKeys.length === 0">
+              <i class="bi bi-info-circle me-1"></i>Select at least one database above to see its target schema here.
+            </div>
+
+            <textarea class="form-control sql-editor" rows="6" x-model="sql" x-ref="sqlEditor"
+                      placeholder="SELECT * FROM users LIMIT 10;
+Separate multiple statements with ; — highlight text to run just that part."
+                      @select="updateSelection" @keyup="updateSelection" @mouseup="updateSelection" @input="updateSelection"
+                      @keydown.ctrl.enter.prevent="runQuery" @keydown.meta.enter.prevent="runQuery"></textarea>
+            <div class="d-flex align-items-center mt-2 flex-wrap gap-2">
+              <button class="btn btn-accent btn-sm" @click="runQuery" :disabled="running || selectedKeys.length === 0 || !activeSql().trim()">
+                <span x-show="running" class="spinner-border spinner-border-sm me-1"></span>
+                <i class="bi bi-play-fill me-1" x-show="!running"></i>
+                Run on <span x-text="selectedKeys.length"></span> database(s)
+              </button>
+              <span class="selection-badge" x-show="hasSelection()">
+                <i class="bi bi-cursor-text"></i> Running selection
+              </span>
+              <span class="text-muted-sm">Ctrl/Cmd + Enter to run</span>
+              <span class="text-danger small" x-show="topError" x-text="topError"></span>
+            </div>
+          </div>
+
+          <template x-for="r in results" :key="r.key">
+            <div class="card-surface mb-2">
+              <div class="d-flex justify-content-between align-items-center px-3 py-2" style="border-bottom:1px solid var(--border)">
+                <div class="d-flex align-items-center gap-2">
+                  <strong style="font-size:.87rem" x-text="labelFor(r.key)"></strong>
+                  <span class="badge rounded-pill" :class="r.ok ? 'badge-soft-success' : 'badge-soft-danger'" x-text="r.ok ? 'OK' : 'ERROR'"></span>
+                  <span class="text-muted-sm" x-show="r.statements && r.statements.length > 1" x-text="r.statements.length + ' statements'"></span>
+                </div>
+                <span class="text-muted-sm" x-text="totalDuration(r) + ' ms'"></span>
+              </div>
+              <div class="p-2 d-flex flex-column gap-2">
+                <template x-for="(s, sidx) in r.statements" :key="sidx">
+                  <div class="stmt-block">
+                    <div class="d-flex justify-content-between align-items-center mb-1 gap-2">
+                      <code class="sql-preview" style="max-width:460px" x-text="s.sql"></code>
+                      <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                        <span class="badge rounded-pill" :class="s.ok ? 'badge-soft-success' : 'badge-soft-danger'" style="font-size:.65rem" x-text="s.ok ? 'OK' : 'ERROR'"></span>
+                        <span class="text-muted-sm" x-show="s.durationMs !== undefined" x-text="s.durationMs + ' ms'"></span>
+                      </div>
+                    </div>
+
+                    <template x-if="!s.ok">
+                      <div class="alert alert-danger mb-0 small" x-text="s.error"></div>
+                    </template>
+
+                    <template x-if="s.ok && s.type === 'result'">
+                      <div class="text-muted-sm">
+                        Affected rows: <strong x-text="s.affectedRows"></strong>
+                        <span x-show="s.insertId"> &middot; Insert ID: <strong x-text="s.insertId"></strong></span>
+                      </div>
+                    </template>
+
+                    <template x-if="s.ok && s.type === 'rows'">
+                      <div>
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                          <div class="text-muted-sm" x-text="s.rowCount + ' row(s)'"></div>
+                          <button class="btn btn-outline-soft btn-sm" style="padding:.1rem .5rem; font-size:.72rem" @click="exportStatementCsv(s)">
+                            <i class="bi bi-download me-1"></i>Export CSV
+                          </button>
+                        </div>
+                        <div class="table-responsive" style="max-height:320px;">
+                          <table class="table table-modern mb-0">
+                            <thead>
+                              <tr>
+                                <template x-for="col in s.columns" :key="col"><th x-text="col"></th></template>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <template x-for="(row, ridx) in s.rows" :key="ridx">
+                                <tr>
+                                  <template x-for="col in s.columns" :key="col">
+                                    <td x-text="formatCell(row[col])"></td>
+                                  </template>
+                                </tr>
+                              </template>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+
+    <!-- ================= EXPLORE ================= -->
+    <template x-if="activeTab === 'explore'">
+      <div>
+        <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-center gap-3">
+          <div class="d-flex align-items-center gap-2">
+            <label class="text-muted-sm mb-0">Connection</label>
+            <select class="form-select form-select-sm" style="width:auto" x-model="exploreConnKey" @change="selectExploreConnection(exploreConnKey)">
+              <option value="" disabled>Select…</option>
+              <template x-for="c in connections" :key="c.key">
+                <option :value="c.key" x-text="c.label"></option>
+              </template>
+            </select>
+          </div>
+          <div class="d-flex align-items-center gap-2" x-show="exploreConnKey">
+            <label class="text-muted-sm mb-0">Database</label>
+            <select class="form-select form-select-sm" style="width:auto" x-model="exploreDatabase" @change="selectExploreDatabase(exploreDatabase)">
+              <option value="" disabled>Select…</option>
+              <template x-for="d in exploreDatabases" :key="d">
+                <option :value="d" x-text="d"></option>
+              </template>
+            </select>
+          </div>
+          <span class="text-muted-sm" x-show="exploreLoadingDatabases">
+            <span class="spinner-border spinner-border-sm me-1"></span>Loading databases…
+          </span>
+          <span class="text-muted-sm" x-show="!exploreConnKey">
+            <i class="bi bi-info-circle me-1"></i>Pick a connection to browse its databases.
+          </span>
+
+          <div class="d-flex align-items-center gap-2 ms-auto" x-show="exploreDatabase">
+            <a class="btn btn-outline-soft btn-sm" :href="backupUrl()" target="_blank">
+              <i class="bi bi-cloud-arrow-down me-1"></i>Backup
+            </a>
+            <button class="btn btn-outline-soft btn-sm" @click="openRestoreModal">
+              <i class="bi bi-cloud-arrow-up me-1"></i>Restore
+            </button>
+          </div>
+        </div>
+
+        <div class="alert alert-danger py-2 small" x-show="exploreError" x-text="exploreError"></div>
+
+        <div class="row g-2" x-show="exploreDatabase">
+          <div class="col-lg-3">
+            <div class="card-surface p-2">
+              <div class="tab-switch mb-2">
+                <button class="tab-btn" :class="exploreNav==='tables' && 'active'" @click="exploreNav='tables'" title="Tables & views">
+                  <i class="bi bi-table"></i> <span x-text="exploreTables.length"></span>
+                </button>
+                <button class="tab-btn" x-show="exploreRoutines.length" :class="exploreNav==='routines' && 'active'" @click="exploreNav='routines'" title="Routines (procedures & functions)">
+                  <i class="bi bi-gear"></i> <span x-text="exploreRoutines.length"></span>
+                </button>
+                <button class="tab-btn" x-show="exploreTriggers.length" :class="exploreNav==='triggers' && 'active'" @click="exploreNav='triggers'" title="Triggers">
+                  <i class="bi bi-lightning-charge"></i> <span x-text="exploreTriggers.length"></span>
+                </button>
+                <button class="tab-btn" x-show="exploreEvents.length" :class="exploreNav==='events' && 'active'" @click="exploreNav='events'" title="Events">
+                  <i class="bi bi-calendar-event"></i> <span x-text="exploreEvents.length"></span>
+                </button>
+              </div>
+              <div class="section-title mb-2" x-text="{ tables: 'Tables & views', routines: 'Routines', triggers: 'Triggers', events: 'Events' }[exploreNav]"></div>
+              <input type="text" class="form-control form-control-sm mb-2" placeholder="Filter…" x-model="exploreFilter">
+
+              <div class="text-muted-sm" x-show="exploreLoadingTables">
+                <span class="spinner-border spinner-border-sm me-1"></span>Loading…
+              </div>
+
+              <!-- Tables & views -->
+              <template x-if="exploreNav === 'tables'">
+                <div class="d-flex flex-column gap-1" style="max-height:520px; overflow-y:auto;">
+                  <div class="text-muted-sm" x-show="!exploreLoadingTables && filterList(exploreTables).length === 0">No tables or views.</div>
+                  <template x-for="t in filterList(exploreTables)" :key="t.name">
+                    <div class="conn-row" :class="exploreTable === t.name && 'selected'" @click="selectExploreTable(t.name)">
+                      <i class="bi" :class="/VIEW/i.test(t.type) ? 'bi-eye' : 'bi-table'" :style="/VIEW/i.test(t.type) ? 'color:var(--accent)' : 'color:var(--muted)'"></i>
+                      <div class="conn-meta">
+                        <div class="conn-label text-truncate" x-text="t.name"></div>
+                        <div class="conn-sub" x-text="/VIEW/i.test(t.type) ? 'view' : ((t.approxRows ?? 0) + ' rows · ' + (t.engine || 'n/a'))"></div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <!-- Routines -->
+              <template x-if="exploreNav === 'routines'">
+                <div class="d-flex flex-column gap-1" style="max-height:520px; overflow-y:auto;">
+                  <template x-for="r in filterList(exploreRoutines)" :key="r.type + r.name">
+                    <div class="conn-row" :class="exploreObject && exploreObject.kind === r.type.toLowerCase() && exploreObject.name === r.name && 'selected'"
+                         @click="selectExploreObject(r.type.toLowerCase(), r.name, r.modified ? 'modified ' + new Date(r.modified).toLocaleString() : '')">
+                      <i class="bi" :class="objectIcon(r.type.toLowerCase())" style="color:var(--muted)"></i>
+                      <div class="conn-meta">
+                        <div class="conn-label text-truncate" x-text="r.name"></div>
+                        <div class="conn-sub" x-text="r.type.toLowerCase()"></div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <!-- Triggers -->
+              <template x-if="exploreNav === 'triggers'">
+                <div class="d-flex flex-column gap-1" style="max-height:520px; overflow-y:auto;">
+                  <template x-for="t in filterList(exploreTriggers)" :key="t.name">
+                    <div class="conn-row" :class="exploreObject && exploreObject.kind === 'trigger' && exploreObject.name === t.name && 'selected'"
+                         @click="selectExploreObject('trigger', t.name, t.timing + ' ' + t.event + ' on ' + t.tableName)">
+                      <i class="bi bi-lightning-charge" style="color:var(--muted)"></i>
+                      <div class="conn-meta">
+                        <div class="conn-label text-truncate" x-text="t.name"></div>
+                        <div class="conn-sub" x-text="t.timing + ' ' + t.event + ' · ' + t.tableName"></div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <!-- Events -->
+              <template x-if="exploreNav === 'events'">
+                <div class="d-flex flex-column gap-1" style="max-height:520px; overflow-y:auto;">
+                  <template x-for="e in filterList(exploreEvents)" :key="e.name">
+                    <div class="conn-row" :class="exploreObject && exploreObject.kind === 'event' && exploreObject.name === e.name && 'selected'"
+                         @click="selectExploreObject('event', e.name, e.status + ' · ' + eventSchedule(e))">
+                      <i class="bi bi-calendar-event" style="color:var(--muted)"></i>
+                      <div class="conn-meta">
+                        <div class="conn-label text-truncate" x-text="e.name"></div>
+                        <div class="conn-sub" x-text="e.status + ' · ' + eventSchedule(e)"></div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <div class="col-lg-9">
+            <div class="card-surface p-4 text-center text-muted-sm" x-show="!exploreTable && !exploreObject">
+              <i class="bi bi-arrow-left-circle me-1"></i> Select a table, view or other object on the left.
+            </div>
+
+            <div x-show="exploreTable">
+              <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-center justify-content-between gap-2">
+                <div class="d-flex align-items-center gap-3">
+                  <div class="d-flex align-items-center gap-2">
+                    <i class="bi" :class="exploreIsView() ? 'bi-eye' : 'bi-table'" style="color:var(--accent)"></i>
+                    <strong style="font-size:.9rem" x-text="exploreTable"></strong>
+                    <span class="use-db-chip" x-show="exploreIsView()">VIEW</span>
+                  </div>
+                  <div class="tab-switch" style="width:auto">
+                    <button class="tab-btn" :class="exploreView==='data' && 'active'" @click="exploreView='data'">Data</button>
+                    <button class="tab-btn" :class="exploreView==='structure' && 'active'" @click="exploreView='structure'">Structure</button>
+                  </div>
+                </div>
+                <div class="d-flex align-items-center gap-2" x-show="exploreView==='data'">
+                  <button class="btn btn-outline-soft btn-sm" @click="loadExploreRows"><i class="bi bi-arrow-clockwise"></i></button>
+                  <a class="btn btn-outline-soft btn-sm" :href="tableExportUrl()" target="_blank"><i class="bi bi-download me-1"></i>Export CSV</a>
+                  <button class="btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal"><i class="bi bi-upload me-1"></i>Import CSV</button>
+                  <button class="btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow"><i class="bi bi-plus-lg me-1"></i>Add row</button>
+                </div>
+              </div>
+
+              <!-- Index summary, visible as soon as a table is selected -->
+              <div class="card-surface px-2 py-2 mb-2 d-flex flex-wrap align-items-center gap-1" x-show="exploreView==='data' && exploreIndexes.length">
+                <span class="text-muted-sm me-1"><i class="bi bi-diagram-2 me-1"></i>Indexes</span>
+                <template x-for="ix in exploreIndexes" :key="ix.name">
+                  <span class="index-chip" :class="ix.primary && 'primary'"
+                        :title="ix.type + (ix.unique ? ' · unique' : '') + (ix.cardinality != null ? ' · cardinality ' + ix.cardinality : '')">
+                    <i class="bi" :class="ix.primary ? 'bi-key-fill' : (ix.unique ? 'bi-shield-check' : 'bi-lightning')"></i>
+                    <span x-text="ix.name"></span>
+                    <span class="idx-cols" x-text="'(' + ix.columns.join(', ') + ')'"></span>
+                  </span>
+                </template>
+              </div>
+
+              <!-- DATA VIEW -->
+              <template x-if="exploreView === 'data'">
+                <div class="card-surface">
+                  <div class="table-responsive" style="max-height:480px;">
+                    <table class="table table-modern mb-0">
+                      <thead>
+                        <tr>
+                          <template x-for="col in exploreResultColumns" :key="col">
+                            <th style="cursor:pointer; white-space:nowrap" @click="sortByColumn(col)">
+                              <span x-text="col"></span>
+                              <i class="bi" :class="exploreSortCol===col ? (exploreSortDir==='asc' ? 'bi-caret-up-fill' : 'bi-caret-down-fill') : 'bi-caret-down'" style="opacity:.45; font-size:.62rem"></i>
+                            </th>
+                          </template>
+                          <th class="text-end" x-show="canEditRows()">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="(row, ridx) in exploreRows" :key="ridx">
+                          <tr>
+                            <template x-for="col in exploreResultColumns" :key="col">
+                              <td x-text="formatCell(row[col])"></td>
+                            </template>
+                            <td class="text-end" x-show="canEditRows()">
+                              <button class="btn btn-sm btn-outline-soft me-1" @click="openEditRow(row)"><i class="bi bi-pencil"></i></button>
+                              <button class="btn btn-sm btn-ghost-danger" @click="deleteExploreRow(row)"><i class="bi bi-trash"></i></button>
+                            </td>
+                          </tr>
+                        </template>
+                        <tr x-show="!exploreLoadingRows && exploreRows.length === 0">
+                          <td :colspan="exploreResultColumns.length + 1" class="text-center text-muted-sm py-4">No rows.</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 px-3 py-2" style="border-top:1px solid var(--border)">
+                    <div class="text-muted-sm">
+                      <span x-text="exploreTotal"></span> row(s)
+                      <span x-show="!canEditRows() && exploreIsView()">· view (read-only)</span>
+                      <span x-show="!canEditRows() && !exploreIsView()">· read-only (no primary key detected)</span>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                      <select class="form-select form-select-sm" style="width:auto" x-model.number="explorePageSize" @change="changePageSize(explorePageSize)">
+                        <option value="25">25 / page</option>
+                        <option value="50">50 / page</option>
+                        <option value="100">100 / page</option>
+                        <option value="250">250 / page</option>
+                      </select>
+                      <button class="btn btn-outline-soft btn-sm" @click="changePage(-1)" :disabled="explorePage<=1"><i class="bi bi-chevron-left"></i></button>
+                      <span class="text-muted-sm">Page <span x-text="explorePage"></span> / <span x-text="exploreMaxPage()"></span></span>
+                      <button class="btn btn-outline-soft btn-sm" @click="changePage(1)" :disabled="explorePage>=exploreMaxPage()"><i class="bi bi-chevron-right"></i></button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- STRUCTURE VIEW -->
+              <template x-if="exploreView === 'structure'">
+                <div>
+                  <div class="card-surface mb-2">
+                    <div class="table-responsive">
+                      <table class="table table-modern mb-0">
+                        <thead>
+                          <tr><th>Column</th><th>Type</th><th>Nullable</th><th>Key</th><th>Default</th><th>Extra</th></tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="c in exploreColumns" :key="c.name">
+                            <tr>
+                              <td class="fw-medium" x-text="c.name"></td>
+                              <td x-text="c.type"></td>
+                              <td x-text="c.nullable ? 'YES' : 'NO'"></td>
+                              <td x-text="c.key"></td>
+                              <td x-text="c.default ?? ''"></td>
+                              <td x-text="c.extra"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div class="card-surface mb-2" x-show="!exploreIsView()">
+                    <div class="section-title px-3 pt-2 mb-0"><i class="bi bi-diagram-2 me-1"></i>Indexes</div>
+                    <div class="table-responsive">
+                      <table class="table table-modern mb-0">
+                        <thead>
+                          <tr><th>Name</th><th>Columns</th><th>Type</th><th>Unique</th><th>Cardinality</th></tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="ix in exploreIndexes" :key="ix.name">
+                            <tr>
+                              <td class="fw-medium">
+                                <span x-text="ix.name"></span>
+                                <span class="use-db-chip ms-1" x-show="ix.primary">PRIMARY</span>
+                              </td>
+                              <td x-text="ix.columns.join(', ')"></td>
+                              <td x-text="ix.type"></td>
+                              <td x-text="ix.unique ? 'YES' : 'NO'"></td>
+                              <td x-text="ix.cardinality ?? ''"></td>
+                            </tr>
+                          </template>
+                          <tr x-show="exploreIndexes.length === 0">
+                            <td colspan="5" class="text-center text-muted-sm py-3">No indexes.</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div class="card-surface p-2" x-show="exploreDefinition">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                      <div class="section-title mb-0" x-text="exploreIsView() ? 'View definition' : 'Table definition (DDL)'"></div>
+                      <button class="btn btn-outline-soft btn-sm" @click="copyDefinition"><i class="bi bi-clipboard me-1"></i>Copy</button>
+                    </div>
+                    <pre class="definition-block" x-text="exploreDefinition"></pre>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <!-- Routine / trigger / event viewer -->
+            <template x-if="exploreObject">
+              <div class="card-surface">
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 px-3 py-2" style="border-bottom:1px solid var(--border)">
+                  <div class="d-flex align-items-center gap-2">
+                    <i class="bi" :class="objectIcon(exploreObject.kind)" style="color:var(--accent)"></i>
+                    <strong x-text="exploreObject.name"></strong>
+                    <span class="use-db-chip" x-text="exploreObject.kind"></span>
+                    <span class="text-muted-sm" x-text="exploreObject.meta"></span>
+                  </div>
+                  <button class="btn btn-outline-soft btn-sm" @click="copyDefinition" :disabled="!exploreDefinition">
+                    <i class="bi bi-clipboard me-1"></i>Copy
+                  </button>
+                </div>
+                <div class="p-2">
+                  <div class="text-muted-sm" x-show="exploreDefLoading">
+                    <span class="spinner-border spinner-border-sm me-1"></span>Loading definition…
+                  </div>
+                  <div class="alert alert-warning py-2 small mb-0" x-show="!exploreDefLoading && !exploreDefinition">
+                    Definition not available — the connection's user may lack the privilege to read it.
+                  </div>
+                  <pre class="definition-block" x-show="exploreDefinition" x-text="exploreDefinition"></pre>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ================= CONNECTIONS ================= -->
+    <template x-if="activeTab === 'connections'">
+      <div class="card-surface">
+        <div class="table-responsive">
+          <table class="table table-modern mb-0">
+            <thead>
+              <tr>
+                <th>Label</th><th>Host</th><th>Database</th><th>User</th><th class="text-end">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="c in connections" :key="c.key">
+                <tr>
+                  <td class="fw-medium" x-text="c.label"></td>
+                  <td x-text="c.host + ':' + c.port"></td>
+                  <td x-text="c.database"></td>
+                  <td x-text="c.user"></td>
+                  <td class="text-end">
+                    <button class="btn btn-sm btn-outline-soft me-1" @click="testSaved(c.key)">
+                      <span x-show="testingKey === c.key" class="spinner-border spinner-border-sm"></span>
+                      <span x-show="testingKey !== c.key"><i class="bi bi-plug"></i> Test</span>
+                    </button>
+                    <button class="btn btn-sm btn-outline-soft me-1" title="Edit" @click="openConnModal(c)"><i class="bi bi-pencil"></i></button>
+                    <button class="btn btn-sm btn-outline-soft me-1" title="Clone to edit" @click="openConnModal(c, true)"><i class="bi bi-copy"></i></button>
+                    <button class="btn btn-sm btn-ghost-danger" @click="removeConnection(c.key)"><i class="bi bi-trash"></i></button>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="connections.length === 0">
+                <td colspan="5" class="text-center text-muted-sm py-4">No connections yet. Click "New connection" to add one.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+
+    <!-- ================= SAVED QUERIES ================= -->
+    <template x-if="activeTab === 'queries'">
+      <div class="card-surface">
+        <div class="table-responsive">
+          <table class="table table-modern mb-0">
+            <thead>
+              <tr><th>Name</th><th>SQL</th><th>Updated</th><th class="text-end">Actions</th></tr>
+            </thead>
+            <tbody>
+              <template x-for="q in queries" :key="q.id">
+                <tr>
+                  <td class="fw-medium" x-text="q.name"></td>
+                  <td><code class="sql-preview" x-text="q.sql"></code></td>
+                  <td class="text-muted-sm" x-text="new Date(q.updatedAt).toLocaleString()"></td>
+                  <td class="text-end">
+                    <button class="btn btn-sm btn-outline-soft me-1" @click="sql = q.sql; activeTab = 'runner'">
+                      <i class="bi bi-play"></i> Load
+                    </button>
+                    <button class="btn btn-sm btn-outline-soft me-1" @click="openQueryModal(q)"><i class="bi bi-pencil"></i></button>
+                    <button class="btn btn-sm btn-ghost-danger" @click="removeQuery(q.id)"><i class="bi bi-trash"></i></button>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="queries.length === 0">
+                <td colspan="4" class="text-center text-muted-sm py-4">No saved queries yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+
+  </div>
+</div>
+
+<!-- ===== Connection Modal ===== -->
+<div class="modal-backdrop-custom" x-show="connModal.open" x-cloak @click.self="connModal.open = false">
+  <div class="modal-panel">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="connModal.key ? 'Edit connection' : (connModal.cloneFrom ? 'Clone connection' : 'New connection')"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="connModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="connModal.error" x-text="connModal.error"></div>
+      <div class="row g-2">
+        <div class="col-12">
+          <label class="form-label small fw-medium">Label</label>
+          <input type="text" class="form-control" x-model="connModal.form.label" placeholder="Production DB">
+        </div>
+        <div class="col-8">
+          <label class="form-label small fw-medium">Host</label>
+          <input type="text" class="form-control" x-model="connModal.form.host" placeholder="localhost">
+        </div>
+        <div class="col-4">
+          <label class="form-label small fw-medium">Port</label>
+          <input type="number" class="form-control" x-model="connModal.form.port" placeholder="3306">
+        </div>
+        <div class="col-6">
+          <label class="form-label small fw-medium">User</label>
+          <input type="text" class="form-control" x-model="connModal.form.user">
+        </div>
+        <div class="col-6">
+          <label class="form-label small fw-medium">
+            Password
+            <span class="text-muted-sm" x-show="connModal.key">(leave blank to keep current)</span>
+            <span class="text-muted-sm" x-show="connModal.cloneFrom">(leave blank to reuse the original's)</span>
+          </label>
+          <input type="password" class="form-control" x-model="connModal.form.password">
+        </div>
+        <div class="col-12">
+          <label class="form-label small fw-medium">Database</label>
+          <input type="text" class="form-control" x-model="connModal.form.database">
+        </div>
+      </div>
+
+      <div class="mt-3" x-show="connModal.testResult">
+        <div class="alert py-2 small mb-0" :class="connModal.testResult && connModal.testResult.ok ? 'alert-success' : 'alert-danger'">
+          <span x-show="connModal.testResult && connModal.testResult.ok"><i class="bi bi-check-circle me-1"></i> Connected successfully</span>
+          <span x-show="connModal.testResult && !connModal.testResult.ok" x-text="connModal.testResult.error"></span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="testUnsaved" :disabled="connModal.testing">
+        <span x-show="connModal.testing" class="spinner-border spinner-border-sm me-1"></span>
+        <i class="bi bi-plug me-1" x-show="!connModal.testing"></i> Test connection
+      </button>
+      <button class="btn btn-accent" @click="saveConnection" :disabled="connModal.saving">
+        <span x-show="connModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        Save
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Saved Query Modal ===== -->
+<div class="modal-backdrop-custom" x-show="queryModal.open" x-cloak @click.self="queryModal.open = false">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="queryModal.id ? 'Edit saved query' : 'Save query'"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="queryModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="queryModal.error" x-text="queryModal.error"></div>
+      <label class="form-label small fw-medium">Name</label>
+      <input type="text" class="form-control mb-3" x-model="queryModal.form.name" placeholder="Top 10 users">
+      <label class="form-label small fw-medium">SQL</label>
+      <textarea class="form-control sql-editor" rows="6" x-model="queryModal.form.sql"></textarea>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="queryModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveQuery" :disabled="queryModal.saving">
+        <span x-show="queryModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        Save
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Explore: Row Edit/Insert Modal ===== -->
+<div class="modal-backdrop-custom" x-show="exploreRowModal.open" x-cloak @click.self="exploreRowModal.open = false">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="exploreRowModal.mode === 'edit' ? 'Edit row' : 'Add row'"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="exploreRowModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom" style="max-height:60vh; overflow-y:auto;">
+      <div class="alert alert-danger py-2 small" x-show="exploreRowModal.error" x-text="exploreRowModal.error"></div>
+      <template x-for="col in exploreResultColumns" :key="col">
+        <div class="mb-2">
+          <label class="form-label small fw-medium">
+            <span x-text="col"></span>
+            <span class="text-muted-sm" x-show="explorePrimaryKey.includes(col)">(key)</span>
+          </label>
+          <input type="text" class="form-control form-control-sm" x-model="exploreRowModal.values[col]"
+                 :disabled="exploreRowModal.mode === 'edit' && explorePrimaryKey.includes(col)">
+        </div>
+      </template>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="exploreRowModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveExploreRow" :disabled="exploreRowModal.saving">
+        <span x-show="exploreRowModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        Save
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Explore: CSV Import Modal ===== -->
+<div class="modal-backdrop-custom" x-show="importModal.open" x-cloak @click.self="!importModal.running && (importModal.open = false)">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold">Import CSV into <span x-text="exploreTable"></span></h2>
+      <button class="btn btn-sm btn-outline-soft" :disabled="importModal.running" @click="importModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom" style="max-height:65vh; overflow-y:auto;">
+      <div class="alert alert-danger py-2 small" x-show="importModal.error" x-text="importModal.error"></div>
+
+      <!-- Step 1: pick file -->
+      <template x-if="importModal.step === 'pick'">
+        <div>
+          <label class="form-label small fw-medium">CSV file (first row must be a header)</label>
+          <input type="file" accept=".csv,text/csv" class="form-control form-control-sm" @change="onImportFileSelected($event)">
+          <div class="text-muted-sm mt-2">Large files are streamed and sent in batches — the whole file is never held in memory.</div>
+        </div>
+      </template>
+
+      <!-- Step 2: mapping preview -->
+      <template x-if="importModal.step === 'mapping'">
+        <div>
+          <div class="text-muted-sm mb-2">Map each CSV column to a table column, or leave it as "Skip".</div>
+          <div class="table-responsive mb-3">
+            <table class="table table-modern mb-0">
+              <thead><tr><th>CSV column</th><th>Sample value</th><th>Maps to</th></tr></thead>
+              <tbody>
+                <template x-for="f in importModal.previewFields" :key="f">
+                  <tr>
+                    <td class="fw-medium" x-text="f"></td>
+                    <td class="text-muted-sm" x-text="importModal.previewRows[0] ? importModal.previewRows[0][f] : ''"></td>
+                    <td>
+                      <select class="form-select form-select-sm" x-model="importModal.mapping[f]">
+                        <option value="__skip__">Skip</option>
+                        <template x-for="tc in availableTargetColumns()" :key="tc">
+                          <option :value="tc" x-text="tc"></option>
+                        </template>
+                      </select>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <div class="form-check">
+            <input type="checkbox" class="form-check-input" id="importTruncate" x-model="importModal.truncate">
+            <label class="form-check-label text-muted-sm" for="importTruncate">
+              Delete all existing rows in this table before importing
+            </label>
+          </div>
+        </div>
+      </template>
+
+      <!-- Step 3: importing / done -->
+      <template x-if="importModal.step === 'importing' || importModal.step === 'done'">
+        <div>
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span x-show="importModal.running" class="spinner-border spinner-border-sm"></span>
+            <strong x-text="importModal.imported"></strong> row(s) imported
+            <span class="text-danger" x-show="importModal.failedBatches"> · <span x-text="importModal.failedBatches"></span> batch error(s)</span>
+          </div>
+          <div class="text-muted-sm" x-show="importModal.step === 'done'">Import finished.</div>
+        </div>
+      </template>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" :disabled="importModal.running" @click="importModal.open = false" x-text="importModal.step === 'done' ? 'Close' : 'Cancel'"></button>
+      <button class="btn btn-accent" x-show="importModal.step === 'mapping'" @click="startImport" :disabled="importModal.running">
+        Start import
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Explore: Restore Modal ===== -->
+<div class="modal-backdrop-custom" x-show="restoreModal.open" x-cloak @click.self="!restoreModal.running && (restoreModal.open = false)">
+  <div class="modal-panel">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold">Restore into <span x-text="exploreDatabase"></span></h2>
+      <button class="btn btn-sm btn-outline-soft" :disabled="restoreModal.running" @click="restoreModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="restoreModal.error" x-text="restoreModal.error"></div>
+      <div class="alert alert-warning py-2 small" x-show="!restoreModal.running && !restoreModal.done">
+        <i class="bi bi-exclamation-triangle me-1"></i>
+        Running a dump can drop and recreate tables. Make sure this is the database you intend to restore into.
+      </div>
+
+      <template x-if="!restoreModal.running && !restoreModal.done">
+        <div>
+          <label class="form-label small fw-medium">.sql backup file</label>
+          <input type="file" accept=".sql,.tar.gz,.gz,text/plain,application/gzip,application/x-gzip" class="form-control form-control-sm" @change="onRestoreFileSelected($event)">
+          <div class="text-muted-sm mt-2">Accepts a plain .sql file or a .tar.gz backup made by the Backup button.</div>
+        </div>
+      </template>
+
+      <template x-if="restoreModal.running || restoreModal.done">
+        <div>
+          <div class="d-flex align-items-center gap-2 mb-1">
+            <span x-show="restoreModal.running" class="spinner-border spinner-border-sm"></span>
+            <strong x-text="restoreModal.progress.executed || 0"></strong> statement(s) executed
+            <span class="text-danger" x-show="restoreModal.progress.failed"> · <span x-text="restoreModal.progress.failed"></span> failed</span>
+          </div>
+          <div class="text-muted-sm" x-show="restoreModal.done">Restore finished.</div>
+          <div class="mt-2" x-show="restoreModal.errors && restoreModal.errors.length">
+            <div class="text-muted-sm mb-1">First errors:</div>
+            <div style="max-height:160px; overflow-y:auto;">
+              <template x-for="(e, idx) in restoreModal.errors" :key="idx">
+                <div class="alert alert-danger py-1 px-2 small mb-1">
+                  <code class="sql-preview d-block mb-1" x-text="e.statement"></code>
+                  <span x-text="e.error"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" :disabled="restoreModal.running" @click="restoreModal.open = false" x-text="restoreModal.done ? 'Close' : 'Cancel'"></button>
+      <button class="btn btn-accent" x-show="!restoreModal.done" @click="startRestore" :disabled="restoreModal.running || !restoreModal.file">
+        <span x-show="restoreModal.running" class="spinner-border spinner-border-sm me-1"></span>
+        Start restore
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Toasts ===== -->
+<div class="toast-stack">
+  <template x-for="t in toasts" :key="t.id">
+    <div class="toast-item" :class="t.type">
+      <i class="bi" :class="t.type === 'error' ? 'bi-exclamation-circle' : 'bi-check-circle'"></i>
+      <span x-text="t.message"></span>
+    </div>
+  </template>
+</div>
+
+<!-- ===== Confirm Dialog ===== -->
+<div class="modal-backdrop-custom" x-show="confirmDialog.open" x-cloak @click.self="cancelConfirm">
+  <div class="confirm-panel">
+    <div class="fw-semibold mb-1" x-text="confirmDialog.title"></div>
+    <div class="text-muted-sm mb-3" x-text="confirmDialog.message"></div>
+    <div class="d-flex justify-content-end gap-2">
+      <button class="btn btn-outline-soft btn-sm" @click="cancelConfirm">Cancel</button>
+      <button class="btn btn-sm text-white" :style="{ background: confirmDialog.danger ? 'var(--danger)' : 'var(--accent)' }" @click="acceptConfirm" x-text="confirmDialog.confirmLabel"></button>
+    </div>
+  </div>
+</div>
+
+<script>
+function app() {
+  return {
+    activeTab: 'runner',
+    leftTab: 'databases',
+    username: '',
+
+    connections: [],
+    queries: [],
+
+    selectedKeys: [],
+    sql: '',
+    selection: { start: 0, end: 0 },
+    running: false,
+    results: [],
+    topError: '',
+    testingKey: null,
+    history: [],
+
+    connModal: { open: false, key: null, cloneFrom: null, form: {}, testResult: null, testing: false, saving: false, error: '' },
+    queryModal: { open: false, id: null, form: {}, saving: false, error: '' },
+
+    toasts: [],
+    confirmDialog: { open: false, title: '', message: '', confirmLabel: 'Confirm', danger: false, resolve: null },
+
+    // ---- Explore ----
+    exploreConnKey: '',
+    exploreDatabases: [],
+    exploreDatabase: '',
+    exploreTables: [],            // tables AND views (each has .type)
+    exploreRoutines: [],
+    exploreTriggers: [],
+    exploreEvents: [],
+    exploreNav: 'tables',         // left-panel tab: tables | routines | triggers | events
+    exploreFilter: '',
+    exploreTable: '',
+    exploreTableType: '',         // 'BASE TABLE' | 'VIEW' for the selected table/view
+    exploreIndexes: [],
+    exploreObject: null,          // selected routine/trigger/event: { kind, name, meta }
+    exploreDefinition: '',
+    exploreDefLoading: false,
+    exploreColumns: [],
+    explorePrimaryKey: [],
+    exploreResultColumns: [],
+    exploreRows: [],
+    exploreTotal: 0,
+    explorePage: 1,
+    explorePageSize: 50,
+    exploreSortCol: '',
+    exploreSortDir: 'asc',
+    exploreView: 'data',
+    exploreLoadingDatabases: false,
+    exploreLoadingTables: false,
+    exploreLoadingRows: false,
+    exploreError: '',
+    exploreRowModal: { open: false, mode: 'edit', where: null, values: {}, saving: false, error: '' },
+    importModal: { open: false, step: 'pick', file: null, previewFields: [], previewRows: [], mapping: {}, truncate: false, imported: 0, failedBatches: 0, running: false, error: '' },
+    restoreModal: { open: false, file: null, running: false, done: false, progress: { executed: 0, failed: 0 }, errors: [], error: '' },
+
+    async init() {
+      const sess = await fetch('/api/session').then(r => r.json());
+      if (!sess.authenticated) { window.location.href = '/login'; return; }
+      this.username = sess.username;
+      try {
+        this.history = JSON.parse(localStorage.getItem('dbconsole_history') || '[]');
+      } catch (e) {
+        this.history = [];
+      }
+      await Promise.all([this.loadConnections(), this.loadQueries()]);
+    },
+
+    pageTitle() {
+      return { runner: 'Query Runner', explore: 'Explore', connections: 'Connections', queries: 'Saved Queries' }[this.activeTab];
+    },
+    pageSubtitle() {
+      return {
+        runner: 'Run SQL across one or more databases — separate statements with ; or highlight text to run just that part',
+        explore: 'Browse databases, tables and rows with clicks — writing SQL is a last resort here',
+        connections: 'Manage the databases this tool can connect to',
+        queries: 'Reusable SQL snippets you can load into the runner'
+      }[this.activeTab];
+    },
+
+    async loadConnections() {
+      this.connections = await fetch('/api/connections').then(r => r.json());
+    },
+    async loadQueries() {
+      this.queries = await fetch('/api/queries').then(r => r.json());
+    },
+
+    showToast(message, type = 'success') {
+      const id = Date.now() + Math.random();
+      this.toasts.push({ id, message, type });
+      setTimeout(() => { this.toasts = this.toasts.filter(t => t.id !== id); }, 3000);
+    },
+    askConfirm(title, message, opts = {}) {
+      return new Promise((resolve) => {
+        this.confirmDialog = {
+          open: true,
+          title,
+          message,
+          confirmLabel: opts.confirmLabel || 'Confirm',
+          danger: opts.danger !== false,
+          resolve
+        };
+      });
+    },
+    acceptConfirm() {
+      const { resolve } = this.confirmDialog;
+      this.confirmDialog = { open: false, title: '', message: '', confirmLabel: 'Confirm', danger: false, resolve: null };
+      if (resolve) resolve(true);
+    },
+    cancelConfirm() {
+      const { resolve } = this.confirmDialog;
+      this.confirmDialog = { open: false, title: '', message: '', confirmLabel: 'Confirm', danger: false, resolve: null };
+      if (resolve) resolve(false);
+    },
+
+    toggleKey(key) {
+      this.selectedKeys = this.selectedKeys.includes(key)
+        ? this.selectedKeys.filter(k => k !== key)
+        : [...this.selectedKeys, key];
+    },
+    labelFor(key) {
+      const c = this.connections.find(c => c.key === key);
+      return c ? c.label : key;
+    },
+    selectedConnections() {
+      return this.connections.filter(c => this.selectedKeys.includes(c.key));
+    },
+    formatCell(val) {
+      if (val === null || val === undefined) return 'NULL';
+      if (typeof val === 'object') return JSON.stringify(val);
+      return String(val);
+    },
+
+    // ---- Text selection in the SQL editor ----
+    updateSelection() {
+      const ta = this.$refs.sqlEditor;
+      if (!ta) return;
+      this.selection = { start: ta.selectionStart, end: ta.selectionEnd };
+    },
+    hasSelection() {
+      return this.selection.end > this.selection.start;
+    },
+    activeSql() {
+      return this.hasSelection() ? this.sql.substring(this.selection.start, this.selection.end) : this.sql;
+    },
+
+    totalDuration(r) {
+      return (r.statements || []).reduce((acc, s) => acc + (s.durationMs || 0), 0);
+    },
+    timeAgo(iso) {
+      const diffSec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+      if (diffSec < 60) return diffSec + 's ago';
+      const min = Math.floor(diffSec / 60);
+      if (min < 60) return min + 'm ago';
+      const hr = Math.floor(min / 60);
+      if (hr < 24) return hr + 'h ago';
+      return Math.floor(hr / 24) + 'd ago';
+    },
+    pushHistory(sql, dbLabels, ok) {
+      const entry = { id: Date.now() + Math.random(), sql, dbLabels, ok, timestamp: new Date().toISOString() };
+      this.history.unshift(entry);
+      if (this.history.length > 50) this.history = this.history.slice(0, 50);
+      localStorage.setItem('dbconsole_history', JSON.stringify(this.history));
+    },
+    removeHistoryEntry(id) {
+      this.history = this.history.filter(h => h.id !== id);
+      localStorage.setItem('dbconsole_history', JSON.stringify(this.history));
+    },
+    async clearHistory() {
+      const ok = await this.askConfirm('Clear run history?', 'This removes all locally stored run history on this device.', { confirmLabel: 'Clear', danger: true });
+      if (!ok) return;
+      this.history = [];
+      localStorage.removeItem('dbconsole_history');
+      this.showToast('History cleared');
+    },
+
+    getQueryWarning(sql) {
+      const trimmed = sql.trim();
+      const isDelete = /^delete\b/i.test(trimmed);
+      const isSelect = /^select\b/i.test(trimmed);
+      const hasLimit = /\blimit\s+\d+/i.test(trimmed);
+
+      if (isDelete) {
+        return `This will run a DELETE statement on ${this.selectedKeys.length} database(s). Rows removed this way cannot be undone. Continue?`;
+      }
+      if (isSelect && !hasLimit) {
+        return 'This SELECT has no LIMIT clause and could return a very large number of rows. Continue anyway?';
+      }
+      return null;
+    },
+
+    async runQuery() {
+      const sqlToRun = this.activeSql();
+      if (!sqlToRun.trim() || this.selectedKeys.length === 0) return;
+
+      const warning = this.getQueryWarning(sqlToRun);
+      if (warning) {
+        const isDelete = /^delete\b/i.test(sqlToRun.trim());
+        const ok = await this.askConfirm('Confirm before running', warning, {
+          confirmLabel: isDelete ? 'Run DELETE' : 'Run anyway',
+          danger: isDelete
+        });
+        if (!ok) return;
+      }
+
+      const dbLabelsUsed = this.selectedConnections().map(c => c.label);
+      this.running = true; this.topError = ''; this.results = [];
+      try {
+        const res = await fetch('/api/query', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dbKeys: this.selectedKeys, sql: sqlToRun })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          this.topError = data.error || 'Request failed';
+          this.pushHistory(sqlToRun, dbLabelsUsed, false);
+        } else {
+          this.results = data.results;
+          this.pushHistory(sqlToRun, dbLabelsUsed, data.results.every(r => r.ok));
+        }
+      } catch (e) {
+        this.topError = 'Network error, please try again';
+        this.pushHistory(sqlToRun, dbLabelsUsed, false);
+      } finally {
+        this.running = false;
+      }
+    },
+
+    // ---- Connections ----
+    // clone=true opens the form as a NEW connection pre-filled from `conn`;
+    // nothing is saved until the user clicks Save, and a blank password
+    // means "reuse the original's password" (the browser never has it).
+    openConnModal(conn, clone = false) {
+      const fromConn = conn
+        ? { label: conn.label, host: conn.host, port: conn.port, user: conn.user, password: '', database: conn.database }
+        : { label: '', host: '', port: 3306, user: '', password: '', database: '' };
+      if (conn && clone) fromConn.label = conn.label + ' (copy)';
+      this.connModal = {
+        open: true,
+        key: conn && !clone ? conn.key : null,
+        cloneFrom: conn && clone ? conn.key : null,
+        form: fromConn,
+        testResult: null, testing: false, saving: false, error: ''
+      };
+    },
+    async testUnsaved() {
+      this.connModal.testing = true; this.connModal.testResult = null;
+      try {
+        const res = await fetch('/api/connections/test', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...this.connModal.form, passwordFrom: this.connModal.key || this.connModal.cloneFrom })
+        });
+        this.connModal.testResult = await res.json();
+      } catch (e) {
+        this.connModal.testResult = { ok: false, error: 'Network error' };
+      } finally {
+        this.connModal.testing = false;
+      }
+    },
+    async testSaved(key) {
+      this.testingKey = key;
+      try {
+        const res = await fetch(`/api/connections/${key}/test`, { method: 'POST' });
+        const data = await res.json();
+        this.showToast(data.ok ? 'Connected successfully' : ('Connection failed: ' + data.error), data.ok ? 'success' : 'error');
+      } finally {
+        this.testingKey = null;
+      }
+    },
+    async saveConnection() {
+      this.connModal.saving = true; this.connModal.error = '';
+      try {
+        const isEdit = Boolean(this.connModal.key);
+        const url = isEdit ? `/api/connections/${this.connModal.key}` : '/api/connections';
+        const res = await fetch(url, {
+          method: isEdit ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(isEdit ? this.connModal.form : { ...this.connModal.form, passwordFrom: this.connModal.cloneFrom })
+        });
+        const data = await res.json();
+        if (!res.ok) { this.connModal.error = data.error || 'Failed to save'; return; }
+        this.connModal.open = false;
+        await this.loadConnections();
+        this.showToast(isEdit ? 'Connection updated' : (this.connModal.cloneFrom ? 'Connection cloned' : 'Connection created'));
+      } catch (e) {
+        this.connModal.error = 'Network error, please try again';
+      } finally {
+        this.connModal.saving = false;
+      }
+    },
+    async removeConnection(key) {
+      const ok = await this.askConfirm('Delete connection?', 'This cannot be undone.', { confirmLabel: 'Delete', danger: true });
+      if (!ok) return;
+      await fetch(`/api/connections/${key}`, { method: 'DELETE' });
+      this.selectedKeys = this.selectedKeys.filter(k => k !== key);
+      await this.loadConnections();
+      this.showToast('Connection deleted');
+    },
+
+    // ---- Saved queries ----
+    openQueryModal(query, prefillSql) {
+      this.queryModal = {
+        open: true,
+        id: query ? query.id : null,
+        form: { name: query ? query.name : '', sql: query ? query.sql : (prefillSql || '') },
+        saving: false, error: ''
+      };
+    },
+    async saveQuery() {
+      this.queryModal.saving = true; this.queryModal.error = '';
+      try {
+        const isEdit = Boolean(this.queryModal.id);
+        const url = isEdit ? `/api/queries/${this.queryModal.id}` : '/api/queries';
+        const res = await fetch(url, {
+          method: isEdit ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.queryModal.form)
+        });
+        const data = await res.json();
+        if (!res.ok) { this.queryModal.error = data.error || 'Failed to save'; return; }
+        this.queryModal.open = false;
+        await this.loadQueries();
+        this.showToast(isEdit ? 'Query updated' : 'Query saved');
+      } catch (e) {
+        this.queryModal.error = 'Network error, please try again';
+      } finally {
+        this.queryModal.saving = false;
+      }
+    },
+    async removeQuery(id) {
+      const ok = await this.askConfirm('Delete saved query?', 'This cannot be undone.', { confirmLabel: 'Delete', danger: true });
+      if (!ok) return;
+      await fetch(`/api/queries/${id}`, { method: 'DELETE' });
+      await this.loadQueries();
+      this.showToast('Saved query deleted');
+    },
+
+    // ---- Explore ----
+    async selectExploreConnection(key) {
+      this.exploreConnKey = key;
+      this.exploreDatabase = ''; this.exploreDatabases = [];
+      this.resetExploreObjects();
+      this.exploreError = '';
+      if (!key) return;
+      await this.loadExploreDatabases();
+    },
+    async loadExploreDatabases() {
+      this.exploreLoadingDatabases = true; this.exploreError = '';
+      try {
+        const res = await fetch(`/api/explore/${this.exploreConnKey}/databases`);
+        const data = await res.json();
+        if (!res.ok) { this.exploreError = data.error || 'Failed to load databases'; return; }
+        this.exploreDatabases = data;
+      } catch (e) {
+        this.exploreError = 'Network error, please try again';
+      } finally {
+        this.exploreLoadingDatabases = false;
+      }
+    },
+    async selectExploreDatabase(dbName) {
+      this.exploreDatabase = dbName;
+      this.resetExploreObjects();
+      this.exploreError = '';
+      if (!dbName) return;
+      await this.loadExploreTables();
+    },
+    resetExploreObjects() {
+      this.exploreTables = []; this.exploreRoutines = []; this.exploreTriggers = []; this.exploreEvents = [];
+      this.exploreNav = 'tables'; this.exploreFilter = '';
+      this.exploreTable = ''; this.exploreTableType = ''; this.exploreObject = null;
+      this.exploreIndexes = []; this.exploreDefinition = '';
+      this.exploreRows = []; this.exploreResultColumns = [];
+    },
+    async loadExploreTables() {
+      this.exploreLoadingTables = true; this.exploreError = '';
+      try {
+        const res = await fetch(`/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/objects`);
+        const data = await res.json();
+        if (!res.ok) { this.exploreError = data.error || 'Failed to load objects'; return; }
+        this.exploreTables = data.tables;
+        this.exploreRoutines = data.routines;
+        this.exploreTriggers = data.triggers;
+        this.exploreEvents = data.events;
+      } catch (e) {
+        this.exploreError = 'Network error, please try again';
+      } finally {
+        this.exploreLoadingTables = false;
+      }
+    },
+    filterList(list) {
+      const q = this.exploreFilter.trim().toLowerCase();
+      return q ? list.filter((x) => x.name.toLowerCase().includes(q)) : list;
+    },
+    exploreIsView() {
+      return /VIEW/i.test(this.exploreTableType || '');
+    },
+    objectIcon(kind) {
+      return { view: 'bi-eye', table: 'bi-table', procedure: 'bi-gear', function: 'bi-braces',
+               trigger: 'bi-lightning-charge', event: 'bi-calendar-event' }[kind] || 'bi-box';
+    },
+    eventSchedule(e) {
+      if (e.eventType === 'RECURRING') return `every ${e.intervalValue} ${String(e.intervalField || '').toLowerCase()}`;
+      return e.executeAt ? `at ${new Date(e.executeAt).toLocaleString()}` : 'one-time';
+    },
+    async selectExploreTable(tableName) {
+      const entry = this.exploreTables.find((t) => t.name === tableName);
+      this.exploreObject = null;
+      this.exploreTable = tableName;
+      this.exploreTableType = entry ? entry.type : '';
+      this.exploreIndexes = []; this.exploreDefinition = '';
+      this.explorePage = 1; this.exploreSortCol = ''; this.exploreSortDir = 'asc'; this.exploreView = 'data';
+      await Promise.all([
+        this.loadExploreColumns(),
+        this.loadExploreRows(),
+        this.loadExploreIndexes(),
+        this.loadDefinition(this.exploreIsView() ? 'view' : 'table', tableName)
+      ]);
+    },
+    async loadExploreIndexes() {
+      if (this.exploreIsView()) { this.exploreIndexes = []; return; }
+      try {
+        const res = await fetch(`/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/indexes`);
+        const data = await res.json();
+        this.exploreIndexes = res.ok ? data : [];
+      } catch (e) { this.exploreIndexes = []; }
+    },
+    async loadDefinition(kind, name) {
+      this.exploreDefLoading = true; this.exploreDefinition = '';
+      try {
+        const res = await fetch(`/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/definition/${kind}/${encodeURIComponent(name)}`);
+        const data = await res.json();
+        this.exploreDefinition = res.ok && data.definition ? data.definition : '';
+      } catch (e) { this.exploreDefinition = ''; }
+      finally { this.exploreDefLoading = false; }
+    },
+    // Routines / triggers / events: no data grid, just metadata + definition.
+    async selectExploreObject(kind, name, meta) {
+      this.exploreTable = ''; this.exploreTableType = '';
+      this.exploreObject = { kind, name, meta };
+      await this.loadDefinition(kind, name);
+    },
+    async copyDefinition() {
+      try {
+        await navigator.clipboard.writeText(this.exploreDefinition);
+        this.showToast('Definition copied');
+      } catch (e) {
+        this.showToast('Copy failed — select the text and copy manually', 'error');
+      }
+    },
+    async loadExploreColumns() {
+      try {
+        const res = await fetch(`/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/columns`);
+        const data = await res.json();
+        if (res.ok) { this.exploreColumns = data.columns; this.explorePrimaryKey = data.primaryKey; }
+      } catch (e) { /* surfaced via loadExploreRows already */ }
+    },
+    async loadExploreRows() {
+      if (!this.exploreTable) return;
+      this.exploreLoadingRows = true; this.exploreError = '';
+      try {
+        const params = new URLSearchParams({ page: this.explorePage, pageSize: this.explorePageSize });
+        if (this.exploreSortCol) { params.set('sortCol', this.exploreSortCol); params.set('sortDir', this.exploreSortDir); }
+        const url = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/rows?${params}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!res.ok) { this.exploreError = data.error || 'Failed to load rows'; return; }
+        this.exploreResultColumns = data.columns;
+        this.exploreRows = data.rows;
+        this.exploreTotal = data.total;
+      } catch (e) {
+        this.exploreError = 'Network error, please try again';
+      } finally {
+        this.exploreLoadingRows = false;
+      }
+    },
+    sortByColumn(col) {
+      if (this.exploreSortCol === col) {
+        this.exploreSortDir = this.exploreSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.exploreSortCol = col; this.exploreSortDir = 'asc';
+      }
+      this.explorePage = 1;
+      this.loadExploreRows();
+    },
+    exploreMaxPage() {
+      return Math.max(1, Math.ceil(this.exploreTotal / this.explorePageSize));
+    },
+    changePage(delta) {
+      const next = Math.min(Math.max(1, this.explorePage + delta), this.exploreMaxPage());
+      if (next === this.explorePage) return;
+      this.explorePage = next;
+      this.loadExploreRows();
+    },
+    changePageSize(size) {
+      this.explorePageSize = Number(size);
+      this.explorePage = 1;
+      this.loadExploreRows();
+    },
+    canEditRows() {
+      return !this.exploreIsView() && Array.isArray(this.explorePrimaryKey) && this.explorePrimaryKey.length > 0;
+    },
+    openEditRow(row) {
+      if (!this.canEditRows()) return;
+      const where = {};
+      this.explorePrimaryKey.forEach((pk) => { where[pk] = row[pk]; });
+      this.exploreRowModal = { open: true, mode: 'edit', where, values: { ...row }, saving: false, error: '' };
+    },
+    openInsertRow() {
+      const blank = {};
+      this.exploreResultColumns.forEach((c) => { blank[c] = ''; });
+      this.exploreRowModal = { open: true, mode: 'insert', where: null, values: blank, saving: false, error: '' };
+    },
+    async saveExploreRow() {
+      this.exploreRowModal.saving = true; this.exploreRowModal.error = '';
+      const base = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/rows`;
+      try {
+        let res;
+        if (this.exploreRowModal.mode === 'edit') {
+          res = await fetch(base, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ where: this.exploreRowModal.where, changes: this.exploreRowModal.values })
+          });
+        } else {
+          res = await fetch(base, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ values: this.exploreRowModal.values })
+          });
+        }
+        const data = await res.json();
+        if (!res.ok) { this.exploreRowModal.error = data.error || 'Save failed'; return; }
+        this.exploreRowModal.open = false;
+        await this.loadExploreRows();
+        this.showToast(this.exploreRowModal.mode === 'edit' ? 'Row updated' : 'Row added');
+      } catch (e) {
+        this.exploreRowModal.error = 'Network error, please try again';
+      } finally {
+        this.exploreRowModal.saving = false;
+      }
+    },
+    async deleteExploreRow(row) {
+      if (!this.canEditRows()) return;
+      const ok = await this.askConfirm('Delete this row?', 'This cannot be undone.', { confirmLabel: 'Delete', danger: true });
+      if (!ok) return;
+      const where = {};
+      this.explorePrimaryKey.forEach((pk) => { where[pk] = row[pk]; });
+      try {
+        const base = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/rows`;
+        const res = await fetch(base, {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ where })
+        });
+        const data = await res.json();
+        if (!res.ok) { this.showToast(data.error || 'Delete failed', 'error'); return; }
+        this.showToast('Row deleted');
+        await this.loadExploreRows();
+      } catch (e) {
+        this.showToast('Network error, please try again', 'error');
+      }
+    },
+
+    // ---- CSV export (client-side, from data already loaded) ----
+    csvFieldClient(v) {
+      if (v === null || v === undefined) return '';
+      const str = typeof v === 'object' ? JSON.stringify(v) : String(v);
+      return /[",\n\r]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
+    },
+    downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+    exportStatementCsv(s) {
+      if (!s.columns || !s.rows) return;
+      const lines = [s.columns.map(this.csvFieldClient).join(',')];
+      for (const row of s.rows) lines.push(s.columns.map((c) => this.csvFieldClient(row[c])).join(','));
+      const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+      this.downloadBlob(blob, 'query-result.csv');
+    },
+
+    // ---- Explore: CSV export of a full table (server-streamed download) ----
+    tableExportUrl() {
+      if (!this.exploreConnKey || !this.exploreDatabase || !this.exploreTable) return '#';
+      const params = new URLSearchParams();
+      if (this.exploreSortCol) { params.set('sortCol', this.exploreSortCol); params.set('sortDir', this.exploreSortDir); }
+      const qs = params.toString();
+      const base = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/export.csv`;
+      return qs ? `${base}?${qs}` : base;
+    },
+
+    // ---- Explore: CSV import ----
+    openImportModal() {
+      this.importModal = { open: true, step: 'pick', file: null, previewFields: [], previewRows: [], mapping: {}, truncate: false, imported: 0, failedBatches: 0, running: false, error: '' };
+    },
+    availableTargetColumns() {
+      return this.exploreResultColumns.length ? this.exploreResultColumns : this.exploreColumns.map((c) => c.name);
+    },
+    onImportFileSelected(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      this.importModal.file = file;
+      this.importModal.error = '';
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        preview: 5,
+        complete: (results) => {
+          const fields = results.meta.fields || [];
+          const targetCols = this.availableTargetColumns();
+          const mapping = {};
+          fields.forEach((f) => {
+            const match = targetCols.find((tc) => tc.toLowerCase() === f.toLowerCase());
+            mapping[f] = match || '__skip__';
+          });
+          this.importModal.previewFields = fields;
+          this.importModal.previewRows = results.data;
+          this.importModal.mapping = mapping;
+          this.importModal.step = 'mapping';
+        },
+        error: (err) => { this.importModal.error = 'Failed to read CSV: ' + err.message; }
+      });
+    },
+    async startImport() {
+      if (this.importModal.truncate) {
+        const ok = await this.askConfirm(
+          'Truncate table before import?',
+          `All existing rows in "${this.exploreTable}" will be permanently deleted before the import runs.`,
+          { confirmLabel: 'Truncate & import', danger: true }
+        );
+        if (!ok) return;
+      }
+
+      this.importModal.step = 'importing';
+      this.importModal.running = true;
+      this.importModal.imported = 0;
+      this.importModal.failedBatches = 0;
+      this.importModal.error = '';
+
+      const mapping = this.importModal.mapping;
+      const uniqueTargetCols = [...new Set(Object.values(mapping).filter((v) => v !== '__skip__'))];
+      const BATCH_SIZE = 500;
+      let buffer = [];
+      let isFirstBatch = true;
+
+      const sendBatch = async (rows) => {
+        if (rows.length === 0) return;
+        const mappedRows = rows.map((r) => {
+          const out = {};
+          for (const [csvCol, targetCol] of Object.entries(mapping)) {
+            if (targetCol === '__skip__') continue;
+            out[targetCol] = r[csvCol];
+          }
+          return out;
+        });
+        try {
+          const url = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/import`;
+          const res = await fetch(url, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ columns: uniqueTargetCols, rows: mappedRows, truncate: isFirstBatch && this.importModal.truncate })
+          });
+          const data = await res.json();
+          if (!res.ok) { this.importModal.failedBatches++; this.importModal.error = data.error || 'Import batch failed'; }
+          else { this.importModal.imported += data.affectedRows || mappedRows.length; }
+        } catch (e) {
+          this.importModal.failedBatches++;
+          this.importModal.error = 'Network error during import';
+        }
+        isFirstBatch = false;
+      };
+
+      await new Promise((resolve) => {
+        Papa.parse(this.importModal.file, {
+          header: true,
+          skipEmptyLines: true,
+          worker: false,
+          step: (results, parser) => {
+            buffer.push(results.data);
+            if (buffer.length >= BATCH_SIZE) {
+              parser.pause();
+              const batch = buffer.splice(0);
+              sendBatch(batch).then(() => parser.resume());
+            }
+          },
+          complete: async () => {
+            if (buffer.length) await sendBatch(buffer.splice(0));
+            resolve();
+          },
+          error: (err) => {
+            this.importModal.error = 'Failed to parse CSV: ' + err.message;
+            resolve();
+          }
+        });
+      });
+
+      this.importModal.running = false;
+      this.importModal.step = 'done';
+      await this.loadExploreRows();
+      this.showToast(
+        `Imported ${this.importModal.imported} row(s)` + (this.importModal.failedBatches ? ` — ${this.importModal.failedBatches} batch error(s)` : ''),
+        this.importModal.failedBatches ? 'error' : 'success'
+      );
+    },
+
+    // ---- Explore: Backup / Restore ----
+    backupUrl() {
+      if (!this.exploreConnKey || !this.exploreDatabase) return '#';
+      return `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/backup.tar.gz`;
+    },
+    openRestoreModal() {
+      this.restoreModal = { open: true, file: null, running: false, done: false, progress: { executed: 0, failed: 0 }, errors: [], error: '' };
+    },
+    onRestoreFileSelected(event) {
+      this.restoreModal.file = event.target.files[0] || null;
+    },
+    async startRestore() {
+      if (!this.restoreModal.file) return;
+      const isTarGz = /\.(tar\.gz|tgz|gz)$/i.test(this.restoreModal.file.name);
+      const ok = await this.askConfirm(
+        'Restore this backup?',
+        `This runs the uploaded ${isTarGz ? '.tar.gz' : '.sql'} file against "${this.exploreDatabase}". Existing tables with matching names will be dropped and recreated. This cannot be undone.`,
+        { confirmLabel: 'Restore', danger: true }
+      );
+      if (!ok) return;
+
+      this.restoreModal.running = true;
+      this.restoreModal.error = '';
+      this.restoreModal.progress = { executed: 0, failed: 0 };
+      this.restoreModal.done = false;
+
+      try {
+        const format = isTarGz ? 'targz' : 'sql';
+        const url = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/restore?format=${format}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: this.restoreModal.file
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const evt = JSON.parse(line);
+            if (evt.type === 'progress') this.restoreModal.progress = evt;
+            else if (evt.type === 'done') { this.restoreModal.progress = evt; this.restoreModal.errors = evt.errors || []; this.restoreModal.done = true; }
+            else if (evt.type === 'error') { this.restoreModal.error = evt.error; }
+          }
+        }
+      } catch (e) {
+        this.restoreModal.error = 'Network error during restore';
+      } finally {
+        this.restoreModal.running = false;
+        this.restoreModal.done = true;
+        await this.loadExploreTables();
+        this.showToast(this.restoreModal.error ? 'Restore failed' : 'Restore finished', this.restoreModal.error ? 'error' : 'success');
+      }
+    },
+
+    async logout() {
+      await fetch('/api/logout', { method: 'POST' });
+      window.location.href = '/login';
+    }
+  };
+}
+</script>
+</body>
+</html>
