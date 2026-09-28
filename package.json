@@ -1,0 +1,14 @@
+{
+  "name": "multi-db-client",
+  "version": "1.0.0",
+  "description": "Connect to multiple databases run SQL/Natives commands against them",
+  "main": "server.js",
+  "scripts": {
+    "start": "clear;node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "mysql2": "^3.11.0"
+  }
+}

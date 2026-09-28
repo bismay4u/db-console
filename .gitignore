@@ -1,0 +1,16 @@
+node_modules/
+uploads/
+lancedb/
+logs/
+config/secrets.json
+config/connections.json
+.env
+*.log
+notes.txt
+.DS_Store
+config.js
+todos.txt
+
+
+
+
