@@ -102,6 +102,7 @@ Features include:
 * Error reporting
 * Saved SQL queries
 * Load saved queries directly into Query Runner
+* `USE database_name` switches a connection's current database; it is shown in the connection list and kept for your next runs (per user, in your browser) until you run `USE` again or click the reset button next to it
 
 This is particularly useful when the same query needs to be executed against multiple customer, branch, tenant, or environment databases.
 

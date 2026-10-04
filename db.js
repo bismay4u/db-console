@@ -101,8 +101,9 @@ function closeStreamingConnection(rawConn, failed) {
 // TABLE, CALL, PREPARE, user variables...) could change what the *next*
 // query on that pooled connection does — possibly another user's query on
 // a shared connection — so after such a run the connection is discarded
-// instead of returned to the pool.
-const STATE_SAFE_RE = /^(select|insert|update|delete|replace|show|describe|desc|explain|with|values|table|alter|drop|truncate|rename|analyze|optimize|check|checksum|repair|grant|revoke|commit|rollback|help|do)\b/i;
+// instead of returned to the pool. USE is safe here because runQuery()
+// switches the connection back to its default database afterwards.
+const STATE_SAFE_RE = /^(use|select|insert|update|delete|replace|show|describe|desc|explain|with|values|table|alter|drop|truncate|rename|analyze|optimize|check|checksum|repair|grant|revoke|commit|rollback|help|do)\b/i;
 
 function stripLeadingComments(sql) {
   return String(sql).replace(/^(\s+|--[^\n]*(\n|$)|#[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, '');
@@ -198,20 +199,41 @@ function splitStatements(sqlText) {
   return s.feed(sqlText).concat(s.flush());
 }
 
-async function runQuery(key, sqlText) {
+// Runs `sqlText` on connection `key`.
+//
+// `database` is the database the Query Runner is currently "in" for this
+// connection (after an earlier `USE other_db`); the batch starts there.
+// Returns the database the batch ended in as `currentDatabase`, so a `USE`
+// carries over to the next run. The pooled connection itself is always put
+// back on its configured default database, so nothing leaks to the next
+// user of the pool.
+async function runQuery(key, sqlText, { database } = {}) {
   const statements = splitStatements(sqlText);
   if (statements.length === 0) {
     throw new Error('No SQL statement to execute');
   }
 
   const pool = getPool(key);
+  const defaultDb = store.getConnection(key).database;
   const conn = await pool.getConnection();
   const results = [];
   let ok = true;
-  const discard = statements.some(leavesSessionState);
+  let discard = statements.some(leavesSessionState);
+  let currentDatabase = null;
 
   try {
-    for (const stmt of statements) {
+    if (database && database !== defaultDb) {
+      try {
+        await conn.query(`USE ${esc(database)}`);
+      } catch (err) {
+        // e.g. the database was dropped; run nowhere rather than in the
+        // wrong database.
+        results.push({ sql: `USE ${esc(database)}`, ok: false, error: `Could not switch to database ${database}: ${err.message}`, durationMs: 0 });
+        ok = false;
+      }
+    }
+
+    for (const stmt of ok ? statements : []) {
       const start = Date.now();
       try {
         const [rows, fields] = await conn.query(stmt);
@@ -245,6 +267,14 @@ async function runQuery(key, sqlText) {
         break; // stop at the first failing statement in the batch
       }
     }
+
+    try {
+      const [[row]] = await conn.query('SELECT DATABASE() AS db');
+      currentDatabase = row.db;
+      if (!discard && defaultDb && currentDatabase !== defaultDb) await conn.query(`USE ${esc(defaultDb)}`);
+    } catch (err) {
+      discard = true; // connection is broken, or can't be reset
+    }
   } finally {
     // destroy() closes the connection, which also rolls back any
     // transaction left open; the pool opens a fresh one when needed.
@@ -252,7 +282,7 @@ async function runQuery(key, sqlText) {
     else conn.release();
   }
 
-  return { ok, statements: results };
+  return { ok, statements: results, currentDatabase };
 }
 
 // Test an arbitrary connection config (used for "Test connection" in the UI,

@@ -93,18 +93,26 @@
     border-radius:999px; padding:.05rem .4rem; min-width:1.2rem; text-align:center;
   }
 
-  /* ---- USE-database context bar ---- */
-  .use-db-bar{
-    display:flex; flex-wrap:wrap; align-items:center; gap:.4rem;
-    background:#fbfbfe; border:1px dashed #d7dafc; border-radius:9px;
-    padding:.4rem .6rem; font-size:.79rem; color:var(--muted);
-  }
-  .use-db-bar i{ color:var(--accent); }
+  /* Small label chip (Explore: VIEW, PRIMARY, object kind) */
   .use-db-chip{
     background:var(--accent-soft); color:var(--text); border-radius:7px;
     padding:.15rem .5rem; font-size:.78rem; white-space:nowrap;
   }
   .use-db-chip code{ background:transparent; color:var(--accent); font-weight:600; }
+
+  /* ---- Current database chip (Query Runner connection list & results) ---- */
+  .db-chip{
+    display:inline-flex; align-items:center; gap:.25rem; max-width:100%;
+    background:var(--bg); color:var(--text); border-radius:6px;
+    padding:.05rem .4rem; font-size:.72rem; font-weight:500; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; vertical-align:middle;
+  }
+  .db-chip i{ font-size:.7rem; color:var(--muted); }
+  .db-chip.switched{ background:var(--accent-soft); color:var(--accent); font-weight:600; }
+  .db-chip.switched i{ color:var(--accent); }
+  .conn-row.selected .db-chip:not(.switched){ background:#fff; }
+  .db-reset{ padding:.05rem .3rem; font-size:.75rem; line-height:1; color:var(--muted); border:1px solid transparent; flex-shrink:0; }
+  .db-reset:hover{ color:var(--accent); border-color:#d7dafc; background:#fff; }
 
   .stmt-block{ border:1px solid var(--border); border-radius:9px; padding:.5rem .65rem; background:#fbfbfc; }
   .stmt-block code.sql-preview{ background:transparent; padding:0; }
@@ -341,11 +349,22 @@
                       <input type="checkbox" class="form-check-input" :checked="selectedKeys.includes(c.key)" @click.stop="toggleKey(c.key)">
                       <div class="conn-meta">
                         <div class="conn-label text-truncate" x-text="c.label"></div>
-                        <div class="conn-sub" x-text="c.host + ':' + c.port + ' / ' + c.database"></div>
+                        <div class="conn-sub d-flex align-items-center gap-1">
+                          <span class="db-chip" :class="isSwitched(c) && 'switched'"
+                                :title="isSwitched(c) ? 'Current database (switched with USE) — default is ' + c.database : 'Current database'">
+                            <i class="bi bi-database"></i><span x-text="currentDb(c)"></span>
+                          </span>
+                          <span class="text-truncate" x-text="c.host + ':' + c.port"></span>
+                        </div>
                       </div>
+                      <button class="btn btn-sm db-reset" x-show="isSwitched(c)" :title="'Back to the default database (' + c.database + ')'"
+                              @click.stop="resetCurrentDb(c.key)"><i class="bi bi-arrow-counterclockwise"></i></button>
                       <i class="bi bi-people text-muted" x-show="c.sharedWithMe" :title="'Shared with you by ' + c.owner"></i>
                     </div>
                   </template>
+                </div>
+                <div class="text-muted-sm mt-2" x-show="connections.length">
+                  <i class="bi bi-info-circle me-1"></i>Run <code>USE database_name</code> to switch the selected connections' database; it stays for your next runs.
                 </div>
               </div>
             </template>
@@ -403,17 +422,6 @@
               </button>
             </div>
 
-            <div class="use-db-bar mb-2" x-show="selectedKeys.length">
-              <i class="bi bi-hdd-fill"></i>
-              <span class="text-muted-sm me-1">Running as if <code>USE</code>:</span>
-              <template x-for="c in selectedConnections()" :key="c.key">
-                <span class="use-db-chip"><span class="fw-medium" x-text="c.label"></span>&nbsp;→&nbsp;<code x-text="c.database"></code></span>
-              </template>
-            </div>
-            <div class="text-muted-sm mb-2" x-show="selectedKeys.length === 0">
-              <i class="bi bi-info-circle me-1"></i>Select at least one database above to see its target schema here.
-            </div>
-
             <textarea class="form-control sql-editor" rows="6" x-model="sql" x-ref="sqlEditor"
                       placeholder="SELECT * FROM users LIMIT 10;
 Separate multiple statements with ; — highlight text to run just that part."
@@ -438,6 +446,10 @@ Separate multiple statements with ; — highlight text to run just that part."
               <div class="d-flex justify-content-between align-items-center px-3 py-2" style="border-bottom:1px solid var(--border)">
                 <div class="d-flex align-items-center gap-2">
                   <strong style="font-size:.87rem" x-text="labelFor(r.key)"></strong>
+                  <span class="db-chip" :title="'Ran in database ' + r.ranIn"><i class="bi bi-database"></i><span x-text="r.ranIn"></span></span>
+                  <span class="db-chip switched" x-show="r.currentDatabase && r.currentDatabase !== r.ranIn" title="Now using this database for this connection">
+                    <i class="bi bi-arrow-right"></i><span x-text="r.currentDatabase"></span>
+                  </span>
                   <span class="badge rounded-pill" :class="r.ok ? 'badge-soft-success' : 'badge-soft-danger'" x-text="r.ok ? 'OK' : 'ERROR'"></span>
                   <span class="text-muted-sm" x-show="r.statements && r.statements.length > 1" x-text="r.statements.length + ' statements'"></span>
                 </div>
@@ -1689,6 +1701,7 @@ function app() {
     topError: '',
     testingKey: null,
     history: [],
+    currentDbs: {},               // { [connKey]: db } after USE, if not the connection's default
 
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
     shareModal: { open: false, key: null, label: '', owner: '', all: false, users: [], saving: false, error: '' },
@@ -1773,6 +1786,11 @@ function app() {
       } catch (e) {
         this.history = [];
       }
+      try {
+        this.currentDbs = JSON.parse(localStorage.getItem(this.currentDbKey()) || '{}');
+      } catch (e) {
+        this.currentDbs = {};
+      }
       await Promise.all([this.loadConnections(), this.loadQueries(), this.loadDirectory()]);
     },
 
@@ -1811,6 +1829,9 @@ function app() {
       this.connections = await fetch('/api/connections').then(r => r.json());
       // A connection may have been deleted or unshared since it was selected.
       this.selectedKeys = this.selectedKeys.filter(k => this.connections.some(c => c.key === k));
+      for (const key of Object.keys(this.currentDbs)) {
+        if (!this.connections.some(c => c.key === key)) this.setCurrentDb(key, null);
+      }
     },
     async loadQueries() {
       this.queries = await fetch('/api/queries').then(r => r.json());
@@ -1878,6 +1899,31 @@ function app() {
     labelFor(key) {
       const c = this.connections.find(c => c.key === key);
       return c ? c.label : key;
+    },
+    // ---- Current database per connection (Query Runner) ----
+    // A `USE db` run in the Query Runner switches that connection's current
+    // database for this user; following runs start there. Kept per user in
+    // this browser. Absent = the connection's configured database.
+    currentDbKey() {
+      return 'dbconsole_currentdb:' + this.username;
+    },
+    currentDb(c) {
+      return this.currentDbs[c.key] || c.database;
+    },
+    isSwitched(c) {
+      return Boolean(this.currentDbs[c.key]) && this.currentDbs[c.key] !== c.database;
+    },
+    setCurrentDb(key, database) {
+      const conn = this.connections.find(c => c.key === key);
+      const next = { ...this.currentDbs };
+      if (!conn || !database || database === conn.database) delete next[key];
+      else next[key] = database;
+      this.currentDbs = next;
+      try { localStorage.setItem(this.currentDbKey(), JSON.stringify(next)); } catch (e) { /* storage unavailable */ }
+    },
+    resetCurrentDb(key) {
+      this.setCurrentDb(key, null);
+      this.showToast(`${this.labelFor(key)}: back to ${this.currentDb(this.connections.find(c => c.key === key))}`);
     },
     selectedConnections() {
       return this.connections.filter(c => this.selectedKeys.includes(c.key));
@@ -1966,17 +2012,23 @@ function app() {
       }
 
       const dbLabelsUsed = this.selectedConnections().map(c => c.label);
+      const startDbs = Object.fromEntries(this.selectedConnections().map(c => [c.key, this.currentDb(c)]));
       this.running = true; this.topError = ''; this.results = [];
       try {
         const res = await fetch('/api/query', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dbKeys: this.selectedKeys, sql: sqlToRun })
+          body: JSON.stringify({ dbKeys: this.selectedKeys, sql: sqlToRun, databases: startDbs })
         });
         const data = await res.json();
         if (!res.ok) {
           this.topError = data.error || 'Request failed';
           this.pushHistory(sqlToRun, dbLabelsUsed, false);
         } else {
+          for (const r of data.results) {
+            r.ranIn = startDbs[r.key];
+            // A USE in this run carries over to the next one.
+            if (typeof r.currentDatabase === 'string') this.setCurrentDb(r.key, r.currentDatabase);
+          }
           this.results = data.results;
           this.pushHistory(sqlToRun, dbLabelsUsed, data.results.every(r => r.ok));
         }

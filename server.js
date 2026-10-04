@@ -645,7 +645,9 @@ app.post('/api/explore/:key/:database/restore', requireAuth, async (req, res) =>
 
 // --- Run a SQL command against one or more connections ---
 app.post('/api/query', requireAuth, async (req, res) => {
-  const { dbKeys, sql } = req.body || {};
+  // databases: { [connKey]: dbName } — where each connection currently is
+  // in the Query Runner (after an earlier USE); defaults to its database.
+  const { dbKeys, sql, databases } = req.body || {};
 
   if (!Array.isArray(dbKeys) || dbKeys.length === 0) {
     return res.status(400).json({ error: 'dbKeys must be a non-empty array' });
@@ -660,12 +662,17 @@ app.post('/api/query', requireAuth, async (req, res) => {
     return res.status(403).json({ error: `No access to connection(s): ${denied.join(', ')}` });
   }
 
+  const startDb = (key, i) => {
+    const d = databases && databases[key];
+    return typeof d === 'string' && d ? d : conns[i].database;
+  };
+
   const results = await Promise.all(
     dbKeys.map(async (key, i) => {
       let result;
       try {
-        const { ok, statements } = await db.runQuery(key, sql);
-        result = { key, ok, statements };
+        const { ok, statements, currentDatabase } = await db.runQuery(key, sql, { database: startDb(key, i) });
+        result = { key, ok, statements, currentDatabase };
       } catch (err) {
         result = { key, ok: false, statements: [{ sql, ok: false, error: err.message }] };
       }
@@ -681,7 +688,7 @@ app.post('/api/query', requireAuth, async (req, res) => {
         source: 'runner',
         connKey: key,
         connLabel: conns[i].label,
-        database: conns[i].database,
+        database: startDb(key, i),
         sql,
         type: types.length === 0 ? 'OTHER' : (types.length === 1 ? types[0] : 'MULTI'),
         statementCount: submitted.length,
