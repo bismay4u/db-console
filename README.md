@@ -119,6 +119,9 @@ Manage Database connections directly from the web interface.
 * Store multiple database environments
 * Connection-specific settings
 * Passwords are never returned to the browser after being saved
+* Every connection has an owner
+* Share a connection with specific users, or with everyone
+* Shared users can use a connection but cannot see its password, edit, delete or re-share it
 
 Example:
 
@@ -236,6 +239,76 @@ Saved queries can be:
 * Deleted
 * Loaded directly into Query Runner
 
+Saved queries are private to the user who saved them.
+
+---
+
+### 👥 Users & Roles
+
+DB Console supports multiple users, each with their own login.
+
+| Role      | Can do                                                                                                   |
+| --------- | -------------------------------------------------------------------------------------------------------- |
+| **admin** | Everything: all connections, every user's query log and analytics, user management, Update & Restart    |
+| **user**  | Their own connections plus connections shared with them; only their own query log and analytics         |
+
+* Passwords are stored as salted `scrypt` hashes
+* Admins create, edit, disable and delete users
+* Each user can change their own password
+* Changing a user's password, role or status signs that user out everywhere
+* Deleting a user transfers their connections and saved queries to the admin who deleted them
+* The app always keeps at least one enabled admin
+
+---
+
+### 📜 Query Log
+
+Everything run against a database is logged per user:
+
+* Query Runner runs (one entry per connection)
+* Row inserts, edits and deletes from Explore
+* CSV imports and exports
+* Backups and restores
+* Update & Restart actions
+
+Each entry records the user, time, connection, database, SQL, statement type, duration, rows returned or affected, and any error.
+
+The log can be filtered by user, connection, source, statement type, status, date range and free text, and any Query Runner entry can be loaded back into the runner.
+
+Users see their own entries; admins see everyone's.
+
+---
+
+### 📈 Analytics
+
+Usage over the last 7, 30 or 90 days:
+
+* Total queries, error rate, average duration, active users
+* Queries per day
+* Breakdown by user, connection, statement type and source
+* Slowest queries
+
+Admins can view all users or a single user; users see their own activity.
+
+---
+
+### 🔄 Update & Restart (admin)
+
+Keep a deployment up to date from the browser:
+
+* Shows the running branch, commit, local changes, PM2 process and uptime
+* **Check for updates** fetches from git and lists incoming commits
+* **Update & restart** runs `git pull --ff-only`, runs `npm install --omit=dev` only when `package.json` / `package-lock.json` changed, then restarts through PM2 (`pm2 reload` in cluster mode, `pm2 restart` otherwise)
+* **Restart only** restarts the PM2 process without updating
+
+Requirements:
+
+* The app directory is a git clone with an upstream branch configured
+* The app runs under PM2 (see `ecosystem_copy.config.js`) — without PM2 the update still pulls the code, but you restart manually
+* The OS user running the app can run `git`, `npm` and `pm2`
+
+Sessions are kept in memory, so a restart signs everyone out.
+
 ---
 
 ## Lightweight by Design
@@ -347,11 +420,19 @@ Example:
 
 ```javascript
 module.exports = {
-    APP_USER: "admin",
-    APP_PASS: "change-me",
-    SESSION_SECRET: "replace-with-a-long-random-secret"
+    appAuth: {
+        username: "admin",
+        password: "change-me"
+    },
+    sessionSecret: "replace-with-a-long-random-secret"
 };
 ```
+
+`appAuth` is only used the **first time** the app starts, to create the first admin account in `data/users.json`. After that, users and passwords are managed from the **Users** screen, and changing `appAuth` has no effect.
+
+If you lose access to every admin account, stop the app, delete `data/users.json` and start it again: the admin from `appAuth` is recreated.
+
+Connections and saved queries created before multi-user support are assigned to that first admin automatically.
 
 ### Database Connections
 
@@ -386,11 +467,15 @@ By default:
 
 ```text
 data/
-├── connections.json
-└── queries.json
+├── connections.json     # connections, with owner and sharing
+├── queries.json         # saved queries, per user
+├── users.json           # users and password hashes (not committed)
+└── query_log.jsonl      # query log, one JSON entry per line (not committed)
 ```
 
 are used for persistent application data.
+
+The query log rotates at 20 MB to `query_log.1.jsonl`; one previous file is kept.
 
 This makes the application easy to:
 
@@ -415,6 +500,21 @@ POST /api/login
 
 ```http
 POST /api/login
+POST /api/logout
+GET  /api/session
+POST /api/account/password
+```
+
+---
+
+## Users
+
+```http
+GET    /api/users/directory       # any user: active users, for sharing
+GET    /api/users                 # admin
+POST   /api/users                 # admin
+PUT    /api/users/:username       # admin
+DELETE /api/users/:username       # admin
 ```
 
 ---
@@ -429,7 +529,11 @@ DELETE /api/connections/:key
 
 POST /api/connections/:key/test
 POST /api/connections/test
+
+PUT  /api/connections/:key/sharing    # { "sharedWith": ["alice"] } or ["*"]
 ```
+
+Only the owner or an admin can edit, delete or share a connection.
 
 ---
 
@@ -548,6 +652,28 @@ Example request:
 ```
 
 The query is executed against the selected connections in parallel.
+
+---
+
+## Query Log & Analytics
+
+```http
+GET /api/logs?user=&conn=&source=&type=&status=ok|error&q=&from=&to=&limit=&offset=
+GET /api/analytics?days=30&user=
+```
+
+`user` is honoured for admins only; other users always get their own data.
+
+---
+
+## Update & Restart (admin)
+
+```http
+GET  /api/system/status
+POST /api/system/check
+POST /api/system/update     # streams newline-delimited JSON progress
+POST /api/system/restart
+```
 
 ---
 
@@ -786,16 +912,21 @@ db-console/
 ├── server.js
 ├── config.js
 ├── db.js
+├── store.js        # users, connections, saved queries
+├── querylog.js     # query log & analytics
+├── system.js       # update & restart (git, npm, pm2)
+├── ecosystem_copy.config.js
 ├── package.json
 │
 ├── public/
 │   ├── index.html
-│   ├── css/
-│   └── js/
+│   └── login.html
 │
 ├── data/
 │   ├── connections.json
-│   └── queries.json
+│   ├── queries.json
+│   ├── users.json
+│   └── query_log.jsonl
 │
 └── ...
 ```
@@ -845,11 +976,11 @@ The project is intentionally small, but potential future improvements include:
 ### Security
 
 * [ ] Encrypted database credentials
-* [ ] Role-based access control
-* [ ] Multiple application users
-* [ ] Password hashing
+* [x] Role-based access control
+* [x] Multiple application users
+* [x] Password hashing
 * [ ] MFA / 2FA
-* [ ] Audit logging
+* [x] Audit logging
 * [ ] Login rate limiting
 * [ ] Configurable session expiration
 * [ ] Secret-manager integrations
@@ -872,7 +1003,7 @@ The project is intentionally small, but potential future improvements include:
 * [ ] SQL editor improvements
 * [ ] Syntax highlighting
 * [ ] SQL autocomplete
-* [ ] Query history
+* [x] Query history
 * [ ] Query execution plan
 * [ ] Explain visualisation
 * [ ] Query cancellation

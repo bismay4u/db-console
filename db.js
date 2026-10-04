@@ -34,7 +34,8 @@ function getPool(key) {
     throw new Error(`Unknown connection: ${key}`);
   }
 
-  const configStr = JSON.stringify(conn);
+  // Only settings that affect the pool count; sharing/ownership changes don't.
+  const configStr = JSON.stringify(poolConfig(conn));
   const cached = poolCache.get(key);
   if (cached && cached.configStr === configStr) {
     return cached.pool;
@@ -211,6 +212,7 @@ async function testConnection(conn) {
 module.exports = {
   getPool,
   dropPool,
+  splitStatements,
   runQuery,
   testConnection,
   listDatabases,

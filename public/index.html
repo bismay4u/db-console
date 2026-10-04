@@ -193,6 +193,34 @@
   .toast-item.error{ background:var(--danger); }
   .toast-item.success{ background:#16794f; }
 
+  /* ---- Sidebar sections / roles ---- */
+  .nav-section-label{ font-size:.66rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:600; padding:.8rem .6rem .3rem; }
+  .role-badge{ font-size:.62rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; border-radius:999px; padding:.08rem .45rem; background:var(--bg); color:var(--muted); }
+  .role-badge.admin{ background:var(--accent-soft); color:var(--accent); }
+  .share-chip{ font-size:.68rem; font-weight:600; border-radius:999px; padding:.1rem .45rem; background:var(--bg); color:var(--muted); white-space:nowrap; }
+  .share-chip.mine{ background:#e7f8f1; color:var(--success); }
+
+  /* ---- Analytics ---- */
+  .stat-tile{ padding:.85rem 1rem; }
+  .stat-tile .stat-label{ color:var(--muted); font-size:.74rem; font-weight:500; }
+  .stat-tile .stat-value{ font-size:1.45rem; font-weight:700; line-height:1.2; margin-top:.15rem; font-variant-numeric:tabular-nums; }
+  .stat-tile .stat-sub{ color:var(--muted); font-size:.72rem; }
+  .day-chart{ position:relative; display:flex; align-items:flex-end; gap:2px; height:160px; border-bottom:1px solid var(--border); }
+  .day-col{ flex:1; height:100%; display:flex; align-items:flex-end; cursor:default; min-width:0; }
+  .day-bar{ width:100%; background:var(--accent); border-radius:4px 4px 0 0; min-height:0; transition:opacity .1s; }
+  .day-col:hover .day-bar{ opacity:.75; }
+  .day-axis{ display:flex; justify-content:space-between; color:var(--muted); font-size:.7rem; margin-top:.3rem; }
+  .chart-tip{ position:absolute; top:-.4rem; transform:translate(-50%,-100%); background:#1f2430; color:#fff; font-size:.74rem; padding:.35rem .55rem; border-radius:7px; white-space:nowrap; pointer-events:none; z-index:2; }
+  .inline-bar{ height:6px; border-radius:3px; background:var(--accent); opacity:.8; }
+  .inline-bar-track{ background:var(--bg); border-radius:3px; width:100%; min-width:60px; }
+  .log-sql{ font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size:.76rem; white-space:pre-wrap; word-break:break-word; max-height:4.8em; overflow:hidden; }
+
+  /* ---- System update log ---- */
+  .console-out{ background:#1f2430; color:#d7dbe6; border-radius:10px; padding:.75rem; font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size:.76rem; white-space:pre-wrap; max-height:320px; overflow:auto; margin:0; }
+  .console-out .step{ color:#9fb0ff; font-weight:600; }
+  .console-out .err{ color:#ff9a9d; }
+  .console-out .ok{ color:#7fe0b4; }
+
   /* ---- Confirm dialog (reuses modal-backdrop-custom) ---- */
   .confirm-panel{ background:#fff; border-radius:14px; width:100%; max-width:360px; box-shadow:0 20px 60px rgba(20,20,43,.25); padding:1.25rem; }
 </style>
@@ -218,10 +246,37 @@
     <a class="nav-link-custom" :class="activeTab === 'queries' && 'active'" @click="activeTab = 'queries'">
       <i class="bi bi-bookmark-star"></i> Saved Queries
     </a>
+    <a class="nav-link-custom" :class="activeTab === 'logs' && 'active'" @click="openTab('logs')">
+      <i class="bi bi-journal-text"></i> Query Log
+    </a>
+    <a class="nav-link-custom" :class="activeTab === 'analytics' && 'active'" @click="openTab('analytics')">
+      <i class="bi bi-bar-chart-line"></i> Analytics
+    </a>
+
+    <template x-if="isAdmin()">
+      <div>
+        <div class="nav-section-label">Admin</div>
+        <a class="nav-link-custom" :class="activeTab === 'users' && 'active'" @click="openTab('users')">
+          <i class="bi bi-people"></i> Users
+        </a>
+        <a class="nav-link-custom" :class="activeTab === 'system' && 'active'" @click="openTab('system')">
+          <i class="bi bi-arrow-repeat"></i> Update &amp; Restart
+        </a>
+      </div>
+    </template>
   </nav>
 
   <div class="sidebar-footer">
-    <div class="text-muted-sm mb-2 px-1" x-text="username"></div>
+    <div class="d-flex align-items-center justify-content-between gap-1 mb-2 px-1">
+      <div class="text-truncate" style="line-height:1.2">
+        <div class="fw-medium text-truncate" style="font-size:.83rem" x-text="displayName || username"></div>
+        <div class="text-muted-sm text-truncate" x-text="username"></div>
+      </div>
+      <span class="role-badge" :class="role === 'admin' && 'admin'" x-text="role"></span>
+    </div>
+    <a class="nav-link-custom" @click="openPasswordModal">
+      <i class="bi bi-key"></i> Change password
+    </a>
     <a class="nav-link-custom" @click="logout">
       <i class="bi bi-box-arrow-left"></i> Logout
     </a>
@@ -240,6 +295,9 @@
       </button>
       <button class="btn btn-accent btn-sm" x-show="activeTab==='queries'" @click="openQueryModal()">
         <i class="bi bi-plus-lg me-1"></i> New saved query
+      </button>
+      <button class="btn btn-accent btn-sm" x-show="activeTab==='users'" @click="openUserModal()">
+        <i class="bi bi-person-plus me-1"></i> New user
       </button>
     </div>
   </div>
@@ -280,6 +338,7 @@
                         <div class="conn-label text-truncate" x-text="c.label"></div>
                         <div class="conn-sub" x-text="c.host + ':' + c.port + ' / ' + c.database"></div>
                       </div>
+                      <i class="bi bi-people text-muted" x-show="c.sharedWithMe" :title="'Shared with you by ' + c.owner"></i>
                     </div>
                   </template>
                 </div>
@@ -764,7 +823,7 @@ Separate multiple statements with ; — highlight text to run just that part."
           <table class="table table-modern mb-0">
             <thead>
               <tr>
-                <th>Label</th><th>Host</th><th>Database</th><th>User</th><th class="text-end">Actions</th>
+                <th>Label</th><th>Host</th><th>Database</th><th>User</th><th>Owner</th><th>Access</th><th class="text-end">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -774,19 +833,26 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <td x-text="c.host + ':' + c.port"></td>
                   <td x-text="c.database"></td>
                   <td x-text="c.user"></td>
-                  <td class="text-end">
+                  <td class="text-muted-sm" x-text="c.owner === username ? 'You' : userLabel(c.owner)"></td>
+                  <td><span class="share-chip" :class="c.canManage && 'mine'" x-text="accessLabel(c)"></span></td>
+                  <td class="text-end text-nowrap">
                     <button class="btn btn-sm btn-outline-soft me-1" @click="testSaved(c.key)">
                       <span x-show="testingKey === c.key" class="spinner-border spinner-border-sm"></span>
                       <span x-show="testingKey !== c.key"><i class="bi bi-plug"></i> Test</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-soft me-1" title="Edit" @click="openConnModal(c)"><i class="bi bi-pencil"></i></button>
+                    <template x-if="c.canManage">
+                      <span>
+                        <button class="btn btn-sm btn-outline-soft me-1" title="Share" @click="openShareModal(c)"><i class="bi bi-share"></i></button>
+                        <button class="btn btn-sm btn-outline-soft me-1" title="Edit" @click="openConnModal(c)"><i class="bi bi-pencil"></i></button>
+                      </span>
+                    </template>
                     <button class="btn btn-sm btn-outline-soft me-1" title="Clone to edit" @click="openConnModal(c, true)"><i class="bi bi-copy"></i></button>
-                    <button class="btn btn-sm btn-ghost-danger" @click="removeConnection(c.key)"><i class="bi bi-trash"></i></button>
+                    <button class="btn btn-sm btn-ghost-danger" x-show="c.canManage" @click="removeConnection(c.key)"><i class="bi bi-trash"></i></button>
                   </td>
                 </tr>
               </template>
               <tr x-show="connections.length === 0">
-                <td colspan="5" class="text-center text-muted-sm py-4">No connections yet. Click "New connection" to add one.</td>
+                <td colspan="7" class="text-center text-muted-sm py-4">No connections yet. Click "New connection" to add one.</td>
               </tr>
             </tbody>
           </table>
@@ -826,6 +892,361 @@ Separate multiple statements with ; — highlight text to run just that part."
       </div>
     </template>
 
+
+    <!-- ================= QUERY LOG ================= -->
+    <template x-if="activeTab === 'logs'">
+      <div>
+        <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-end gap-2">
+          <div x-show="isAdmin()">
+            <label class="text-muted-sm d-block mb-1">User</label>
+            <select class="form-select form-select-sm" x-model="logFilters.user" @change="loadLogs(true)">
+              <option value="">All users</option>
+              <template x-for="u in directory" :key="u.username"><option :value="u.username" x-text="u.username"></option></template>
+            </select>
+          </div>
+          <div>
+            <label class="text-muted-sm d-block mb-1">Connection</label>
+            <select class="form-select form-select-sm" x-model="logFilters.conn" @change="loadLogs(true)">
+              <option value="">All</option>
+              <template x-for="c in connections" :key="c.key"><option :value="c.key" x-text="c.label"></option></template>
+            </select>
+          </div>
+          <div>
+            <label class="text-muted-sm d-block mb-1">Source</label>
+            <select class="form-select form-select-sm" x-model="logFilters.source" @change="loadLogs(true)">
+              <option value="">All</option>
+              <template x-for="src in logSources" :key="src"><option :value="src" x-text="src"></option></template>
+            </select>
+          </div>
+          <div>
+            <label class="text-muted-sm d-block mb-1">Type</label>
+            <select class="form-select form-select-sm" x-model="logFilters.type" @change="loadLogs(true)">
+              <option value="">All</option>
+              <template x-for="t in logTypes" :key="t"><option :value="t" x-text="t"></option></template>
+            </select>
+          </div>
+          <div>
+            <label class="text-muted-sm d-block mb-1">Status</label>
+            <select class="form-select form-select-sm" x-model="logFilters.status" @change="loadLogs(true)">
+              <option value="">All</option><option value="ok">OK</option><option value="error">Error</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-muted-sm d-block mb-1">From</label>
+            <input type="date" class="form-control form-control-sm" x-model="logFilters.from" @change="loadLogs(true)">
+          </div>
+          <div>
+            <label class="text-muted-sm d-block mb-1">To</label>
+            <input type="date" class="form-control form-control-sm" x-model="logFilters.to" @change="loadLogs(true)">
+          </div>
+          <div class="flex-grow-1" style="min-width:180px">
+            <label class="text-muted-sm d-block mb-1">Search</label>
+            <input type="search" class="form-control form-control-sm" placeholder="SQL, error or connection…" x-model="logFilters.q" @input.debounce.400ms="loadLogs(true)">
+          </div>
+          <button class="btn btn-outline-soft btn-sm" @click="resetLogFilters" title="Reset filters"><i class="bi bi-x-circle"></i></button>
+          <button class="btn btn-outline-soft btn-sm" @click="loadLogs()" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
+        </div>
+
+        <div class="card-surface">
+          <div class="d-flex justify-content-between align-items-center px-3 py-2" style="border-bottom:1px solid var(--border)">
+            <span class="text-muted-sm">
+              <span x-show="logsLoading" class="spinner-border spinner-border-sm me-1"></span>
+              <span x-text="logTotal"></span> entr<span x-text="logTotal === 1 ? 'y' : 'ies'"></span>
+              <span x-show="!isAdmin()">· only your own activity is shown</span>
+            </span>
+            <div class="d-flex align-items-center gap-2" x-show="logTotal > logPageSize">
+              <button class="btn btn-outline-soft btn-sm" :disabled="logPage === 1" @click="logPage--; loadLogs()"><i class="bi bi-chevron-left"></i></button>
+              <span class="text-muted-sm" x-text="'Page ' + logPage + ' of ' + Math.max(1, Math.ceil(logTotal / logPageSize))"></span>
+              <button class="btn btn-outline-soft btn-sm" :disabled="logPage * logPageSize >= logTotal" @click="logPage++; loadLogs()"><i class="bi bi-chevron-right"></i></button>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-modern mb-0">
+              <thead>
+                <tr><th>Time</th><th>User</th><th>Connection</th><th>Source</th><th>Type</th><th style="width:40%">SQL</th><th class="text-end">Duration</th><th class="text-end">Result</th><th></th></tr>
+              </thead>
+              <tbody>
+                <template x-for="e in logs" :key="e.id">
+                  <tr>
+                    <td class="text-muted-sm text-nowrap" :title="new Date(e.ts).toLocaleString()" x-text="formatTs(e.ts)"></td>
+                    <td class="text-nowrap" x-text="e.username"></td>
+                    <td class="text-nowrap">
+                      <span x-text="e.connLabel || '—'"></span>
+                      <div class="text-muted-sm" x-show="e.database" x-text="e.database"></div>
+                    </td>
+                    <td><span class="share-chip" x-text="e.source"></span></td>
+                    <td class="text-muted-sm" x-text="e.type"></td>
+                    <td>
+                      <div class="log-sql" x-text="e.sql"></div>
+                      <div class="text-danger small mt-1" x-show="e.error" x-text="e.error"></div>
+                    </td>
+                    <td class="text-end text-muted-sm text-nowrap" x-text="e.durationMs === null ? '—' : e.durationMs + ' ms'"></td>
+                    <td class="text-end text-nowrap">
+                      <span class="badge rounded-pill" :class="e.ok ? 'badge-soft-success' : 'badge-soft-danger'" x-text="e.ok ? 'OK' : 'ERROR'"></span>
+                      <div class="text-muted-sm" x-show="e.rowCount !== null" x-text="e.rowCount + ' row(s)'"></div>
+                      <div class="text-muted-sm" x-show="e.affectedRows !== null" x-text="e.affectedRows + ' affected'"></div>
+                    </td>
+                    <td class="text-end">
+                      <button class="btn btn-sm btn-outline-soft" x-show="e.source === 'runner'" title="Load into Query Runner" @click="loadLogIntoRunner(e)"><i class="bi bi-play"></i></button>
+                    </td>
+                  </tr>
+                </template>
+                <tr x-show="!logsLoading && logs.length === 0">
+                  <td colspan="9" class="text-center text-muted-sm py-4">No log entries match these filters.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ================= ANALYTICS ================= -->
+    <template x-if="activeTab === 'analytics'">
+      <div>
+        <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-center gap-2">
+          <div class="tab-switch" style="width:auto">
+            <template x-for="d in [7, 30, 90]" :key="d">
+              <button class="tab-btn px-3 text-nowrap" :class="analyticsDays === d && 'active'" @click="analyticsDays = d; loadAnalytics()" x-text="'Last ' + d + ' days'"></button>
+            </template>
+          </div>
+          <select class="form-select form-select-sm" style="width:auto" x-show="isAdmin()" x-model="analyticsUser" @change="loadAnalytics()">
+            <option value="">All users</option>
+            <template x-for="u in directory" :key="u.username"><option :value="u.username" x-text="u.username"></option></template>
+          </select>
+          <span class="text-muted-sm" x-show="!isAdmin()">Your activity</span>
+          <span x-show="analyticsLoading" class="spinner-border spinner-border-sm text-muted"></span>
+          <button class="btn btn-outline-soft btn-sm ms-auto" @click="loadAnalytics()" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
+        </div>
+
+        <template x-if="analytics">
+          <div>
+            <div class="row g-2 mb-2">
+              <div class="col-6 col-lg-3"><div class="card-surface stat-tile">
+                <div class="stat-label">Queries run</div>
+                <div class="stat-value" x-text="analytics.total.toLocaleString()"></div>
+                <div class="stat-sub" x-text="'in the last ' + analytics.days + ' days'"></div>
+              </div></div>
+              <div class="col-6 col-lg-3"><div class="card-surface stat-tile">
+                <div class="stat-label">Error rate</div>
+                <div class="stat-value" x-text="(analytics.errorRate * 100).toFixed(1) + '%'"></div>
+                <div class="stat-sub" x-text="analytics.errors.toLocaleString() + ' failed'"></div>
+              </div></div>
+              <div class="col-6 col-lg-3"><div class="card-surface stat-tile">
+                <div class="stat-label">Average duration</div>
+                <div class="stat-value" x-text="analytics.avgMs === null ? '—' : analytics.avgMs + ' ms'"></div>
+                <div class="stat-sub">per logged action</div>
+              </div></div>
+              <div class="col-6 col-lg-3"><div class="card-surface stat-tile">
+                <div class="stat-label">Active users</div>
+                <div class="stat-value" x-text="analytics.activeUsers"></div>
+                <div class="stat-sub">ran at least one query</div>
+              </div></div>
+            </div>
+
+            <div class="card-surface p-3 mb-2">
+              <div class="section-title">Queries per day</div>
+              <div class="day-chart" @mouseleave="chartHover = null" role="img" :aria-label="'Queries per day over the last ' + analytics.days + ' days'">
+                <template x-for="(d, i) in analytics.byDay" :key="d.date">
+                  <div class="day-col" @mouseenter="chartHover = { i, d }">
+                    <div class="day-bar" :style="'height:' + barHeight(d.count) + '%'"></div>
+                  </div>
+                </template>
+                <template x-if="chartHover">
+                  <div class="chart-tip" :style="tipStyle(chartHover.i)">
+                    <div class="fw-semibold" x-text="formatDay(chartHover.d.date)"></div>
+                    <div x-text="chartHover.d.count + ' quer' + (chartHover.d.count === 1 ? 'y' : 'ies') + (chartHover.d.errors ? ' · ' + chartHover.d.errors + ' failed' : '')"></div>
+                  </div>
+                </template>
+              </div>
+              <div class="day-axis">
+                <span x-text="formatDay(analytics.byDay[0].date)"></span>
+                <span x-text="'peak ' + maxDayCount() + '/day'"></span>
+                <span x-text="formatDay(analytics.byDay[analytics.byDay.length - 1].date)"></span>
+              </div>
+            </div>
+
+            <div class="row g-2">
+              <template x-for="panel in analyticsPanels()" :key="panel.title">
+                <div class="col-lg-6">
+                  <div class="card-surface h-100">
+                    <div class="section-title px-3 pt-3" x-text="panel.title"></div>
+                    <div class="table-responsive">
+                      <table class="table table-modern mb-0">
+                        <thead><tr><th x-text="panel.col"></th><th style="width:30%"></th><th class="text-end">Runs</th><th class="text-end">Errors</th><th class="text-end">Avg</th></tr></thead>
+                        <tbody>
+                          <template x-for="g in panel.rows" :key="g.key">
+                            <tr>
+                              <td class="fw-medium text-truncate" style="max-width:180px" x-text="g.label"></td>
+                              <td><div class="inline-bar-track"><div class="inline-bar" :style="'width:' + (g.count / panel.rows[0].count * 100) + '%'"></div></div></td>
+                              <td class="text-end" x-text="g.count.toLocaleString()"></td>
+                              <td class="text-end" :class="g.errors && 'text-danger'" x-text="g.errors"></td>
+                              <td class="text-end text-muted-sm" x-text="g.avgMs === null ? '—' : g.avgMs + ' ms'"></td>
+                            </tr>
+                          </template>
+                          <tr x-show="panel.rows.length === 0"><td colspan="5" class="text-center text-muted-sm py-3">No activity in this period.</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <div class="col-12">
+                <div class="card-surface">
+                  <div class="section-title px-3 pt-3">Slowest queries</div>
+                  <div class="table-responsive">
+                    <table class="table table-modern mb-0">
+                      <thead><tr><th>Time</th><th>User</th><th>Connection</th><th style="width:50%">SQL</th><th class="text-end">Duration</th></tr></thead>
+                      <tbody>
+                        <template x-for="e in analytics.slowest" :key="e.id">
+                          <tr>
+                            <td class="text-muted-sm text-nowrap" x-text="formatTs(e.ts)"></td>
+                            <td x-text="e.username"></td>
+                            <td x-text="e.connLabel || '—'"></td>
+                            <td><div class="log-sql" x-text="e.sql"></div></td>
+                            <td class="text-end fw-medium text-nowrap" x-text="e.durationMs + ' ms'"></td>
+                          </tr>
+                        </template>
+                        <tr x-show="analytics.slowest.length === 0"><td colspan="5" class="text-center text-muted-sm py-3">No timed queries in this period.</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </template>
+
+    <!-- ================= USERS (admin) ================= -->
+    <template x-if="activeTab === 'users' && isAdmin()">
+      <div class="card-surface">
+        <div class="table-responsive">
+          <table class="table table-modern mb-0">
+            <thead>
+              <tr><th>User</th><th>Role</th><th>Status</th><th>Connections owned</th><th>Last login</th><th class="text-end">Actions</th></tr>
+            </thead>
+            <tbody>
+              <template x-for="u in users" :key="u.username">
+                <tr>
+                  <td>
+                    <div class="fw-medium" x-text="u.displayName"></div>
+                    <div class="text-muted-sm" x-text="u.username + (u.username === username ? ' (you)' : '')"></div>
+                  </td>
+                  <td><span class="role-badge" :class="u.role === 'admin' && 'admin'" x-text="u.role"></span></td>
+                  <td><span class="badge rounded-pill" :class="u.disabled ? 'badge-soft-danger' : 'badge-soft-success'" x-text="u.disabled ? 'Disabled' : 'Active'"></span></td>
+                  <td x-text="u.connectionCount"></td>
+                  <td class="text-muted-sm" x-text="u.lastLoginAt ? formatTs(u.lastLoginAt) : 'Never'"></td>
+                  <td class="text-end text-nowrap">
+                    <button class="btn btn-sm btn-outline-soft me-1" title="View activity" @click="viewUserActivity(u.username)"><i class="bi bi-journal-text"></i></button>
+                    <button class="btn btn-sm btn-outline-soft me-1" title="Edit" @click="openUserModal(u)"><i class="bi bi-pencil"></i></button>
+                    <button class="btn btn-sm btn-ghost-danger" title="Delete" x-show="u.username !== username" @click="removeUser(u)"><i class="bi bi-trash"></i></button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+
+    <!-- ================= UPDATE & RESTART (admin) ================= -->
+    <template x-if="activeTab === 'system' && isAdmin()">
+      <div class="row g-2">
+        <div class="col-lg-5">
+          <div class="card-surface p-3 mb-2">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <div class="section-title mb-0">Running version</div>
+              <button class="btn btn-outline-soft btn-sm" @click="loadSystemStatus" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
+            </div>
+            <template x-if="!sysStatus"><div class="text-muted-sm"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div></template>
+            <template x-if="sysStatus">
+              <div>
+                <template x-if="!sysStatus.git.available">
+                  <div class="alert alert-warning py-2 small mb-2" x-text="'Git: ' + sysStatus.git.error"></div>
+                </template>
+                <template x-if="sysStatus.git.available">
+                  <table class="table table-sm mb-2" style="font-size:.83rem">
+                    <tbody>
+                      <tr><td class="text-muted-sm">Branch</td><td><code x-text="sysStatus.git.branch"></code> <span class="text-muted-sm" x-show="sysStatus.git.upstream" x-text="'→ ' + sysStatus.git.upstream"></span></td></tr>
+                      <tr><td class="text-muted-sm">Commit</td><td><code x-text="sysStatus.git.commit"></code> <span x-text="sysStatus.git.subject"></span></td></tr>
+                      <tr><td class="text-muted-sm">Committed</td><td x-text="formatTs(sysStatus.git.date) + ' by ' + sysStatus.git.author"></td></tr>
+                      <tr><td class="text-muted-sm">Local changes</td><td x-text="sysStatus.git.changedFiles.length ? sysStatus.git.changedFiles.length + ' file(s)' : 'None'"></td></tr>
+                    </tbody>
+                  </table>
+                </template>
+                <table class="table table-sm mb-0" style="font-size:.83rem">
+                  <tbody>
+                    <tr><td class="text-muted-sm">PM2</td><td>
+                      <span x-show="sysStatus.pm2.managed" x-text="sysStatus.pm2.name + ' (id ' + sysStatus.pm2.id + ', ' + (sysStatus.pm2.execMode || 'fork') + ')'"></span>
+                      <span class="text-danger" x-show="!sysStatus.pm2.managed">Not running under PM2</span>
+                    </td></tr>
+                    <tr><td class="text-muted-sm">Node.js</td><td x-text="sysStatus.node + ' · ' + sysStatus.platform"></td></tr>
+                    <tr><td class="text-muted-sm">Uptime</td><td x-text="formatUptime(sysStatus.uptimeSec)"></td></tr>
+                  </tbody>
+                </table>
+                <details class="mt-2" x-show="sysStatus.git.available && sysStatus.git.changedFiles.length">
+                  <summary class="text-muted-sm">Locally changed files</summary>
+                  <pre class="console-out mt-1" x-text="sysStatus.git.changedFiles.join('\n')"></pre>
+                  <div class="text-muted-sm mt-1">Local changes only block an update if the incoming commits touch the same files.</div>
+                </details>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="col-lg-7">
+          <div class="card-surface p-3 mb-2">
+            <div class="section-title">Update from git</div>
+            <p class="text-muted-sm mb-2">
+              Fetches the tracked branch, fast-forwards with <code>git pull --ff-only</code>, runs <code>npm install</code> only if
+              dependencies changed, then restarts the app through PM2. Everyone is signed out by the restart.
+            </p>
+            <div class="d-flex flex-wrap gap-2 mb-2">
+              <button class="btn btn-outline-soft btn-sm" @click="checkUpdates" :disabled="sysChecking || sysUpdating">
+                <span x-show="sysChecking" class="spinner-border spinner-border-sm me-1"></span>
+                <i class="bi bi-cloud-download me-1" x-show="!sysChecking"></i> Check for updates
+              </button>
+              <button class="btn btn-accent btn-sm" @click="runUpdate" :disabled="sysUpdating || sysRestarting">
+                <span x-show="sysUpdating" class="spinner-border spinner-border-sm me-1"></span>
+                <i class="bi bi-arrow-repeat me-1" x-show="!sysUpdating"></i> Update &amp; restart
+              </button>
+              <button class="btn btn-outline-soft btn-sm" @click="restartApp" :disabled="sysUpdating || sysRestarting || !(sysStatus && sysStatus.pm2.managed)">
+                <span x-show="sysRestarting" class="spinner-border spinner-border-sm me-1"></span>
+                <i class="bi bi-bootstrap-reboot me-1" x-show="!sysRestarting"></i> Restart only
+              </button>
+            </div>
+
+            <template x-if="sysCheck">
+              <div class="mb-2">
+                <div class="alert py-2 small mb-1" :class="!sysCheck.ok ? 'alert-danger' : (sysCheck.behind ? 'alert-info' : 'alert-success')">
+                  <span x-show="!sysCheck.ok" x-text="sysCheck.error"></span>
+                  <span x-show="sysCheck.ok && !sysCheck.behind"><i class="bi bi-check-circle me-1"></i>Already up to date.</span>
+                  <span x-show="sysCheck.ok && sysCheck.behind" x-text="sysCheck.behind + ' new commit(s) available' + (sysCheck.ahead ? ' · ' + sysCheck.ahead + ' local commit(s) not on the remote — the fast-forward will fail' : '')"></span>
+                </div>
+                <div x-show="sysCheck.ok && sysCheck.incoming && sysCheck.incoming.length" style="max-height:180px; overflow-y:auto">
+                  <template x-for="c in (sysCheck.incoming || [])" :key="c.hash">
+                    <div class="d-flex gap-2 small py-1" style="border-bottom:1px solid var(--border)">
+                      <code x-text="c.hash"></code><span class="flex-grow-1" x-text="c.subject"></span><span class="text-muted-sm text-nowrap" x-text="c.author"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+
+            <template x-if="sysLog.length">
+              <pre class="console-out"><template x-for="(l, i) in sysLog" :key="i"><div :class="l.cls" x-text="l.text"></div></template></pre>
+            </template>
+            <div class="text-muted-sm mt-2" x-show="sysWaiting">
+              <span class="spinner-border spinner-border-sm me-1"></span>Waiting for the app to come back…
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
   </div>
 </div>
 
@@ -859,7 +1280,8 @@ Separate multiple statements with ; — highlight text to run just that part."
           <label class="form-label small fw-medium">
             Password
             <span class="text-muted-sm" x-show="connModal.key">(leave blank to keep current)</span>
-            <span class="text-muted-sm" x-show="connModal.cloneFrom">(leave blank to reuse the original's)</span>
+            <span class="text-muted-sm" x-show="connModal.cloneFrom && connModal.cloneCanReuse">(leave blank to reuse the original's)</span>
+            <span class="text-muted-sm" x-show="connModal.cloneFrom && !connModal.cloneCanReuse">(required — shared connections don't lend their password)</span>
           </label>
           <input type="password" class="form-control" x-model="connModal.form.password">
         </div>
@@ -872,7 +1294,7 @@ Separate multiple statements with ; — highlight text to run just that part."
       <div class="mt-3" x-show="connModal.testResult">
         <div class="alert py-2 small mb-0" :class="connModal.testResult && connModal.testResult.ok ? 'alert-success' : 'alert-danger'">
           <span x-show="connModal.testResult && connModal.testResult.ok"><i class="bi bi-check-circle me-1"></i> Connected successfully</span>
-          <span x-show="connModal.testResult && !connModal.testResult.ok" x-text="connModal.testResult.error"></span>
+          <span x-show="connModal.testResult && !connModal.testResult.ok" x-text="connModal.testResult && connModal.testResult.error"></span>
         </div>
       </div>
     </div>
@@ -1071,6 +1493,130 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
+<!-- ===== Share Connection Modal ===== -->
+<div class="modal-backdrop-custom" x-show="shareModal.open" x-cloak @click.self="shareModal.open = false">
+  <div class="modal-panel">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold">Share <span x-text="shareModal.label"></span></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="shareModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="shareModal.error" x-text="shareModal.error"></div>
+      <p class="text-muted-sm">
+        People you share with can run queries, browse, export, back up and restore with this connection.
+        They can't see its password, edit it, delete it or share it further.
+      </p>
+      <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" id="shareAll" x-model="shareModal.all">
+        <label class="form-check-label fw-medium small" for="shareAll">Share with every user (including future users)</label>
+      </div>
+      <div x-show="!shareModal.all">
+        <div class="text-muted-sm mb-1">Or pick users:</div>
+        <div class="d-flex flex-column gap-1" style="max-height:260px; overflow-y:auto">
+          <template x-for="u in directory.filter(u => u.username !== shareModal.owner)" :key="u.username">
+            <label class="conn-row" :class="shareModal.users.includes(u.username) && 'selected'">
+              <input type="checkbox" class="form-check-input" :value="u.username" x-model="shareModal.users">
+              <div class="conn-meta">
+                <div class="conn-label" x-text="u.displayName"></div>
+                <div class="conn-sub" x-text="u.username"></div>
+              </div>
+            </label>
+          </template>
+          <div class="text-muted-sm" x-show="directory.filter(u => u.username !== shareModal.owner).length === 0">There are no other users yet.</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="shareModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveSharing" :disabled="shareModal.saving">
+        <span x-show="shareModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        Save
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== User Modal (admin) ===== -->
+<div class="modal-backdrop-custom" x-show="userModal.open" x-cloak @click.self="userModal.open = false">
+  <div class="modal-panel">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="userModal.editing ? 'Edit user' : 'New user'"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="userModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="userModal.error" x-text="userModal.error"></div>
+      <div class="row g-2">
+        <div class="col-6">
+          <label class="form-label small fw-medium">Username</label>
+          <input type="text" class="form-control" x-model="userModal.form.username" :disabled="userModal.editing" placeholder="jane.doe" autocomplete="off">
+        </div>
+        <div class="col-6">
+          <label class="form-label small fw-medium">Display name</label>
+          <input type="text" class="form-control" x-model="userModal.form.displayName" placeholder="Jane Doe">
+        </div>
+        <div class="col-6">
+          <label class="form-label small fw-medium">Role</label>
+          <select class="form-select" x-model="userModal.form.role">
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div class="col-6">
+          <label class="form-label small fw-medium">
+            Password <span class="text-muted-sm" x-show="userModal.editing">(blank = unchanged)</span>
+          </label>
+          <input type="password" class="form-control" x-model="userModal.form.password" autocomplete="new-password" placeholder="At least 8 characters">
+        </div>
+        <div class="col-12" x-show="userModal.editing">
+          <div class="form-check form-switch mt-1">
+            <input class="form-check-input" type="checkbox" id="userDisabled" x-model="userModal.form.disabled">
+            <label class="form-check-label small" for="userDisabled">Disabled (can't sign in)</label>
+          </div>
+        </div>
+      </div>
+      <div class="text-muted-sm mt-3">
+        <strong>Admins</strong> see and manage every connection, all users' query logs, users, and Update &amp; Restart.
+        <strong>Users</strong> see their own connections plus those shared with them, and only their own activity.
+        Changing a password, role or status signs that user out.
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="userModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveUser" :disabled="userModal.saving">
+        <span x-show="userModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        Save
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Change Password Modal ===== -->
+<div class="modal-backdrop-custom" x-show="passwordModal.open" x-cloak @click.self="passwordModal.open = false">
+  <div class="modal-panel">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold">Change your password</h2>
+      <button class="btn btn-sm btn-outline-soft" @click="passwordModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="passwordModal.error" x-text="passwordModal.error"></div>
+      <label class="form-label small fw-medium">Current password</label>
+      <input type="password" class="form-control mb-2" x-model="passwordModal.current" autocomplete="current-password">
+      <label class="form-label small fw-medium">New password</label>
+      <input type="password" class="form-control mb-2" x-model="passwordModal.next" autocomplete="new-password" placeholder="At least 8 characters">
+      <label class="form-label small fw-medium">Confirm new password</label>
+      <input type="password" class="form-control" x-model="passwordModal.confirm" autocomplete="new-password" @keydown.enter="savePassword">
+      <div class="text-muted-sm mt-2">Your other signed-in sessions will be signed out.</div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="passwordModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="savePassword" :disabled="passwordModal.saving">
+        <span x-show="passwordModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        Change password
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Toasts ===== -->
 <div class="toast-stack">
   <template x-for="t in toasts" :key="t.id">
@@ -1099,6 +1645,9 @@ function app() {
     activeTab: 'runner',
     leftTab: 'databases',
     username: '',
+    displayName: '',
+    role: '',
+    directory: [],                // [{ username, displayName }] of active users
 
     connections: [],
     queries: [],
@@ -1112,7 +1661,35 @@ function app() {
     testingKey: null,
     history: [],
 
-    connModal: { open: false, key: null, cloneFrom: null, form: {}, testResult: null, testing: false, saving: false, error: '' },
+    connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
+    shareModal: { open: false, key: null, label: '', owner: '', all: false, users: [], saving: false, error: '' },
+    userModal: { open: false, editing: false, form: {}, saving: false, error: '' },
+    passwordModal: { open: false, current: '', next: '', confirm: '', saving: false, error: '' },
+
+    // ---- Query log & analytics ----
+    logs: [],
+    logTotal: 0,
+    logPage: 1,
+    logPageSize: 100,
+    logsLoading: false,
+    logFilters: { user: '', conn: '', source: '', type: '', status: '', from: '', to: '', q: '' },
+    logSources: ['runner', 'explore', 'import', 'export', 'backup', 'restore', 'system'],
+    logTypes: ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'DDL', 'SHOW', 'MULTI', 'OTHER'],
+    analytics: null,
+    analyticsDays: 30,
+    analyticsUser: '',
+    analyticsLoading: false,
+    chartHover: null,
+
+    // ---- Admin ----
+    users: [],
+    sysStatus: null,
+    sysCheck: null,
+    sysChecking: false,
+    sysUpdating: false,
+    sysRestarting: false,
+    sysWaiting: false,
+    sysLog: [],
     queryModal: { open: false, id: null, form: {}, saving: false, error: '' },
 
     toasts: [],
@@ -1156,23 +1733,44 @@ function app() {
       const sess = await fetch('/api/session').then(r => r.json());
       if (!sess.authenticated) { window.location.href = '/login'; return; }
       this.username = sess.username;
+      this.displayName = sess.displayName;
+      this.role = sess.role;
       try {
         this.history = JSON.parse(localStorage.getItem('dbconsole_history') || '[]');
       } catch (e) {
         this.history = [];
       }
-      await Promise.all([this.loadConnections(), this.loadQueries()]);
+      await Promise.all([this.loadConnections(), this.loadQueries(), this.loadDirectory()]);
+    },
+
+    isAdmin() {
+      return this.role === 'admin';
+    },
+    // Switches tab and loads that tab's data.
+    openTab(tab) {
+      this.activeTab = tab;
+      if (tab === 'logs') this.loadLogs(true);
+      if (tab === 'analytics') this.loadAnalytics();
+      if (tab === 'users') this.loadUsers();
+      if (tab === 'system') { this.sysCheck = null; this.loadSystemStatus(); }
     },
 
     pageTitle() {
-      return { runner: 'Query Runner', explore: 'Explore', connections: 'Connections', queries: 'Saved Queries' }[this.activeTab];
+      return {
+        runner: 'Query Runner', explore: 'Explore', connections: 'Connections', queries: 'Saved Queries',
+        logs: 'Query Log', analytics: 'Analytics', users: 'Users', system: 'Update & Restart'
+      }[this.activeTab];
     },
     pageSubtitle() {
       return {
         runner: 'Run SQL across one or more databases — separate statements with ; or highlight text to run just that part',
         explore: 'Browse databases, tables and rows with clicks — writing SQL is a last resort here',
         connections: 'Manage the databases this tool can connect to',
-        queries: 'Reusable SQL snippets you can load into the runner'
+        queries: 'Your reusable SQL snippets — saved queries are private to you',
+        logs: this.isAdmin() ? 'Everything run against a database, by every user' : 'Everything you have run against a database',
+        analytics: this.isAdmin() ? 'Usage across all users and connections' : 'Your usage over time',
+        users: 'Who can sign in, and what they can do',
+        system: 'Pull the latest version from git and restart through PM2'
       }[this.activeTab];
     },
 
@@ -1181,6 +1779,32 @@ function app() {
     },
     async loadQueries() {
       this.queries = await fetch('/api/queries').then(r => r.json());
+    },
+    async loadDirectory() {
+      this.directory = await fetch('/api/users/directory').then(r => r.json());
+    },
+    userLabel(username) {
+      const u = this.directory.find(u => u.username === username);
+      return u ? u.displayName : username;
+    },
+    accessLabel(c) {
+      if (c.sharedWithMe) return 'Shared with you';
+      if (!c.sharedWith || c.sharedWith.length === 0) return 'Private';
+      if (c.sharedWith.includes('*')) return 'Everyone';
+      return 'Shared · ' + c.sharedWith.length;
+    },
+    formatTs(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      const sameDay = d.toDateString() === new Date().toDateString();
+      return sameDay ? d.toLocaleTimeString() : d.toLocaleString();
+    },
+    formatDay(date) {
+      return new Date(date + 'T00:00:00Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    },
+    formatUptime(sec) {
+      const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+      return (d ? d + 'd ' : '') + (h ? h + 'h ' : '') + m + 'm';
     },
 
     showToast(message, type = 'success') {
@@ -1337,6 +1961,7 @@ function app() {
         open: true,
         key: conn && !clone ? conn.key : null,
         cloneFrom: conn && clone ? conn.key : null,
+        cloneCanReuse: Boolean(conn && clone && conn.canManage),
         form: fromConn,
         testResult: null, testing: false, saving: false, error: ''
       };
@@ -1859,6 +2484,291 @@ function app() {
         await this.loadExploreTables();
         this.showToast(this.restoreModal.error ? 'Restore failed' : 'Restore finished', this.restoreModal.error ? 'error' : 'success');
       }
+    },
+
+    // ---- Sharing ----
+    openShareModal(conn) {
+      const shared = conn.sharedWith || [];
+      this.shareModal = {
+        open: true, key: conn.key, label: conn.label, owner: conn.owner,
+        all: shared.includes('*'), users: shared.filter(u => u !== '*'),
+        saving: false, error: ''
+      };
+      this.loadDirectory();
+    },
+    async saveSharing() {
+      this.shareModal.saving = true; this.shareModal.error = '';
+      try {
+        const res = await fetch(`/api/connections/${this.shareModal.key}/sharing`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sharedWith: this.shareModal.all ? ['*'] : this.shareModal.users })
+        });
+        const data = await res.json();
+        if (!res.ok) { this.shareModal.error = data.error || 'Failed to save'; return; }
+        this.shareModal.open = false;
+        await this.loadConnections();
+        this.showToast('Sharing updated');
+      } catch (e) {
+        this.shareModal.error = 'Network error, please try again';
+      } finally {
+        this.shareModal.saving = false;
+      }
+    },
+
+    // ---- Own password ----
+    openPasswordModal() {
+      this.passwordModal = { open: true, current: '', next: '', confirm: '', saving: false, error: '' };
+    },
+    async savePassword() {
+      const m = this.passwordModal;
+      if (m.next !== m.confirm) { m.error = 'The new passwords do not match'; return; }
+      m.saving = true; m.error = '';
+      try {
+        const res = await fetch('/api/account/password', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentPassword: m.current, newPassword: m.next })
+        });
+        const data = await res.json();
+        if (!res.ok) { m.error = data.error || 'Failed to change password'; return; }
+        m.open = false;
+        this.showToast('Password changed');
+      } catch (e) {
+        m.error = 'Network error, please try again';
+      } finally {
+        m.saving = false;
+      }
+    },
+
+    // ---- Query log ----
+    async loadLogs(resetPage = false) {
+      if (resetPage) this.logPage = 1;
+      this.logsLoading = true;
+      try {
+        const params = new URLSearchParams({ limit: this.logPageSize, offset: (this.logPage - 1) * this.logPageSize });
+        for (const [k, v] of Object.entries(this.logFilters)) if (v) params.set(k, v);
+        if (this.logFilters.from) params.set('from', new Date(this.logFilters.from + 'T00:00:00').toISOString());
+        if (this.logFilters.to) params.set('to', new Date(new Date(this.logFilters.to + 'T00:00:00').getTime() + 86400000).toISOString());
+        const res = await fetch('/api/logs?' + params);
+        const data = await res.json();
+        if (!res.ok) { this.showToast(data.error || 'Failed to load log', 'error'); return; }
+        this.logs = data.entries;
+        this.logTotal = data.total;
+      } finally {
+        this.logsLoading = false;
+      }
+    },
+    resetLogFilters() {
+      this.logFilters = { user: '', conn: '', source: '', type: '', status: '', from: '', to: '', q: '' };
+      this.loadLogs(true);
+    },
+    loadLogIntoRunner(e) {
+      this.sql = e.sql;
+      if (e.connKey && this.connections.some(c => c.key === e.connKey)) this.selectedKeys = [e.connKey];
+      this.activeTab = 'runner';
+    },
+    viewUserActivity(username) {
+      this.logFilters = { user: username, conn: '', source: '', type: '', status: '', from: '', to: '', q: '' };
+      this.activeTab = 'logs';
+      this.loadLogs(true);
+    },
+
+    // ---- Analytics ----
+    async loadAnalytics() {
+      this.analyticsLoading = true; this.chartHover = null;
+      try {
+        const params = new URLSearchParams({ days: this.analyticsDays });
+        if (this.analyticsUser) params.set('user', this.analyticsUser);
+        const res = await fetch('/api/analytics?' + params);
+        const data = await res.json();
+        if (!res.ok) { this.showToast(data.error || 'Failed to load analytics', 'error'); return; }
+        this.analytics = data;
+      } finally {
+        this.analyticsLoading = false;
+      }
+    },
+    maxDayCount() {
+      return this.analytics ? Math.max(0, ...this.analytics.byDay.map(d => d.count)) : 0;
+    },
+    // Keeps the tooltip inside the chart near either edge.
+    tipStyle(i) {
+      const pct = (i + 0.5) / this.analytics.byDay.length * 100;
+      const shift = pct > 85 ? '-100%' : (pct < 15 ? '0%' : '-50%');
+      return `left:${pct}%; transform:translate(${shift}, -100%)`;
+    },
+    barHeight(count) {
+      const max = this.maxDayCount();
+      return max ? (count / max) * 100 : 0;
+    },
+    analyticsPanels() {
+      const a = this.analytics;
+      const panels = [];
+      if (this.isAdmin() && !this.analyticsUser) panels.push({ title: 'By user', col: 'User', rows: a.byUser });
+      panels.push({ title: 'By connection', col: 'Connection', rows: a.byConnection });
+      panels.push({ title: 'By statement type', col: 'Type', rows: a.byType });
+      panels.push({ title: 'By source', col: 'Source', rows: a.bySource });
+      return panels;
+    },
+
+    // ---- Users (admin) ----
+    async loadUsers() {
+      const res = await fetch('/api/users');
+      if (res.ok) this.users = await res.json();
+    },
+    openUserModal(user) {
+      this.userModal = {
+        open: true,
+        editing: Boolean(user),
+        form: user
+          ? { username: user.username, displayName: user.displayName, role: user.role, disabled: user.disabled, password: '' }
+          : { username: '', displayName: '', role: 'user', disabled: false, password: '' },
+        saving: false, error: ''
+      };
+    },
+    async saveUser() {
+      const m = this.userModal;
+      m.saving = true; m.error = '';
+      try {
+        const { username, displayName, role, disabled, password } = m.form;
+        const res = await fetch(m.editing ? `/api/users/${encodeURIComponent(username)}` : '/api/users', {
+          method: m.editing ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(m.editing ? { displayName, role, disabled, password: password || undefined } : { username, displayName, role, password })
+        });
+        const data = await res.json();
+        if (!res.ok) { m.error = data.error || 'Failed to save'; return; }
+        m.open = false;
+        // Changing your own role/status ends your session.
+        if (username === this.username) {
+          const sess = await fetch('/api/session').then(r => r.json());
+          if (!sess.authenticated) { window.location.href = '/login'; return; }
+          this.displayName = sess.displayName; this.role = sess.role;
+        }
+        await Promise.all([this.loadUsers(), this.loadDirectory()]);
+        this.showToast(m.editing ? 'User updated' : 'User created');
+      } catch (e) {
+        m.error = 'Network error, please try again';
+      } finally {
+        m.saving = false;
+      }
+    },
+    async removeUser(user) {
+      const ok = await this.askConfirm(
+        `Delete ${user.username}?`,
+        `Their connections and saved queries will be transferred to you. Their query log entries are kept.`,
+        { confirmLabel: 'Delete', danger: true }
+      );
+      if (!ok) return;
+      const res = await fetch(`/api/users/${encodeURIComponent(user.username)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) { this.showToast(data.error || 'Failed to delete user', 'error'); return; }
+      await Promise.all([this.loadUsers(), this.loadDirectory(), this.loadConnections(), this.loadQueries()]);
+      this.showToast('User deleted');
+    },
+
+    // ---- Update & restart (admin) ----
+    async loadSystemStatus() {
+      const res = await fetch('/api/system/status');
+      if (res.ok) this.sysStatus = await res.json();
+    },
+    async checkUpdates() {
+      this.sysChecking = true;
+      try {
+        this.sysCheck = await fetch('/api/system/check', { method: 'POST' }).then(r => r.json());
+      } catch (e) {
+        this.sysCheck = { ok: false, error: 'Network error' };
+      } finally {
+        this.sysChecking = false;
+      }
+    },
+    async runUpdate() {
+      const ok = await this.askConfirm(
+        'Update and restart?',
+        'This pulls the latest code from git and restarts the app. Everyone will be signed out, and running queries will be cut off.',
+        { confirmLabel: 'Update & restart', danger: false }
+      );
+      if (!ok) return;
+      this.sysUpdating = true; this.sysLog = [];
+      let restarting = false;
+      try {
+        const res = await fetch('/api/system/update', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ restart: true })
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          this.sysLog.push({ cls: 'err', text: data.error || 'Update failed' });
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const evt = JSON.parse(line);
+            if (evt.type === 'step') this.sysLog.push({ cls: 'step', text: '$ ' + evt.name });
+            else if (evt.type === 'log') this.sysLog.push({ cls: '', text: evt.text });
+            else if (evt.type === 'error') this.sysLog.push({ cls: 'err', text: '✗ ' + evt.error });
+            else if (evt.type === 'done') {
+              restarting = evt.restarting;
+              this.sysLog.push({
+                cls: 'ok',
+                text: evt.updated
+                  ? `✓ Updated ${evt.from.slice(0, 7)} → ${evt.to.slice(0, 7)}${evt.restarting ? ', restarting…' : ''}`
+                  : '✓ Already up to date — nothing to restart'
+              });
+            }
+          }
+        }
+      } catch (e) {
+        this.sysLog.push({ cls: 'err', text: 'Connection lost during update' });
+      } finally {
+        this.sysUpdating = false;
+      }
+      if (restarting) await this.waitForRestart();
+      else await this.loadSystemStatus();
+    },
+    async restartApp() {
+      const ok = await this.askConfirm('Restart the app?', 'Everyone will be signed out, and running queries will be cut off.', { confirmLabel: 'Restart', danger: false });
+      if (!ok) return;
+      this.sysRestarting = true;
+      try {
+        const res = await fetch('/api/system/restart', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { this.showToast(data.error || 'Restart failed', 'error'); return; }
+        await this.waitForRestart();
+      } finally {
+        this.sysRestarting = false;
+      }
+    },
+    // Polls until the restarted app answers again. Sessions live in memory,
+    // so the restart signs everyone out and we end up on the login page.
+    async waitForRestart() {
+      this.sysWaiting = true;
+      const started = Date.now();
+      await new Promise(r => setTimeout(r, 2500));
+      while (Date.now() - started < 120000) {
+        try {
+          const sess = await fetch('/api/session', { cache: 'no-store' }).then(r => r.json());
+          if (!sess.authenticated) { window.location.href = '/login'; return; }
+          // Still signed in: the old process may not have stopped yet.
+          const st = await fetch('/api/system/status').then(r => r.json());
+          if (this.sysStatus && st.uptimeSec < this.sysStatus.uptimeSec) {
+            this.sysStatus = st; this.sysWaiting = false;
+            this.showToast('App restarted');
+            return;
+          }
+        } catch (e) {
+          // app is down while it restarts
+        }
+        await new Promise(r => setTimeout(r, 1500));
+      }
+      this.sysWaiting = false;
+      this.showToast('The app did not come back within 2 minutes — check PM2 on the server', 'error');
     },
 
     async logout() {

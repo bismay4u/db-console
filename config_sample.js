@@ -5,7 +5,9 @@
 // first time the app runs (if data/connections.json doesn't exist yet).
 
 module.exports = {
-  // --- Fixed credentials to log into the web UI itself ---
+  // --- First admin account ---
+  // Only used the first time the app starts, to create the first admin in
+  // data/users.json. After that, manage users from the Users screen.
   appAuth: {
     username: process.env.APP_USER || 'admin',
     password: process.env.APP_PASS || 'admin123!'

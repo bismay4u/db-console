@@ -14,3 +14,7 @@ todos.txt
 
 
 
+
+# Runtime data written by the app (password hashes, query history)
+data/users.json
+data/query_log*.jsonl
