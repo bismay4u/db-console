@@ -975,16 +975,18 @@ A typical installation looks like:
 ```text
 db-console/
 │
-├── server.js
+├── server.js             # Express app: routes, auth, access control
 ├── config.js
-├── db.js
-├── store.js        # users, connections, saved queries
-├── datadir.js      # data directory, atomic writes, cross-process lock
-├── sessionstore.js # file-based session store (shared by cluster workers)
-├── querylog.js     # query log & analytics
-├── system.js       # update & restart (git, npm, pm2)
 ├── ecosystem_copy.config.js
 ├── package.json
+│
+├── api/
+│   ├── db.js             # MySQL pools, queries, explore, CSV, backup/restore
+│   ├── store.js          # users, connections, saved queries
+│   ├── datadir.js        # data directory, atomic writes, cross-process lock
+│   ├── sessionstore.js   # file-based session store (shared by cluster workers)
+│   ├── querylog.js       # query log & analytics
+│   └── system.js         # update & restart (git, npm, pm2)
 │
 ├── public/
 │   ├── index.html

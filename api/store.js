@@ -30,7 +30,7 @@ function ensureStore() {
     // Seed from config.js on first run, if it has a "databases" array.
     let seed = [];
     try {
-      const config = require('./config');
+      const config = require('../config');
       if (Array.isArray(config.databases)) {
         seed = config.databases.map((d) => ({
           key: d.key,
@@ -58,7 +58,7 @@ function ensureStore() {
     let username = 'admin';
     let password = 'admin123!';
     try {
-      const config = require('./config');
+      const config = require('../config');
       if (config.appAuth) {
         username = config.appAuth.username || username;
         password = config.appAuth.password || password;

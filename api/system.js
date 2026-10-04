@@ -16,7 +16,8 @@ const path = require('path');
 const { execFile, spawn } = require('child_process');
 const { DATA_DIR, ensureDir, FILE_MODE } = require('./datadir');
 
-const APP_DIR = __dirname;
+// git, npm and pm2 run in the app root (this file lives in api/).
+const APP_DIR = path.join(__dirname, '..');
 const IS_WIN = process.platform === 'win32';
 const UPDATE_LOCK = path.join(DATA_DIR, '.update.lock');
 const UPDATE_LOCK_STALE_MS = 1000 * 60 * 15;

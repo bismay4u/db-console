@@ -4,12 +4,12 @@ const express = require('express');
 const session = require('express-session');
 
 const config = require('./config');
-const store = require('./store');
-const db = require('./db');
-const querylog = require('./querylog');
-const system = require('./system');
-const FileSessionStore = require('./sessionstore');
-const { DATA_DIR, readJson, writeJson, withLock } = require('./datadir');
+const store = require('./api/store');
+const db = require('./api/db');
+const querylog = require('./api/querylog');
+const system = require('./api/system');
+const FileSessionStore = require('./api/sessionstore');
+const { DATA_DIR, readJson, writeJson, withLock } = require('./api/datadir');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -508,7 +508,7 @@ app.get('/api/explore/:key/:database/:table/rows', requireAuth, async (req, res)
 });
 
 // Row edits are logged as a readable summary (not the exact SQL, which is
-// built with placeholders in db.js).
+// built with placeholders in api/db.js).
 async function loggedRowAction(req, res, { sql, type, status = 200, run }) {
   const start = Date.now();
   try {

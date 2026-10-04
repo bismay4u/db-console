@@ -15,15 +15,18 @@
 const fs = require('fs');
 const path = require('path');
 
+// This file lives in api/; the app root is one level up.
+const APP_ROOT = path.join(__dirname, '..');
+
 function resolveDataDir() {
   if (process.env.DATA_DIR) return path.resolve(process.env.DATA_DIR);
   try {
-    const config = require('./config');
-    if (config.dataDir) return path.resolve(__dirname, config.dataDir);
+    const config = require('../config');
+    if (config.dataDir) return path.resolve(APP_ROOT, config.dataDir);
   } catch (e) {
     // no config.js yet
   }
-  return path.join(__dirname, 'data');
+  return path.join(APP_ROOT, 'data');
 }
 
 const DATA_DIR = resolveDataDir();
