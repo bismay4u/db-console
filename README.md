@@ -51,17 +51,17 @@ Browse Database servers through a structured interface.
 
 * Browse all databases on a connection
 * Browse tables and views
-* View table data
+* View table data (**Data** tab)
 * Pagination
 * Column sorting
-* View table structure
-* View columns, types and keys
-* View indexes
-* View table DDL
+* Search across all columns
+* Adminer-style filters: column (or any column) + operator (`=`, `≠`, `<`, `>`, contains, starts/ends with, `LIKE`, `REGEXP`, `IN`, `IS NULL`...) + value, combined with AND; applied on the server, and used by CSV export too
+* View table structure (**Structure** tab): columns, types, keys and the table DDL
 * View `SHOW CREATE` definitions
+* **Indexes** tab: list, create, edit and drop indexes (PRIMARY, UNIQUE, INDEX, FULLTEXT, SPATIAL; multiple columns, optional prefix lengths). The exact `ALTER TABLE` is shown before it runs; editing an index is a single `DROP` + `ADD` statement, so it either fully applies or not at all
 * Add rows
-* Edit rows
-* Delete rows
+* Edit and delete rows from the row's left-hand actions; delete always asks for confirmation
+* Select rows and delete them in bulk
 * Primary-key aware editing
 * Read-only handling for tables without a primary key
 * View definitions
@@ -642,6 +642,7 @@ page
 pageSize
 sortCol
 sortDir
+filters   JSON array of { "col": "<column or *>", "op": "<operator>", "value": "..." }
 ```
 
 Modify rows:
@@ -651,6 +652,15 @@ POST   /api/explore/:key/:database/:table/rows
 PUT    /api/explore/:key/:database/:table/rows
 DELETE /api/explore/:key/:database/:table/rows
 ```
+
+Indexes:
+
+```http
+GET  /api/explore/:key/:database/:table/indexes
+POST /api/explore/:key/:database/:table/indexes
+```
+
+`POST` body: `{ "drop": "<index name>", "add": { "kind": "INDEX|UNIQUE|PRIMARY|FULLTEXT|SPATIAL", "name": "...", "columns": [{ "column": "...", "length": 10 }] }, "preview": true }` — `drop` and `add` together edit an index; `preview` returns the SQL without running it.
 
 ---
 

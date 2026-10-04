@@ -135,6 +135,19 @@
   .index-chip.primary{ background:var(--accent-soft); border-color:#d7dafc; color:var(--accent); }
   .index-chip.primary .idx-cols{ color:var(--accent); opacity:.8; }
 
+  /* ---- Explore data grid ---- */
+  .row-actions{ position:sticky; left:0; background:var(--card); z-index:1; white-space:nowrap; width:1%; }
+  thead .row-actions{ z-index:2; }
+  .row-actions .btn{ padding:.1rem .35rem; font-size:.78rem; margin-left:.15rem; }
+  .row-actions .form-check-input{ margin:0 .2rem 0 0; vertical-align:middle; }
+  .table-modern tbody tr:hover .row-actions{ background:var(--bg); }
+  .table-modern tbody tr.row-selected, .table-modern tbody tr.row-selected .row-actions{ background:var(--accent-soft); }
+  .cell-null{ color:var(--muted); font-style:italic; }
+  .index-kind{ font-size:.68rem; font-weight:700; letter-spacing:.03em; border-radius:999px; padding:.12rem .5rem; background:var(--bg); color:var(--muted); }
+  .index-kind.kind-primary{ background:var(--accent-soft); color:var(--accent); }
+  .index-kind.kind-unique{ background:#e7f8f1; color:var(--success); }
+  .index-kind.kind-fulltext, .index-kind.kind-spatial{ background:#fff4e5; color:#a35a00; }
+
   /* ---- Connection row picker ---- */
   .conn-row{
     display:flex; align-items:center; gap:.55rem;
@@ -661,66 +674,100 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <div class="tab-switch" style="width:auto">
                     <button class="tab-btn" :class="exploreView==='data' && 'active'" @click="exploreView='data'">Data</button>
                     <button class="tab-btn" :class="exploreView==='structure' && 'active'" @click="exploreView='structure'">Structure</button>
+                    <button class="tab-btn" x-show="!exploreIsView()" :class="exploreView==='indexes' && 'active'" @click="exploreView='indexes'">
+                      Indexes <span class="tab-count" x-show="exploreIndexes.length" x-text="exploreIndexes.length"></span>
+                    </button>
                   </div>
                 </div>
+                <div class="d-flex align-items-center gap-2" x-show="exploreView==='indexes'">
+                  <button class="btn btn-accent btn-sm" @click="openIndexModal()"><i class="bi bi-plus-lg me-1"></i>Add index</button>
+                </div>
                 <div class="d-flex align-items-center gap-2" x-show="exploreView==='data'">
-                  <button class="btn btn-outline-soft btn-sm" @click="loadExploreRows"><i class="bi bi-arrow-clockwise"></i></button>
-                  <a class="btn btn-outline-soft btn-sm" :href="tableExportUrl()" target="_blank"><i class="bi bi-download me-1"></i>Export CSV</a>
+                  <button class="btn btn-outline-soft btn-sm" @click="loadExploreRows" title="Reload"><i class="bi bi-arrow-clockwise"></i></button>
+                  <a class="btn btn-outline-soft btn-sm" :href="tableExportUrl()" target="_blank" :title="exploreFiltersActive() ? 'Exports the rows matching the current search/filters' : 'Exports the whole table'"><i class="bi bi-download me-1"></i>Export CSV</a>
                   <button class="btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal"><i class="bi bi-upload me-1"></i>Import CSV</button>
                   <button class="btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow"><i class="bi bi-plus-lg me-1"></i>Add row</button>
                 </div>
               </div>
 
-              <!-- Index summary, visible as soon as a table is selected -->
-              <div class="card-surface px-2 py-2 mb-2 d-flex flex-wrap align-items-center gap-1" x-show="exploreView==='data' && exploreIndexes.length">
-                <span class="text-muted-sm me-1"><i class="bi bi-diagram-2 me-1"></i>Indexes</span>
-                <template x-for="ix in exploreIndexes" :key="ix.name">
-                  <span class="index-chip" :class="ix.primary && 'primary'"
-                        :title="ix.type + (ix.unique ? ' · unique' : '') + (ix.cardinality != null ? ' · cardinality ' + ix.cardinality : '')">
-                    <i class="bi" :class="ix.primary ? 'bi-key-fill' : (ix.unique ? 'bi-shield-check' : 'bi-lightning')"></i>
-                    <span x-text="ix.name"></span>
-                    <span class="idx-cols" x-text="'(' + ix.columns.join(', ') + ')'"></span>
-                  </span>
-                </template>
-              </div>
-
               <!-- DATA VIEW -->
               <template x-if="exploreView === 'data'">
                 <div class="card-surface">
+                  <!-- Search & filters (applied on the server, to the whole table) -->
+                  <div class="px-2 py-2" style="border-bottom:1px solid var(--border)">
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                      <div class="input-group input-group-sm" style="max-width:320px">
+                        <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+                        <input type="search" class="form-control" placeholder="Search all columns…" x-model="exploreSearch"
+                               @input.debounce.400ms="applyExploreFilters()" @keydown.enter="applyExploreFilters()">
+                      </div>
+                      <button class="btn btn-outline-soft btn-sm" @click="addExploreFilter()"><i class="bi bi-funnel me-1"></i>Add filter</button>
+                      <button class="btn btn-link btn-sm text-decoration-none" x-show="exploreFilters.length || exploreSearch" @click="clearExploreFilters()">Clear all</button>
+                      <button class="btn btn-sm btn-outline-danger ms-auto" x-show="exploreSelected.length" @click="deleteSelectedRows()">
+                        <i class="bi bi-trash me-1"></i>Delete selected (<span x-text="exploreSelected.length"></span>)
+                      </button>
+                    </div>
+                    <template x-for="(f, i) in exploreFilters" :key="f.id">
+                      <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                        <span class="text-muted-sm" style="width:2.2rem" x-text="i === 0 ? 'Where' : 'and'"></span>
+                        <select class="form-select form-select-sm" style="width:auto; min-width:150px" x-model="f.col">
+                          <option value="*">Any column</option>
+                          <template x-for="c in exploreColumns" :key="c.name"><option :value="c.name" x-text="c.name" :selected="f.col === c.name"></option></template>
+                        </select>
+                        <select class="form-select form-select-sm" style="width:auto" x-model="f.op">
+                          <template x-for="o in filterOps" :key="o.value"><option :value="o.value" x-text="o.label" :selected="f.op === o.value"></option></template>
+                        </select>
+                        <input type="text" class="form-control form-control-sm" style="max-width:260px" x-model="f.value"
+                               x-show="!filterNoValue(f.op)" :placeholder="['IN', 'NOT IN'].includes(f.op) ? 'value1, value2, …' : 'value'"
+                               @keydown.enter="applyExploreFilters()">
+                        <button class="btn btn-sm btn-ghost-danger" title="Remove filter" @click="removeExploreFilter(i)"><i class="bi bi-x-lg"></i></button>
+                      </div>
+                    </template>
+                    <div class="mt-2" x-show="exploreFilters.length">
+                      <button class="btn btn-accent btn-sm" @click="applyExploreFilters()"><i class="bi bi-funnel-fill me-1"></i>Apply</button>
+                    </div>
+                  </div>
+
                   <div class="table-responsive" style="max-height:480px;">
                     <table class="table table-modern mb-0">
                       <thead>
                         <tr>
+                          <th class="row-actions" x-show="canEditRows()">
+                            <input type="checkbox" class="form-check-input" title="Select all rows on this page"
+                                   :checked="exploreRows.length && exploreSelected.length === exploreRows.length"
+                                   @change="toggleSelectAllRows($event.target.checked)">
+                          </th>
                           <template x-for="col in exploreResultColumns" :key="col">
                             <th style="cursor:pointer; white-space:nowrap" @click="sortByColumn(col)">
                               <span x-text="col"></span>
                               <i class="bi" :class="exploreSortCol===col ? (exploreSortDir==='asc' ? 'bi-caret-up-fill' : 'bi-caret-down-fill') : 'bi-caret-down'" style="opacity:.45; font-size:.62rem"></i>
                             </th>
                           </template>
-                          <th class="text-end" x-show="canEditRows()">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         <template x-for="(row, ridx) in exploreRows" :key="ridx">
-                          <tr>
-                            <template x-for="col in exploreResultColumns" :key="col">
-                              <td x-text="formatCell(row[col])"></td>
-                            </template>
-                            <td class="text-end" x-show="canEditRows()">
-                              <button class="btn btn-sm btn-outline-soft me-1" @click="openEditRow(row)"><i class="bi bi-pencil"></i></button>
-                              <button class="btn btn-sm btn-ghost-danger" @click="deleteExploreRow(row)"><i class="bi bi-trash"></i></button>
+                          <tr :class="isRowSelected(row) && 'row-selected'">
+                            <td class="row-actions" x-show="canEditRows()">
+                              <input type="checkbox" class="form-check-input" :checked="isRowSelected(row)" @change="toggleRowSelected(row)">
+                              <button class="btn btn-sm btn-outline-soft" title="Edit row" @click="openEditRow(row)"><i class="bi bi-pencil"></i></button>
+                              <button class="btn btn-sm btn-ghost-danger" title="Delete row" @click="deleteExploreRow(row)"><i class="bi bi-trash"></i></button>
                             </td>
+                            <template x-for="col in exploreResultColumns" :key="col">
+                              <td :class="row[col] === null && 'cell-null'" x-text="formatCell(row[col])"></td>
+                            </template>
                           </tr>
                         </template>
                         <tr x-show="!exploreLoadingRows && exploreRows.length === 0">
-                          <td :colspan="exploreResultColumns.length + 1" class="text-center text-muted-sm py-4">No rows.</td>
+                          <td :colspan="exploreResultColumns.length + 1" class="text-center text-muted-sm py-4"
+                              x-text="exploreFiltersActive() ? 'No rows match the search / filters.' : 'No rows.'"></td>
                         </tr>
                       </tbody>
                     </table>
                   </div>
                   <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 px-3 py-2" style="border-top:1px solid var(--border)">
                     <div class="text-muted-sm">
-                      <span x-text="exploreTotal"></span> row(s)
+                      <span x-text="exploreTotal"></span> row(s)<span x-show="exploreFiltersActive()"> match</span>
                       <span x-show="!canEditRows() && exploreIsView()">· view (read-only)</span>
                       <span x-show="!canEditRows() && !exploreIsView()">· read-only (no primary key detected)</span>
                     </div>
@@ -764,34 +811,6 @@ Separate multiple statements with ; — highlight text to run just that part."
                     </div>
                   </div>
 
-                  <div class="card-surface mb-2" x-show="!exploreIsView()">
-                    <div class="section-title px-3 pt-2 mb-0"><i class="bi bi-diagram-2 me-1"></i>Indexes</div>
-                    <div class="table-responsive">
-                      <table class="table table-modern mb-0">
-                        <thead>
-                          <tr><th>Name</th><th>Columns</th><th>Type</th><th>Unique</th><th>Cardinality</th></tr>
-                        </thead>
-                        <tbody>
-                          <template x-for="ix in exploreIndexes" :key="ix.name">
-                            <tr>
-                              <td class="fw-medium">
-                                <span x-text="ix.name"></span>
-                                <span class="use-db-chip ms-1" x-show="ix.primary">PRIMARY</span>
-                              </td>
-                              <td x-text="ix.columns.join(', ')"></td>
-                              <td x-text="ix.type"></td>
-                              <td x-text="ix.unique ? 'YES' : 'NO'"></td>
-                              <td x-text="ix.cardinality ?? ''"></td>
-                            </tr>
-                          </template>
-                          <tr x-show="exploreIndexes.length === 0">
-                            <td colspan="5" class="text-center text-muted-sm py-3">No indexes.</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
                   <div class="card-surface p-2" x-show="exploreDefinition">
                     <div class="d-flex justify-content-between align-items-center mb-2">
                       <div class="section-title mb-0" x-text="exploreIsView() ? 'View definition' : 'Table definition (DDL)'"></div>
@@ -802,6 +821,41 @@ Separate multiple statements with ; — highlight text to run just that part."
                 </div>
               </template>
             </div>
+
+            <!-- INDEXES VIEW -->
+            <template x-if="exploreTable && exploreView === 'indexes' && !exploreIsView()">
+              <div class="card-surface">
+                <div class="table-responsive">
+                  <table class="table table-modern mb-0">
+                    <thead>
+                      <tr><th style="width:5.5rem"></th><th>Name</th><th>Type</th><th>Columns</th><th>Algorithm</th><th class="text-end">Cardinality</th></tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="ix in exploreIndexes" :key="ix.name">
+                        <tr>
+                          <td class="text-nowrap">
+                            <button class="btn btn-sm btn-outline-soft" title="Edit index" @click="openIndexModal(ix)"><i class="bi bi-pencil"></i></button>
+                            <button class="btn btn-sm btn-ghost-danger" title="Drop index" @click="dropIndex(ix)"><i class="bi bi-trash"></i></button>
+                          </td>
+                          <td class="fw-medium" x-text="ix.name"></td>
+                          <td><span class="index-kind" :class="'kind-' + ix.kind.toLowerCase()" x-text="ix.kind"></span></td>
+                          <td>
+                            <template x-for="(p, pi) in ix.parts" :key="pi">
+                              <span class="index-chip me-1"><span x-text="p.column"></span><span class="idx-cols" x-show="p.length" x-text="'(' + p.length + ')'"></span></span>
+                            </template>
+                          </td>
+                          <td class="text-muted-sm" x-text="ix.type"></td>
+                          <td class="text-end text-muted-sm" x-text="ix.cardinality ?? ''"></td>
+                        </tr>
+                      </template>
+                      <tr x-show="exploreIndexes.length === 0">
+                        <td colspan="6" class="text-center text-muted-sm py-4">This table has no indexes. Click "Add index" to create one.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
 
             <!-- Routine / trigger / event viewer -->
             <template x-if="exploreObject">
@@ -1533,6 +1587,70 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
+<!-- ===== Explore: Index Modal ===== -->
+<div class="modal-backdrop-custom" x-show="indexModal.open" x-cloak @click.self="!indexModal.saving && (indexModal.open = false)">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold">
+        <span x-text="indexModal.editing ? 'Edit index' : 'Add index'"></span> on <span x-text="exploreTable"></span>
+      </h2>
+      <button class="btn btn-sm btn-outline-soft" @click="indexModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="indexModal.error" x-text="indexModal.error"></div>
+      <div class="row g-2 mb-3">
+        <div class="col-sm-4">
+          <label class="form-label small fw-medium">Type</label>
+          <select class="form-select form-select-sm" x-model="indexModal.kind" @change="onIndexKindChange()">
+            <template x-for="k in ['INDEX', 'UNIQUE', 'PRIMARY', 'FULLTEXT', 'SPATIAL']" :key="k">
+              <option :value="k" x-text="k === 'PRIMARY' ? 'PRIMARY KEY' : k" :selected="indexModal.kind === k"
+                      :disabled="k === 'PRIMARY' && hasOtherPrimaryKey()"></option>
+            </template>
+          </select>
+        </div>
+        <div class="col-sm-8">
+          <label class="form-label small fw-medium">Name <span class="text-muted-sm" x-show="indexModal.kind !== 'PRIMARY'">(blank = automatic)</span></label>
+          <input type="text" class="form-control form-control-sm" x-model="indexModal.name" :disabled="indexModal.kind === 'PRIMARY'"
+                 :placeholder="indexModal.kind === 'PRIMARY' ? 'PRIMARY' : 'idx_column'" @input.debounce.300ms="previewIndex()">
+        </div>
+      </div>
+
+      <label class="form-label small fw-medium">Columns <span class="text-muted-sm">(in index order)</span></label>
+      <template x-for="(p, i) in indexModal.parts" :key="p.id">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <span class="text-muted-sm" style="width:1.2rem" x-text="i + 1"></span>
+          <select class="form-select form-select-sm" x-model="p.column" @change="previewIndex()">
+            <option value="">Choose a column…</option>
+            <template x-for="c in exploreColumns" :key="c.name">
+              <option :value="c.name" x-text="c.name + '  —  ' + c.type" :selected="p.column === c.name"></option>
+            </template>
+          </select>
+          <input type="number" min="1" class="form-control form-control-sm" style="width:7rem" placeholder="length"
+                 title="Prefix length (optional) — index only the first N characters" x-model="p.length"
+                 x-show="!['FULLTEXT', 'SPATIAL'].includes(indexModal.kind)" @input.debounce.300ms="previewIndex()">
+          <button class="btn btn-sm btn-outline-soft" title="Move up" :disabled="i === 0" @click="moveIndexPart(i, -1)"><i class="bi bi-arrow-up"></i></button>
+          <button class="btn btn-sm btn-ghost-danger" title="Remove column" :disabled="indexModal.parts.length === 1" @click="indexModal.parts.splice(i, 1); previewIndex()"><i class="bi bi-x-lg"></i></button>
+        </div>
+      </template>
+      <button class="btn btn-link btn-sm p-0 text-decoration-none" @click="indexModal.parts.push({ id: Date.now() + Math.random(), column: '', length: '' })">
+        <i class="bi bi-plus-lg me-1"></i>Add column
+      </button>
+
+      <div class="mt-3" x-show="indexModal.sql">
+        <div class="text-muted-sm mb-1">SQL that will run:</div>
+        <pre class="definition-block mb-0" style="white-space:pre-wrap" x-text="indexModal.sql"></pre>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" :disabled="indexModal.saving" @click="indexModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveIndex" :disabled="indexModal.saving || !indexModal.sql">
+        <span x-show="indexModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        <span x-text="indexModal.editing ? 'Save changes' : 'Create index'"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Share Connection Modal ===== -->
 <div class="modal-backdrop-custom" x-show="shareModal.open" x-cloak @click.self="shareModal.open = false">
   <div class="modal-panel">
@@ -1769,6 +1887,20 @@ function app() {
     exploreLoadingRows: false,
     exploreError: '',
     exploreRowModal: { open: false, mode: 'edit', where: null, values: {}, saving: false, error: '' },
+    exploreSearch: '',            // free-text search across all columns
+    exploreFilters: [],           // [{ id, col, op, value }]
+    exploreAppliedFilters: [],    // what the current rows were loaded with
+    exploreSelected: [],          // row keys (JSON of primary-key values) on this page
+    filterOps: [
+      { value: '=', label: '=' }, { value: '!=', label: '≠' },
+      { value: '<', label: '<' }, { value: '<=', label: '≤' }, { value: '>', label: '>' }, { value: '>=', label: '≥' },
+      { value: 'contains', label: 'contains' }, { value: 'not contains', label: 'does not contain' },
+      { value: 'starts', label: 'starts with' }, { value: 'ends', label: 'ends with' },
+      { value: 'LIKE', label: 'LIKE' }, { value: 'NOT LIKE', label: 'NOT LIKE' }, { value: 'REGEXP', label: 'REGEXP' },
+      { value: 'IN', label: 'IN (list)' }, { value: 'NOT IN', label: 'NOT IN (list)' },
+      { value: 'IS NULL', label: 'IS NULL' }, { value: 'IS NOT NULL', label: 'IS NOT NULL' }
+    ],
+    indexModal: { open: false, editing: null, kind: 'INDEX', name: '', parts: [], sql: '', saving: false, error: '' },
     importModal: { open: false, step: 'pick', file: null, previewFields: [], previewRows: [], mapping: {}, truncate: false, imported: 0, failedBatches: 0, running: false, error: '' },
     restoreModal: { open: false, file: null, running: false, done: false, progress: { executed: 0, failed: 0 }, errors: [], error: '' },
 
@@ -2224,6 +2356,7 @@ function app() {
       this.exploreTableType = entry ? entry.type : '';
       this.exploreIndexes = []; this.exploreDefinition = '';
       this.explorePage = 1; this.exploreSortCol = ''; this.exploreSortDir = 'asc'; this.exploreView = 'data';
+      this.exploreSearch = ''; this.exploreFilters = []; this.exploreAppliedFilters = []; this.exploreSelected = [];
       await Promise.all([
         this.loadExploreColumns(),
         this.loadExploreRows(),
@@ -2275,6 +2408,8 @@ function app() {
       try {
         const params = new URLSearchParams({ page: this.explorePage, pageSize: this.explorePageSize });
         if (this.exploreSortCol) { params.set('sortCol', this.exploreSortCol); params.set('sortDir', this.exploreSortDir); }
+        if (this.exploreAppliedFilters.length) params.set('filters', JSON.stringify(this.exploreAppliedFilters));
+        this.exploreSelected = [];
         const url = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/rows?${params}`;
         const res = await fetch(url);
         const data = await res.json();
@@ -2367,25 +2502,199 @@ function app() {
         this.exploreRowModal.saving = false;
       }
     },
-    async deleteExploreRow(row) {
-      if (!this.canEditRows()) return;
-      const ok = await this.askConfirm('Delete this row?', 'This cannot be undone.', { confirmLabel: 'Delete', danger: true });
-      if (!ok) return;
+    rowWhere(row) {
       const where = {};
       this.explorePrimaryKey.forEach((pk) => { where[pk] = row[pk]; });
+      return where;
+    },
+    describeWhere(where) {
+      return Object.entries(where).map(([k, v]) => `${k} = ${v === null ? 'NULL' : v}`).join(', ');
+    },
+    async deleteRowRequest(where) {
+      const base = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/rows`;
+      const res = await fetch(base, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ where })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Delete failed');
+      return data;
+    },
+    async deleteExploreRow(row) {
+      if (!this.canEditRows()) return;
+      const where = this.rowWhere(row);
+      const ok = await this.askConfirm(
+        'Delete this row?',
+        `${this.exploreTable} where ${this.describeWhere(where)} will be permanently deleted.`,
+        { confirmLabel: 'Delete row', danger: true }
+      );
+      if (!ok) return;
       try {
-        const base = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/rows`;
-        const res = await fetch(base, {
-          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ where })
-        });
-        const data = await res.json();
-        if (!res.ok) { this.showToast(data.error || 'Delete failed', 'error'); return; }
+        await this.deleteRowRequest(where);
         this.showToast('Row deleted');
         await this.loadExploreRows();
       } catch (e) {
-        this.showToast('Network error, please try again', 'error');
+        this.showToast(e.message || 'Network error, please try again', 'error');
       }
+    },
+
+    // ---- Row selection (bulk delete) ----
+    rowKey(row) {
+      return JSON.stringify(this.explorePrimaryKey.map((pk) => row[pk]));
+    },
+    isRowSelected(row) {
+      return this.exploreSelected.includes(this.rowKey(row));
+    },
+    toggleRowSelected(row) {
+      const k = this.rowKey(row);
+      this.exploreSelected = this.exploreSelected.includes(k)
+        ? this.exploreSelected.filter((x) => x !== k)
+        : [...this.exploreSelected, k];
+    },
+    toggleSelectAllRows(checked) {
+      this.exploreSelected = checked ? this.exploreRows.map((r) => this.rowKey(r)) : [];
+    },
+    async deleteSelectedRows() {
+      const rows = this.exploreRows.filter((r) => this.isRowSelected(r));
+      if (!rows.length) return;
+      const ok = await this.askConfirm(
+        `Delete ${rows.length} row(s)?`,
+        `The ${rows.length} selected row(s) in ${this.exploreTable} will be permanently deleted.`,
+        { confirmLabel: `Delete ${rows.length} row(s)`, danger: true }
+      );
+      if (!ok) return;
+      let deleted = 0;
+      let failed = 0;
+      for (const row of rows) {
+        try { await this.deleteRowRequest(this.rowWhere(row)); deleted++; } catch (e) { failed++; }
+      }
+      this.showToast(failed ? `${deleted} deleted, ${failed} failed` : `${deleted} row(s) deleted`, failed ? 'error' : 'success');
+      await this.loadExploreRows();
+    },
+
+    // ---- Search & filters ----
+    filterNoValue(op) {
+      return op === 'IS NULL' || op === 'IS NOT NULL';
+    },
+    addExploreFilter() {
+      this.exploreFilters.push({ id: Date.now() + Math.random(), col: '*', op: 'contains', value: '' });
+    },
+    removeExploreFilter(i) {
+      this.exploreFilters.splice(i, 1);
+      this.applyExploreFilters();
+    },
+    clearExploreFilters() {
+      this.exploreSearch = ''; this.exploreFilters = [];
+      this.applyExploreFilters();
+    },
+    exploreFiltersActive() {
+      return this.exploreAppliedFilters.length > 0;
+    },
+    applyExploreFilters() {
+      const filters = this.exploreFilters
+        .filter((f) => this.filterNoValue(f.op) || String(f.value ?? '').trim() !== '')
+        .map(({ col, op, value }) => ({ col, op, value: this.filterNoValue(op) ? null : value }));
+      if (this.exploreSearch.trim()) filters.unshift({ col: '*', op: 'contains', value: this.exploreSearch.trim() });
+      this.exploreAppliedFilters = filters;
+      this.explorePage = 1;
+      this.loadExploreRows();
+    },
+
+    // ---- Indexes ----
+    hasOtherPrimaryKey() {
+      return this.exploreIndexes.some((ix) => ix.primary && !(this.indexModal.editing && this.indexModal.editing.primary));
+    },
+    openIndexModal(ix) {
+      const parts = ix
+        ? ix.parts.map((p) => ({ id: Math.random(), column: p.column, length: p.length ?? '' }))
+        : [{ id: Math.random(), column: '', length: '' }];
+      this.indexModal = {
+        open: true, editing: ix || null,
+        kind: ix ? ix.kind : 'INDEX',
+        name: ix && !ix.primary ? ix.name : '',
+        parts, sql: '', saving: false, error: ''
+      };
+      this.previewIndex();
+    },
+    onIndexKindChange() {
+      if (this.indexModal.kind === 'PRIMARY') this.indexModal.name = '';
+      if (['FULLTEXT', 'SPATIAL'].includes(this.indexModal.kind)) this.indexModal.parts.forEach((p) => { p.length = ''; });
+      this.previewIndex();
+    },
+    moveIndexPart(i, delta) {
+      const parts = this.indexModal.parts;
+      [parts[i + delta], parts[i]] = [parts[i], parts[i + delta]];
+      this.indexModal.parts = [...parts];
+      this.previewIndex();
+    },
+    indexRequestBody() {
+      const m = this.indexModal;
+      return {
+        drop: m.editing ? m.editing.name : undefined,
+        add: {
+          kind: m.kind,
+          name: m.kind === 'PRIMARY' ? '' : m.name,
+          columns: m.parts.filter((p) => p.column).map((p) => ({ column: p.column, length: p.length === '' ? null : p.length }))
+        }
+      };
+    },
+    indexUrl() {
+      return `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/indexes`;
+    },
+    // Asks the server for the exact ALTER TABLE statement, so what's shown is what runs.
+    async previewIndex() {
+      const m = this.indexModal;
+      if (!m.parts.some((p) => p.column)) { m.sql = ''; m.error = ''; return; }
+      try {
+        const res = await fetch(this.indexUrl(), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...this.indexRequestBody(), preview: true })
+        });
+        const data = await res.json();
+        m.sql = res.ok ? data.sql : '';
+        m.error = res.ok ? '' : data.error;
+      } catch (e) {
+        m.error = 'Network error, please try again';
+      }
+    },
+    async saveIndex() {
+      const m = this.indexModal;
+      m.saving = true; m.error = '';
+      try {
+        const res = await fetch(this.indexUrl(), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.indexRequestBody())
+        });
+        const data = await res.json();
+        if (!res.ok) { m.error = data.error || 'Failed to save index'; return; }
+        m.open = false;
+        this.showToast(m.editing ? 'Index updated' : 'Index created');
+        await Promise.all([this.loadExploreIndexes(), this.loadExploreColumns(), this.loadDefinition('table', this.exploreTable)]);
+      } catch (e) {
+        m.error = 'Network error, please try again';
+      } finally {
+        m.saving = false;
+      }
+    },
+    async dropIndex(ix) {
+      let sql = '';
+      try {
+        const res = await fetch(this.indexUrl(), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ drop: ix.name, preview: true })
+        });
+        sql = (await res.json()).sql || '';
+      } catch (e) { /* the confirm still names the index */ }
+      const ok = await this.askConfirm(`Drop index ${ix.name}?`, sql || `Index ${ix.name} will be removed.`, { confirmLabel: 'Drop index', danger: true });
+      if (!ok) return;
+      const res = await fetch(this.indexUrl(), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ drop: ix.name })
+      });
+      const data = await res.json();
+      if (!res.ok) { this.showToast(data.error || 'Failed to drop index', 'error'); return; }
+      this.showToast('Index dropped');
+      await Promise.all([this.loadExploreIndexes(), this.loadExploreColumns(), this.loadDefinition('table', this.exploreTable)]);
     },
 
     // ---- CSV export (client-side, from data already loaded) ----
@@ -2414,6 +2723,7 @@ function app() {
       if (!this.exploreConnKey || !this.exploreDatabase || !this.exploreTable) return '#';
       const params = new URLSearchParams();
       if (this.exploreSortCol) { params.set('sortCol', this.exploreSortCol); params.set('sortDir', this.exploreSortDir); }
+      if (this.exploreAppliedFilters.length) params.set('filters', JSON.stringify(this.exploreAppliedFilters));
       const qs = params.toString();
       const base = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/export.csv`;
       return qs ? `${base}?${qs}` : base;

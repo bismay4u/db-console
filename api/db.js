@@ -311,6 +311,7 @@ module.exports = {
   listTables,
   listObjects,
   getTableIndexes,
+  alterIndex,
   getObjectDefinition,
   getTableColumns,
   browseTable,
@@ -440,10 +441,78 @@ async function getTableIndexes(key, database, table) {
     parts.sort((a, b) => a.seq - b.seq);
     return {
       ...idx,
+      kind: indexKind(idx),
       columns: parts.map((p) => (p.subPart ? `${p.column}(${p.subPart})` : p.column)),
+      // For the index editor: column + optional prefix length.
+      parts: parts.map((p) => ({ column: p.column, length: p.subPart ? Number(p.subPart) : null })),
       cardinality: parts.length ? parts[parts.length - 1].cardinality : null
     };
   });
+}
+
+function indexKind(idx) {
+  if (idx.primary) return 'PRIMARY';
+  if (idx.type === 'FULLTEXT') return 'FULLTEXT';
+  if (idx.type === 'SPATIAL') return 'SPATIAL';
+  return idx.unique ? 'UNIQUE' : 'INDEX';
+}
+
+const INDEX_KINDS = ['PRIMARY', 'UNIQUE', 'INDEX', 'FULLTEXT', 'SPATIAL'];
+
+// Builds (and unless `preview`, runs) one ALTER TABLE that drops and/or adds
+// an index, Adminer-style. Editing an index = drop the old one and add the
+// new definition in the same statement, so it applies all-or-nothing.
+//   drop: name of an existing index ('PRIMARY' for the primary key)
+//   add:  { kind, name, columns: [{ column, length }] }
+async function alterIndex(key, database, table, { drop, add, preview } = {}) {
+  if (!drop && !add) throw new Error('Nothing to change');
+  const clauses = [];
+
+  if (drop) {
+    const existing = (await getTableIndexes(key, database, table)).find((i) => i.name === drop);
+    if (!existing) throw new Error(`Index not found: ${drop}`);
+    clauses.push(existing.primary ? 'DROP PRIMARY KEY' : `DROP INDEX ${esc(drop)}`);
+  }
+
+  if (add) {
+    const kind = String(add.kind || 'INDEX').toUpperCase();
+    if (!INDEX_KINDS.includes(kind)) throw new Error(`Unsupported index type: ${add.kind}`);
+    const name = String(add.name || '').trim();
+    if (name.length > 64) throw new Error('Index name is longer than 64 characters');
+    if (kind !== 'PRIMARY' && name.toUpperCase() === 'PRIMARY') throw new Error('PRIMARY is reserved for the primary key');
+
+    const tableCols = new Set((await getTableColumns(key, database, table)).columns.map((c) => c.name));
+    const parts = (Array.isArray(add.columns) ? add.columns : []).filter((p) => p && p.column);
+    if (parts.length === 0) throw new Error('Choose at least one column');
+    const seen = new Set();
+    const partSql = parts.map((p) => {
+      if (!tableCols.has(p.column)) throw new Error(`Unknown column: ${p.column}`);
+      if (seen.has(p.column)) throw new Error(`Column used twice: ${p.column}`);
+      seen.add(p.column);
+      let sql = esc(p.column);
+      if (p.length !== undefined && p.length !== null && p.length !== '') {
+        const len = Number(p.length);
+        if (!Number.isInteger(len) || len < 1 || len > 3072) throw new Error(`Invalid length for ${p.column}`);
+        if (kind === 'FULLTEXT' || kind === 'SPATIAL') throw new Error(`${kind} indexes don't take a column length`);
+        sql += `(${len})`;
+      }
+      return sql;
+    }).join(', ');
+
+    const named = name ? ` ${esc(name)}` : '';
+    clauses.push({
+      PRIMARY: `ADD PRIMARY KEY (${partSql})`,
+      UNIQUE: `ADD UNIQUE INDEX${named} (${partSql})`,
+      INDEX: `ADD INDEX${named} (${partSql})`,
+      FULLTEXT: `ADD FULLTEXT INDEX${named} (${partSql})`,
+      SPATIAL: `ADD SPATIAL INDEX${named} (${partSql})`
+    }[kind]);
+  }
+
+  const sql = `ALTER TABLE ${esc(database)}.${esc(table)} ${clauses.join(', ')}`;
+  if (preview) return { sql };
+  await getPool(key).query(sql);
+  return { sql, ok: true };
 }
 
 const DEFINITION_KEYWORDS = {
@@ -489,7 +558,73 @@ async function getTableColumns(key, database, table) {
   };
 }
 
-async function browseTable(key, database, table, { page = 1, pageSize = 50, sortCol, sortDir } = {}) {
+// ---- Row filters (Explore search / filter bar) ----
+// filters: [{ col, op, value }], combined with AND. col '*' = any column
+// (matches if any column matches). Columns are checked against the table
+// and operators against this list; values are always bound as parameters.
+const FILTER_OPS = {
+  '=': (c) => `${c} = ?`,
+  '!=': (c) => `${c} <> ?`,
+  '<': (c) => `${c} < ?`,
+  '<=': (c) => `${c} <= ?`,
+  '>': (c) => `${c} > ?`,
+  '>=': (c) => `${c} >= ?`,
+  contains: (c) => `${c} LIKE ?`,
+  'not contains': (c) => `${c} NOT LIKE ?`,
+  starts: (c) => `${c} LIKE ?`,
+  ends: (c) => `${c} LIKE ?`,
+  LIKE: (c) => `${c} LIKE ?`,
+  'NOT LIKE': (c) => `${c} NOT LIKE ?`,
+  REGEXP: (c) => `${c} REGEXP ?`,
+  IN: (c) => `${c} IN (?)`,
+  'NOT IN': (c) => `${c} NOT IN (?)`,
+  'IS NULL': (c) => `${c} IS NULL`,
+  'IS NOT NULL': (c) => `${c} IS NOT NULL`
+};
+const NO_VALUE_OPS = new Set(['IS NULL', 'IS NOT NULL']);
+
+function escapeLike(v) {
+  return String(v).replace(/[\\%_]/g, (m) => '\\' + m);
+}
+
+function filterParam(op, value) {
+  if (op === 'contains' || op === 'not contains') return `%${escapeLike(value)}%`;
+  if (op === 'starts') return `${escapeLike(value)}%`;
+  if (op === 'ends') return `%${escapeLike(value)}`;
+  if (op === 'IN' || op === 'NOT IN') {
+    const list = String(value).split(',').map((x) => x.trim()).filter((x) => x !== '');
+    if (list.length === 0) throw new Error(`${op} needs a comma-separated list of values`);
+    return list;
+  }
+  return value;
+}
+
+function buildWhere(filters, columnNames) {
+  if (!Array.isArray(filters) || filters.length === 0) return { where: '', params: [] };
+  const conds = [];
+  const params = [];
+  for (const f of filters) {
+    if (!f || !FILTER_OPS[f.op]) throw new Error(`Unsupported filter operator: ${f && f.op}`);
+    const needsValue = !NO_VALUE_OPS.has(f.op);
+    if (needsValue && (f.value === undefined || f.value === null)) continue;
+    const anyColumn = f.col === '*';
+    const cols = anyColumn ? columnNames : [f.col];
+    if (!anyColumn && !columnNames.includes(f.col)) throw new Error(`Unknown column: ${f.col}`);
+    // "Any column" with a negative operator means no column matches; a NULL
+    // column doesn't contain/equal the value either (in SQL it would be
+    // unknown and drop the whole row).
+    const negative = ['!=', 'not contains', 'NOT LIKE', 'NOT IN', 'IS NOT NULL'].includes(f.op);
+    const parts = cols.map((c) => {
+      if (needsValue) params.push(filterParam(f.op, f.value));
+      const cond = FILTER_OPS[f.op](esc(c));
+      return anyColumn && negative && needsValue ? `(${cond} OR ${esc(c)} IS NULL)` : cond;
+    });
+    conds.push(parts.length === 1 ? parts[0] : `(${parts.join(negative ? ' AND ' : ' OR ')})`);
+  }
+  return { where: conds.length ? `WHERE ${conds.join(' AND ')}` : '', params };
+}
+
+async function browseTable(key, database, table, { page = 1, pageSize = 50, sortCol, sortDir, filters } = {}) {
   const pool = getPool(key);
   const safePageSize = Math.min(Math.max(Number(pageSize) || 50, 1), 500);
   const safePage = Math.max(Number(page) || 1, 1);
@@ -503,14 +638,17 @@ async function browseTable(key, database, table, { page = 1, pageSize = 50, sort
     orderClause = `ORDER BY ${esc(sortCol)} ${sortDir === 'desc' ? 'DESC' : 'ASC'}`;
   }
 
+  const { where, params } = buildWhere(filters, columnNames);
+
   const [countRows] = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM ${esc(database)}.${esc(table)}`
+    `SELECT COUNT(*) AS cnt FROM ${esc(database)}.${esc(table)} ${where}`,
+    params
   );
   const total = countRows[0].cnt;
 
   const [rows, fields] = await pool.query(
-    `SELECT * FROM ${esc(database)}.${esc(table)} ${orderClause} LIMIT ? OFFSET ?`,
-    [safePageSize, offset]
+    `SELECT * FROM ${esc(database)}.${esc(table)} ${where} ${orderClause} LIMIT ? OFFSET ?`,
+    [...params, safePageSize, offset]
   );
 
   return {
@@ -623,7 +761,7 @@ function csvField(value) {
 
 // Streams a table's full contents (no LIMIT) to `res` as CSV, one row at a
 // time, so exporting a very large table doesn't buffer it all in memory.
-async function streamTableCsv(key, database, table, res, { sortCol, sortDir } = {}) {
+async function streamTableCsv(key, database, table, res, { sortCol, sortDir, filters } = {}) {
   const conn = store.getConnection(key);
   if (!conn) throw new Error(`Unknown connection: ${key}`);
 
@@ -634,7 +772,8 @@ async function streamTableCsv(key, database, table, res, { sortCol, sortDir } = 
   if (sortCol && columnNames.includes(sortCol)) {
     orderClause = `ORDER BY ${esc(sortCol)} ${sortDir === 'desc' ? 'DESC' : 'ASC'}`;
   }
-  const sql = `SELECT * FROM ${esc(database)}.${esc(table)} ${orderClause}`;
+  const { where, params } = buildWhere(filters, columnNames);
+  const sql = `SELECT * FROM ${esc(database)}.${esc(table)} ${where} ${orderClause}`;
 
   const rawConn = createStreamingConnection(conn);
 
@@ -642,7 +781,7 @@ async function streamTableCsv(key, database, table, res, { sortCol, sortDir } = 
     if (res.destroyed) return reject(new Error('Download cancelled by the client'));
     res.write(columnNames.map(csvField).join(',') + '\r\n');
 
-    const queryStream = rawConn.query(sql).stream({ highWaterMark: 200 });
+    const queryStream = rawConn.query(sql, params).stream({ highWaterMark: 200 });
     // If the browser cancels the download, 'drain' never comes; stop the
     // query instead of leaving the connection paused forever.
     const onClose = () => {

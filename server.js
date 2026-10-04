@@ -484,6 +484,25 @@ app.get('/api/explore/:key/:database/tables', requireAuth, async (req, res) => {
   }
 });
 
+// Create / alter / drop an index: { drop?: name, add?: { kind, name, columns: [{ column, length }] }, preview? }.
+// With preview: true, only returns the ALTER TABLE statement.
+app.post('/api/explore/:key/:database/:table/indexes', requireAuth, async (req, res) => {
+  const { drop, add, preview } = req.body || {};
+  const start = Date.now();
+  let sql = null;
+  try {
+    const result = await db.alterIndex(req.params.key, req.params.database, req.params.table, { drop, add, preview: true });
+    sql = result.sql;
+    if (preview) return res.json({ sql });
+    await db.getPool(req.params.key).query(sql);
+    logAction(req, { source: 'explore', sql, type: 'DDL', ok: true, durationMs: Date.now() - start });
+    res.json({ ok: true, sql });
+  } catch (err) {
+    if (sql) logAction(req, { source: 'explore', sql, type: 'DDL', ok: false, error: err.message, durationMs: Date.now() - start });
+    res.status(400).json({ error: err.message, sql });
+  }
+});
+
 app.get('/api/explore/:key/:database/:table/columns', requireAuth, async (req, res) => {
   try {
     res.json(await db.getTableColumns(req.params.key, req.params.database, req.params.table));
@@ -492,6 +511,19 @@ app.get('/api/explore/:key/:database/:table/columns', requireAuth, async (req, r
   }
 });
 
+// ?filters= is a JSON array of { col, op, value } (see buildWhere in api/db.js).
+function parseFilters(raw) {
+  if (!raw) return [];
+  let filters;
+  try {
+    filters = JSON.parse(raw);
+  } catch (e) {
+    throw new Error('filters must be valid JSON');
+  }
+  if (!Array.isArray(filters)) throw new Error('filters must be an array');
+  return filters;
+}
+
 app.get('/api/explore/:key/:database/:table/rows', requireAuth, async (req, res) => {
   try {
     const { page, pageSize, sortCol, sortDir } = req.query;
@@ -499,7 +531,8 @@ app.get('/api/explore/:key/:database/:table/rows', requireAuth, async (req, res)
       page,
       pageSize,
       sortCol,
-      sortDir
+      sortDir,
+      filters: parseFilters(req.query.filters)
     });
     res.json(data);
   } catch (err) {
@@ -554,11 +587,21 @@ app.get('/api/explore/:key/:database/:table/export.csv', requireAuth, async (req
   const { table } = req.params;
   const { sortCol, sortDir } = req.query;
   const start = Date.now();
-  const entry = { source: 'export', sql: `EXPORT CSV ${qualified(req)}`, type: 'SELECT' };
+  const entry = {
+    source: 'export',
+    sql: `EXPORT CSV ${qualified(req)}${req.query.filters ? ` FILTERED BY ${req.query.filters}` : ''}`,
+    type: 'SELECT'
+  };
+  let filters;
+  try {
+    filters = parseFilters(req.query.filters);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
   try {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     attachment(res, `${table}.csv`);
-    await db.streamTableCsv(req.params.key, req.params.database, table, res, { sortCol, sortDir });
+    await db.streamTableCsv(req.params.key, req.params.database, table, res, { sortCol, sortDir, filters });
     res.end();
     logAction(req, { ...entry, ok: true, durationMs: Date.now() - start });
   } catch (err) {
