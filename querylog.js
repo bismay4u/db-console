@@ -6,11 +6,14 @@
 // Stored as JSON Lines in data/query_log.jsonl. When the file grows past
 // MAX_BYTES it is rotated to query_log.1.jsonl (one previous file is kept),
 // so the log never grows without bound.
+//
+// Safe with several PM2 cluster workers: each entry is a single append of
+// one line, and rotation happens under the data-directory lock.
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { DATA_DIR } = require('./store');
+const { DATA_DIR, FILE_MODE, ensureDir, withLock } = require('./datadir');
 
 const LOG_FILE = path.join(DATA_DIR, 'query_log.jsonl');
 const ROTATED_FILE = path.join(DATA_DIR, 'query_log.1.jsonl');
@@ -29,12 +32,20 @@ function statementType(sql) {
   return 'OTHER';
 }
 
-function rotateIfNeeded() {
+function logSize() {
   try {
-    if (fs.statSync(LOG_FILE).size > MAX_BYTES) fs.renameSync(LOG_FILE, ROTATED_FILE);
+    return fs.statSync(LOG_FILE).size;
   } catch (e) {
-    // no log file yet
+    return 0; // no log file yet
   }
+}
+
+function rotateIfNeeded() {
+  if (logSize() <= MAX_BYTES) return;
+  // Re-check under the lock: another worker may have just rotated it.
+  withLock(() => {
+    if (logSize() > MAX_BYTES) fs.renameSync(LOG_FILE, ROTATED_FILE);
+  });
 }
 
 // entry: { username, source, connKey, connLabel, database, sql, type,
@@ -59,8 +70,9 @@ function record(entry) {
     affectedRows: entry.affectedRows ?? null
   };
   try {
+    ensureDir();
     rotateIfNeeded();
-    fs.appendFileSync(LOG_FILE, JSON.stringify(line) + '\n', 'utf8');
+    fs.appendFileSync(LOG_FILE, JSON.stringify(line) + '\n', { encoding: 'utf8', mode: FILE_MODE });
   } catch (e) {
     // Logging must never break the request that triggered it.
     console.error('Failed to write query log:', e.message);

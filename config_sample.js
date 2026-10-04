@@ -13,6 +13,14 @@ module.exports = {
     password: process.env.APP_PASS || 'admin123!'
   },
 
+  // --- Where runtime data lives (default ./data). Also settable with the
+  // DATA_DIR environment variable. All PM2 instances must share it. ---
+  // dataDir: './data',
+
+  // --- Set to 1 behind a reverse proxy (or use TRUST_PROXY=1) so client IPs
+  // and HTTPS are read from X-Forwarded-* headers. ---
+  // trustProxy: 1,
+
   // --- Session secret (used to sign the session cookie) ---
   sessionSecret: process.env.SESSION_SECRET || 'replace-this-with-a-random-string',
 

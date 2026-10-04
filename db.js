@@ -10,6 +10,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
+const { StringDecoder } = require('string_decoder');
 
 // key -> { configStr, pool }
 const poolCache = new Map();
@@ -24,7 +25,14 @@ function poolConfig(conn) {
     waitForConnections: true,
     connectionLimit: 5,
     queueLimit: 0,
-    multipleStatements: false // enable only if you trust the SQL being run
+    multipleStatements: false, // enable only if you trust the SQL being run
+    // Return DATE/DATETIME/TIMESTAMP exactly as stored instead of converting
+    // to JS Dates (which shifts them by the server's timezone and breaks
+    // editing a row and writing the value back).
+    dateStrings: true,
+    // BIGINTs too large for a JS number come back as strings instead of
+    // silently losing precision (which could edit/delete the wrong row).
+    supportBigNumbers: true
   };
 }
 
@@ -56,6 +64,55 @@ function dropPool(key) {
     cached.pool.end().catch(() => {});
     poolCache.delete(key);
   }
+}
+
+async function closeAllPools() {
+  const pools = [...poolCache.values()].map((c) => c.pool);
+  poolCache.clear();
+  await Promise.allSettled(pools.map((p) => p.end()));
+}
+
+// A dedicated (non-pool) connection for streaming a large result. It gets an
+// 'error' listener: without one, a connection-level error (server gone
+// away, or an error after we destroyed it because the client cancelled a
+// download) would be thrown as an uncaught exception and kill the process.
+// Query errors still reach the query stream's own 'error' handler.
+function createStreamingConnection(conn) {
+  const rawConn = mysqlUtil.createConnection(poolConfig(conn));
+  rawConn.on('error', (err) => {
+    if (err.code !== 'ERR_STREAM_WRITE_AFTER_END') console.error(`MySQL streaming connection error: ${err.message}`);
+  });
+  return rawConn;
+}
+
+// Closes a streaming connection. On success, a graceful end(). After a
+// failure or a cancelled download, mysql2's destroy() is not enough: it
+// only half-closes the socket, and while the result stream is paused the
+// server keeps blocking on "Writing to net" forever. Destroying the socket
+// itself makes the server abort the query.
+function closeStreamingConnection(rawConn, failed) {
+  if (!failed) return rawConn.end();
+  rawConn.destroy();
+  if (rawConn.stream) rawConn.stream.destroy();
+}
+
+// Statements that can't leave session state behind on a pooled connection.
+// Anything else (USE, SET, START TRANSACTION, LOCK TABLES, CREATE TEMPORARY
+// TABLE, CALL, PREPARE, user variables...) could change what the *next*
+// query on that pooled connection does — possibly another user's query on
+// a shared connection — so after such a run the connection is discarded
+// instead of returned to the pool.
+const STATE_SAFE_RE = /^(select|insert|update|delete|replace|show|describe|desc|explain|with|values|table|alter|drop|truncate|rename|analyze|optimize|check|checksum|repair|grant|revoke|commit|rollback|help|do)\b/i;
+
+function stripLeadingComments(sql) {
+  return String(sql).replace(/^(\s+|--[^\n]*(\n|$)|#[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, '');
+}
+
+function leavesSessionState(stmt) {
+  const s = stripLeadingComments(stmt);
+  if (/^create\b/i.test(s)) return /^create\s+temporary\b/i.test(s);
+  if (!STATE_SAFE_RE.test(s)) return true;
+  return /:=|\binto\s+@/i.test(s); // assigns a user variable
 }
 
 // Stateful SQL statement splitter: can be fed text incrementally (for
@@ -151,6 +208,7 @@ async function runQuery(key, sqlText) {
   const conn = await pool.getConnection();
   const results = [];
   let ok = true;
+  const discard = statements.some(leavesSessionState);
 
   try {
     for (const stmt of statements) {
@@ -188,7 +246,10 @@ async function runQuery(key, sqlText) {
       }
     }
   } finally {
-    conn.release();
+    // destroy() closes the connection, which also rolls back any
+    // transaction left open; the pool opens a fresh one when needed.
+    if (discard) conn.destroy();
+    else conn.release();
   }
 
   return { ok, statements: results };
@@ -212,6 +273,7 @@ async function testConnection(conn) {
 module.exports = {
   getPool,
   dropPool,
+  closeAllPools,
   splitStatements,
   runQuery,
   testConnection,
@@ -430,6 +492,23 @@ async function browseTable(key, database, table, { page = 1, pageSize = 50, sort
   };
 }
 
+// An empty string can't be stored in a numeric/date/etc. column (strict
+// mode rejects it). For such columns that allow NULL, treat '' as NULL —
+// this is also how an exported CSV represents NULL, so export → import
+// round-trips. Text-like columns keep '' as a real empty string.
+const TEXTLIKE_TYPE_RE = /char|text|enum|set|binary|blob/i;
+
+async function blankToNullColumns(key, database, table) {
+  const { columns } = await getTableColumns(key, database, table);
+  return new Set(columns.filter((c) => c.nullable && !TEXTLIKE_TYPE_RE.test(c.type)).map((c) => c.name));
+}
+
+function applyBlankToNull(values, nullable) {
+  const out = {};
+  for (const [k, v] of Object.entries(values)) out[k] = v === '' && nullable.has(k) ? null : v;
+  return out;
+}
+
 async function updateRow(key, database, table, where, changes) {
   if (!where || Object.keys(where).length === 0) {
     throw new Error('Missing row identifier (no primary key values supplied)');
@@ -439,6 +518,7 @@ async function updateRow(key, database, table, where, changes) {
   }
 
   const pool = getPool(key);
+  changes = applyBlankToNull(changes, await blankToNullColumns(key, database, table));
   const setClause = Object.keys(changes).map((c) => `${esc(c)} = ?`).join(', ');
   const whereClause = Object.keys(where).map((c) => `${esc(c)} = ?`).join(' AND ');
   const params = [...Object.values(changes), ...Object.values(where)];
@@ -473,6 +553,7 @@ async function insertRow(key, database, table, values) {
   }
 
   const pool = getPool(key);
+  values = applyBlankToNull(values, await blankToNullColumns(key, database, table));
   const colClause = cols.map(esc).join(', ');
   const placeholders = cols.map(() => '?').join(', ');
   const params = cols.map((c) => values[c]);
@@ -486,10 +567,26 @@ async function insertRow(key, database, table, values) {
 
 // ===================== CSV export / import =====================
 
+// NULL is written as \N (the MySQL / LOAD DATA convention) so it stays
+// distinct from an empty string and the CSV imports back exactly.
+const CSV_NULL = '\\N';
+
+// mysql2 returns JSON columns as parsed objects/arrays; turn them back into
+// JSON text (String(obj) would give "[object Object]").
+function isJsonValue(value) {
+  return value !== null && typeof value === 'object' && !Buffer.isBuffer(value) && !(value instanceof Date);
+}
+
+// SQL literal for a value read from a row, for writing into a dump.
+function sqlLiteral(value) {
+  return mysqlUtil.escape(isJsonValue(value) ? JSON.stringify(value) : value);
+}
+
 function csvField(value) {
-  if (value === null || value === undefined) return '';
+  if (value === null || value === undefined) return CSV_NULL;
   if (value instanceof Date) value = value.toISOString();
   else if (Buffer.isBuffer(value)) value = value.toString('base64');
+  else if (isJsonValue(value)) value = JSON.stringify(value);
   const str = String(value);
   return /[",\n\r]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
 }
@@ -509,12 +606,19 @@ async function streamTableCsv(key, database, table, res, { sortCol, sortDir } = 
   }
   const sql = `SELECT * FROM ${esc(database)}.${esc(table)} ${orderClause}`;
 
-  const rawConn = mysqlUtil.createConnection(poolConfig(conn));
+  const rawConn = createStreamingConnection(conn);
 
   await new Promise((resolve, reject) => {
+    if (res.destroyed) return reject(new Error('Download cancelled by the client'));
     res.write(columnNames.map(csvField).join(',') + '\r\n');
 
     const queryStream = rawConn.query(sql).stream({ highWaterMark: 200 });
+    // If the browser cancels the download, 'drain' never comes; stop the
+    // query instead of leaving the connection paused forever.
+    const onClose = () => {
+      if (!res.writableFinished) reject(new Error('Download cancelled by the client'));
+    };
+    res.on('close', onClose);
     queryStream.on('data', (row) => {
       const line = columnNames.map((c) => csvField(row[c])).join(',') + '\r\n';
       const ok = res.write(line);
@@ -523,11 +627,12 @@ async function streamTableCsv(key, database, table, res, { sortCol, sortDir } = 
         res.once('drain', () => queryStream.resume());
       }
     });
-    queryStream.on('end', resolve);
+    queryStream.on('end', () => { res.off('close', onClose); resolve(); });
     queryStream.on('error', reject);
-  }).finally(() => {
-    rawConn.end();
-  });
+  }).then(
+    () => closeStreamingConnection(rawConn, false),
+    (err) => { closeStreamingConnection(rawConn, true); throw err; }
+  );
 }
 
 // Bulk-inserts a batch of already-parsed CSV rows (used by the CSV import
@@ -542,8 +647,12 @@ async function insertRowsBulk(key, database, table, columns, rows) {
   }
 
   const pool = getPool(key);
+  const nullable = await blankToNullColumns(key, database, table);
   const colClause = columns.map(esc).join(', ');
-  const values = rows.map((r) => columns.map((c) => (r[c] === undefined ? null : r[c])));
+  const values = rows.map((r) => columns.map((c) => {
+    const v = r[c];
+    return v === undefined || v === CSV_NULL || (v === '' && nullable.has(c)) ? null : v;
+  }));
 
   const [result] = await pool.query(
     `INSERT INTO ${esc(database)}.${esc(table)} (${colClause}) VALUES ?`,
@@ -675,23 +784,29 @@ async function streamDatabaseBackup(key, database, dest) {
     const columnNames = columns.map((c) => c.name);
     const colClause = columnNames.map(esc).join(', ');
 
-    const rawConn = mysqlUtil.createConnection(poolConfig(conn));
+    const rawConn = createStreamingConnection(conn);
     await new Promise((resolve, reject) => {
       let batch = [];
       let wroteAnyRow = false;
 
-      const flush = () => {
-        if (batch.length === 0) return;
-        const valuesSql = batch
-          .map((row) => '(' + columnNames.map((c) => mysqlUtil.escape(row[c])).join(',') + ')')
-          .join(',\n');
-        dest.write(`INSERT INTO ${esc(table)} (${colClause}) VALUES\n${valuesSql};\n`);
-        batch = [];
-      };
-
       const queryStream = rawConn
         .query(`SELECT * FROM ${esc(database)}.${esc(table)}`)
         .stream({ highWaterMark: BATCH_SIZE });
+
+      // Respects backpressure: if the destination (temp file) can't keep
+      // up, pause the query instead of buffering the table in memory.
+      const flush = () => {
+        if (batch.length === 0) return;
+        const valuesSql = batch
+          .map((row) => '(' + columnNames.map((c) => sqlLiteral(row[c])).join(',') + ')')
+          .join(',\n');
+        const ok = dest.write(`INSERT INTO ${esc(table)} (${colClause}) VALUES\n${valuesSql};\n`);
+        batch = [];
+        if (!ok && dest.once) {
+          queryStream.pause();
+          dest.once('drain', () => queryStream.resume());
+        }
+      };
 
       queryStream.on('data', (row) => {
         wroteAnyRow = true;
@@ -706,9 +821,10 @@ async function streamDatabaseBackup(key, database, dest) {
         resolve();
       });
       queryStream.on('error', reject);
-    }).finally(() => {
-      rawConn.end();
-    });
+    }).then(
+      () => closeStreamingConnection(rawConn, false),
+      (err) => { closeStreamingConnection(rawConn, true); throw err; }
+    );
   }
 
   // Views go last since they depend on the tables above. Note: routines,
@@ -761,6 +877,14 @@ async function streamDatabaseBackupTarGz(key, database, res) {
       gzip.on('error', reject);
       res.on('finish', resolve);
       res.on('error', reject);
+      // A cancelled download never emits 'finish'; settle anyway so the
+      // temp file below is removed.
+      res.on('close', () => {
+        if (res.writableFinished) return resolve();
+        readStream.destroy();
+        gzip.destroy();
+        reject(new Error('Download cancelled by the client'));
+      });
     });
   } finally {
     fs.unlink(tmpFile, () => {});
@@ -778,6 +902,9 @@ async function restoreDump(key, database, readableStream, format, onProgress) {
   const dbConn = await pool.getConnection();
   const splitter = new SqlStatementStream();
   const tarExtractor = format === 'targz' ? new TarExtractor() : null;
+  // Decodes UTF-8 across chunk boundaries; Buffer#toString per chunk would
+  // corrupt any multi-byte character split between two chunks.
+  const decoder = new StringDecoder('utf8');
   let executed = 0;
   let failed = 0;
   const errors = [];
@@ -800,15 +927,18 @@ async function restoreDump(key, database, readableStream, format, onProgress) {
     for await (const chunk of sourceStream) {
       const textChunks = tarExtractor ? tarExtractor.feed(chunk) : [chunk];
       for (const tc of textChunks) {
-        const statements = splitter.feed(tc.toString('utf8'));
+        const statements = splitter.feed(decoder.write(tc));
         for (const stmt of statements) await runStatement(stmt);
       }
       if (onProgress) onProgress({ executed, failed });
     }
-    for (const stmt of splitter.flush()) await runStatement(stmt);
+    const rest = splitter.feed(decoder.end()).concat(splitter.flush());
+    for (const stmt of rest) await runStatement(stmt);
     if (onProgress) onProgress({ executed, failed });
   } finally {
-    dbConn.release();
+    // The dump ran USE and SET statements (e.g. FOREIGN_KEY_CHECKS=0) on
+    // this connection; never hand it back to the pool.
+    dbConn.destroy();
   }
 
   return { executed, failed, errors };

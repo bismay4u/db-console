@@ -3,22 +3,40 @@
 // dependencies when package.json / package-lock.json changed, and restarts
 // the app through PM2.
 //
+// Works in PM2 fork and cluster mode. In cluster mode every worker serves
+// admin requests, so "an update is running" is a lock file shared by all
+// workers, and restarts target the PM2 app by name (all instances), not
+// just the worker that received the request.
+//
 // Only fixed commands run here; nothing from the request is ever passed to
 // a shell.
 
+const fs = require('fs');
 const path = require('path');
 const { execFile, spawn } = require('child_process');
+const { DATA_DIR, ensureDir, FILE_MODE } = require('./datadir');
 
 const APP_DIR = __dirname;
 const IS_WIN = process.platform === 'win32';
-// Fail instead of waiting forever if the remote asks for credentials.
-const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+const UPDATE_LOCK = path.join(DATA_DIR, '.update.lock');
+const UPDATE_LOCK_STALE_MS = 1000 * 60 * 15;
+const STARTED_AT = Date.now();
 
-let busy = false;
+// Environment for every child process (git, npm, pm2):
+// - In PM2 cluster mode this process is a Node cluster worker. npm and pm2
+//   are Node programs too; inheriting NODE_UNIQUE_ID / NODE_CHANNEL_FD makes
+//   them start as cluster workers and crash before doing anything.
+// - GIT_TERMINAL_PROMPT=0 makes git fail instead of waiting forever if the
+//   remote asks for credentials.
+function childEnv() {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  for (const k of ['NODE_UNIQUE_ID', 'NODE_CHANNEL_FD', 'NODE_CHANNEL_SERIALIZATION_MODE', 'pm2_env']) delete env[k];
+  return env;
+}
 
 function run(cmd, args, { timeout = 120000 } = {}) {
   return new Promise((resolve) => {
-    execFile(cmd, args, { cwd: APP_DIR, env: GIT_ENV, timeout, shell: IS_WIN, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { cwd: APP_DIR, env: childEnv(), timeout, shell: IS_WIN, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
       // trimEnd only: leading spaces are significant in `git status --porcelain`.
       resolve({ ok: !err, code: err ? (err.code ?? 1) : 0, stdout: String(stdout).trimEnd(), stderr: String(stderr).trim() });
     });
@@ -30,7 +48,7 @@ function runStreaming(cmd, args, onLine, { timeout = 600000 } = {}) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(cmd, args, { cwd: APP_DIR, env: GIT_ENV, shell: IS_WIN });
+      child = spawn(cmd, args, { cwd: APP_DIR, env: childEnv(), shell: IS_WIN });
     } catch (err) {
       onLine(err.message);
       return resolve({ ok: false, code: 1 });
@@ -65,8 +83,37 @@ function pm2Info() {
     managed,
     id: managed ? process.env.pm_id : null,
     name: process.env.name || null,
-    execMode: process.env.exec_mode || null
+    execMode: process.env.exec_mode || null,
+    instance: process.env.NODE_APP_INSTANCE ?? null
   };
+}
+
+// Every instance of this PM2 app (one per cluster worker), from `pm2 jlist`.
+// Returns null if pm2 can't be queried.
+async function pm2Instances() {
+  const info = pm2Info();
+  if (!info.managed) return null;
+  const res = await run(IS_WIN ? 'pm2.cmd' : 'pm2', ['jlist'], { timeout: 15000 });
+  if (!res.ok) return null;
+  try {
+    // pm2 may print warnings before the JSON array.
+    const list = JSON.parse(res.stdout.slice(res.stdout.indexOf('[')));
+    return list
+      .filter((p) => p.name === info.name)
+      .map((p) => ({
+        id: p.pm_id,
+        pid: p.pid,
+        status: p.pm2_env && p.pm2_env.status,
+        startedAt: p.pm2_env && p.pm2_env.pm_uptime,
+        restarts: p.pm2_env && p.pm2_env.restart_time,
+        memory: p.monit && p.monit.memory,
+        cpu: p.monit && p.monit.cpu,
+        current: String(p.pm_id) === String(info.id)
+      }))
+      .sort((a, b) => a.id - b.id);
+  } catch (e) {
+    return null;
+  }
 }
 
 async function gitInfo() {
@@ -93,15 +140,52 @@ async function gitInfo() {
   };
 }
 
+// ---- Update lock (shared by all workers) ----
+
+function lockHolder() {
+  try {
+    const holder = JSON.parse(fs.readFileSync(UPDATE_LOCK, 'utf8'));
+    if (Date.now() - holder.at < UPDATE_LOCK_STALE_MS) return holder;
+  } catch (e) {
+    // no lock
+  }
+  return null;
+}
+
+function acquireUpdateLock(username) {
+  ensureDir();
+  if (lockHolder() === null) {
+    try { fs.unlinkSync(UPDATE_LOCK); } catch (e) { /* none, or stale one removed */ }
+  }
+  try {
+    const fd = fs.openSync(UPDATE_LOCK, 'wx', FILE_MODE);
+    fs.writeSync(fd, JSON.stringify({ pid: process.pid, username, at: Date.now() }));
+    fs.closeSync(fd);
+    return true;
+  } catch (e) {
+    if (e.code === 'EEXIST') return false;
+    throw e;
+  }
+}
+
+function releaseUpdateLock() {
+  try { fs.unlinkSync(UPDATE_LOCK); } catch (e) { /* already gone */ }
+}
+
 async function getStatus() {
+  const holder = lockHolder();
   return {
     git: await gitInfo(),
-    pm2: pm2Info(),
+    pm2: { ...pm2Info(), instances: await pm2Instances() },
     node: process.version,
     platform: process.platform,
     appDir: APP_DIR,
-    uptimeSec: Math.round(process.uptime()),
-    busy
+    dataDir: DATA_DIR,
+    pid: process.pid,
+    startedAt: STARTED_AT,
+    now: Date.now(),
+    busy: Boolean(holder),
+    busyBy: holder ? holder.username : null
   };
 }
 
@@ -124,27 +208,29 @@ async function checkForUpdates() {
   return { ok: true, ahead, behind, incoming };
 }
 
-// Environment for the pm2 CLI. In PM2 cluster mode this process is a Node
-// cluster worker; a child inheriting NODE_UNIQUE_ID / NODE_CHANNEL_FD would
-// also start as a cluster worker and crash before doing anything.
-function pm2CliEnv() {
-  const env = { ...process.env };
-  for (const k of ['NODE_UNIQUE_ID', 'NODE_CHANNEL_FD', 'NODE_CHANNEL_SERIALIZATION_MODE', 'pm2_env']) delete env[k];
-  return env;
-}
-
-// Restarts through PM2 in a detached child, so the PM2 command survives the
-// current process being stopped. Falls back to exiting and letting PM2's
-// autorestart bring the app back if the pm2 command can't be run or fails.
+// Asks PM2 to reload (cluster mode: one worker at a time, no downtime) or
+// restart (fork mode) every instance of this app.
+//
+// The pm2 command must outlive this process: PM2 kills a worker's whole
+// process tree when it reloads that worker, and the pm2 CLI reloads the
+// instances one by one, so if it were our child it would be killed part
+// way through. On POSIX it is started via `sh -c '… &'`, which returns at
+// once and leaves pm2 orphaned (re-parented to init), outside our tree.
+//
+// If pm2 can't be found, exiting lets PM2's autorestart bring this worker
+// back on the new code.
 function scheduleRestart(delayMs = 1000) {
   const info = pm2Info();
   if (!info.managed) return false;
   const action = info.execMode === 'cluster_mode' ? 'reload' : 'restart';
+  const target = info.name || String(info.id);
   setTimeout(() => {
     try {
-      const child = spawn('pm2', [action, String(info.id)], {
-        cwd: APP_DIR, env: pm2CliEnv(), detached: true, stdio: 'ignore', shell: IS_WIN
-      });
+      const child = IS_WIN
+        ? spawn('pm2.cmd', [action, target], { cwd: APP_DIR, env: childEnv(), detached: true, stdio: 'ignore', shell: true })
+        : spawn('/bin/sh', ['-c', `command -v pm2 >/dev/null || exit 127; pm2 ${action} "$0" >/dev/null 2>&1 &`, target], {
+          cwd: APP_DIR, env: childEnv(), detached: true, stdio: 'ignore'
+        });
       child.on('error', () => process.exit(0));
       child.on('exit', (code) => { if (code !== 0) process.exit(0); });
       child.unref();
@@ -152,13 +238,15 @@ function scheduleRestart(delayMs = 1000) {
       process.exit(0);
     }
   }, delayMs);
-  return true;
+  return action;
 }
 
 // emit(event) receives { type: 'step' | 'log' | 'done' | 'error', ... }.
-async function update({ restart = true } = {}, emit) {
-  if (busy) throw new Error('An update is already running');
-  busy = true;
+async function update({ restart = true, username } = {}, emit) {
+  if (!acquireUpdateLock(username)) {
+    const holder = lockHolder();
+    throw new Error(`An update is already running${holder && holder.username ? ` (started by ${holder.username})` : ''}`);
+  }
   try {
     const log = (text) => emit({ type: 'log', text });
     const step = (name) => emit({ type: 'step', name });
@@ -187,15 +275,17 @@ async function update({ restart = true } = {}, emit) {
     }
 
     let restarting = false;
+    const requestedAt = Date.now();
     if (restart) {
-      restarting = scheduleRestart();
-      step(restarting ? `pm2 ${pm2Info().execMode === 'cluster_mode' ? 'reload' : 'restart'}` : 'restart');
+      const action = scheduleRestart();
+      restarting = Boolean(action);
+      step(restarting ? `pm2 ${action} ${pm2Info().name}` : 'restart');
       if (!restarting) log('Not running under PM2 — restart the app manually to load the new code');
     }
-    emit({ type: 'done', ok: true, updated: true, restarting, from: before, to: after });
+    emit({ type: 'done', ok: true, updated: true, restarting, requestedAt, from: before, to: after });
     return { updated: true, from: before, to: after, restarting };
   } finally {
-    busy = false;
+    releaseUpdateLock();
   }
 }
 

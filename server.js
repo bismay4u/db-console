@@ -8,21 +8,35 @@ const store = require('./store');
 const db = require('./db');
 const querylog = require('./querylog');
 const system = require('./system');
+const FileSessionStore = require('./sessionstore');
+const { DATA_DIR, readJson, writeJson, withLock } = require('./datadir');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const DEFAULT_ADMIN_PASSWORD = 'admin123!';
+const DEFAULT_SESSION_SECRET = 'replace-this-with-a-random-string';
+
+// Behind a reverse proxy (nginx, a load balancer...) set TRUST_PROXY=1 (or
+// `trustProxy` in config.js) so req.ip and HTTPS detection use the
+// X-Forwarded-* headers.
+const trustProxy = process.env.TRUST_PROXY ?? config.trustProxy;
+if (trustProxy) app.set('trust proxy', trustProxy === 'true' || trustProxy === '1' ? 1 : trustProxy);
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Sessions are stored as files in the data directory, so every PM2 cluster
+// worker sees the same sessions and a restart doesn't sign anyone out.
 app.use(
   session({
+    store: new FileSessionStore(),
     secret: config.sessionSecret,
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
       sameSite: 'lax',
+      secure: 'auto', // Secure flag whenever the request came in over HTTPS
       maxAge: 1000 * 60 * 60 * 4 // 4 hours
     }
   })
@@ -148,21 +162,80 @@ function qualified(req) {
   return table ? `\`${database}\`.\`${table}\`` : `\`${database}\``;
 }
 
+// Safe Content-Disposition for a download named after a table/database.
+function attachment(res, filename) {
+  const ascii = filename.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  res.setHeader('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+}
+
+// --- Login rate limiting ---
+// Failed logins are counted per IP+username and per IP in a file in the
+// data directory, so the limit holds across all PM2 cluster workers.
+const ATTEMPTS_FILE = path.join(DATA_DIR, 'login_attempts.json');
+const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+const LIMITS = { user: 10, ip: 50 };
+
+function attemptKeys(req, username) {
+  return { user: `u|${req.ip}|${String(username || '').toLowerCase()}`, ip: `i|${req.ip}` };
+}
+
+// Seconds until the caller may try again, or 0 if not blocked.
+function loginRetryAfter(req, username) {
+  const all = readJson(ATTEMPTS_FILE, {});
+  const keys = attemptKeys(req, username);
+  let wait = 0;
+  for (const [kind, key] of Object.entries(keys)) {
+    const a = all[key];
+    if (a && a.count >= LIMITS[kind] && Date.now() - a.first < ATTEMPT_WINDOW_MS) {
+      wait = Math.max(wait, Math.ceil((a.first + ATTEMPT_WINDOW_MS - Date.now()) / 1000));
+    }
+  }
+  return wait;
+}
+
+function recordLoginAttempt(req, username, ok) {
+  withLock(() => {
+    const all = readJson(ATTEMPTS_FILE, {});
+    const now = Date.now();
+    for (const [k, a] of Object.entries(all)) if (now - a.first >= ATTEMPT_WINDOW_MS) delete all[k];
+    const keys = attemptKeys(req, username);
+    if (ok) {
+      delete all[keys.user];
+    } else {
+      for (const key of Object.values(keys)) {
+        const a = all[key] || { count: 0, first: now };
+        a.count++;
+        all[key] = a;
+      }
+    }
+    writeJson(ATTEMPTS_FILE, all);
+  });
+}
+
 // --- Auth routes ---
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body || {};
+  const retryAfter = loginRetryAfter(req, username);
+  if (retryAfter) {
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({ error: `Too many failed sign-in attempts. Try again in ${Math.ceil(retryAfter / 60)} minute(s).` });
+  }
+
   const user = store.getUser(String(username || ''));
   // Always verify (against a dummy hash for unknown users) so response
   // time doesn't reveal which usernames exist.
   const valid = store.verifyPassword(password, user ? user.passwordHash : null);
   if (!user || !valid || user.disabled) {
+    recordLoginAttempt(req, username, false);
     return res.status(401).json({ error: 'Invalid username or password' });
   }
+  recordLoginAttempt(req, username, true);
   req.session.regenerate((err) => {
     if (err) return res.status(500).json({ error: 'Could not start session' });
     req.session.authenticated = true;
     req.session.username = user.username;
     req.session.sessionVersion = user.sessionVersion || 1;
+    req.session.defaultPassword = password === DEFAULT_ADMIN_PASSWORD;
     store.touchLastLogin(user.username);
     return res.json({ ok: true });
   });
@@ -180,7 +253,8 @@ app.get('/api/session', (req, res) => {
     authenticated: true,
     username: req.user.username,
     displayName: req.user.displayName,
-    role: req.user.role
+    role: req.user.role,
+    usingDefaultPassword: Boolean(req.session.defaultPassword)
   });
 });
 
@@ -196,6 +270,7 @@ app.post('/api/account/password', requireAuth, (req, res) => {
   const updated = store.updateUser(req.user.username, { password: newPassword });
   // Other sessions of this user are ended; keep this one signed in.
   req.session.sessionVersion = updated.sessionVersion;
+  req.session.defaultPassword = newPassword === DEFAULT_ADMIN_PASSWORD;
   res.json({ ok: true });
 });
 
@@ -482,7 +557,7 @@ app.get('/api/explore/:key/:database/:table/export.csv', requireAuth, async (req
   const entry = { source: 'export', sql: `EXPORT CSV ${qualified(req)}`, type: 'SELECT' };
   try {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${table}.csv"`);
+    attachment(res, `${table}.csv`);
     await db.streamTableCsv(req.params.key, req.params.database, table, res, { sortCol, sortDir });
     res.end();
     logAction(req, { ...entry, ok: true, durationMs: Date.now() - start });
@@ -525,7 +600,7 @@ app.get('/api/explore/:key/:database/backup.tar.gz', requireAuth, async (req, re
   const entry = { source: 'backup', sql: `BACKUP ${qualified(req)}`, type: 'OTHER' };
   try {
     res.setHeader('Content-Type', 'application/gzip');
-    res.setHeader('Content-Disposition', `attachment; filename="${database}-backup.tar.gz"`);
+    attachment(res, `${database}-backup.tar.gz`);
     await db.streamDatabaseBackupTarGz(req.params.key, database, res);
     res.end();
     logAction(req, { ...entry, ok: true, durationMs: Date.now() - start });
@@ -663,7 +738,7 @@ app.post('/api/system/update', requireAdmin, async (req, res) => {
   res.setHeader('Content-Type', 'application/x-ndjson');
   const emit = (evt) => res.write(JSON.stringify(evt) + '\n');
   try {
-    const result = await system.update({ restart }, emit);
+    const result = await system.update({ restart, username: req.user.username }, emit);
     querylog.record({
       username: req.user.username,
       source: 'system',
@@ -683,8 +758,9 @@ app.post('/api/system/restart', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'The app is not running under PM2, so it cannot restart itself' });
   }
   querylog.record({ username: req.user.username, source: 'system', sql: 'RESTART APP', type: 'OTHER', ok: true });
-  system.scheduleRestart();
-  res.json({ ok: true, restarting: true });
+  const requestedAt = Date.now();
+  const action = system.scheduleRestart();
+  res.json({ ok: true, restarting: true, action, requestedAt });
 });
 
 // --- Page routes ---
@@ -704,8 +780,38 @@ app.get('/login', (req, res) => {
 
 // --- Start server ---
 store.ensureStore();
-app.listen(PORT, () => {
-  console.log(`DB Console running at http://localhost:${PORT}`);
+if (!config.sessionSecret || config.sessionSecret === DEFAULT_SESSION_SECRET) {
+  console.warn('WARNING: sessionSecret is the sample value — set SESSION_SECRET (or sessionSecret in config.js) to a long random string.');
+}
+
+const server = app.listen(PORT, () => {
+  console.log(`DB Console running at http://localhost:${PORT} (data: ${DATA_DIR})`);
   const admins = store.listUsers().filter((u) => u.role === 'admin').map((u) => u.username);
   console.log(`Admin account(s): ${admins.join(', ')}`);
+  // With `wait_ready: true` in the PM2 ecosystem file, PM2 waits for this
+  // before routing traffic to a reloaded worker and stopping the old one.
+  if (process.send) process.send('ready');
 });
+
+// Graceful shutdown: PM2 sends SIGINT on reload/restart/stop. Stop taking
+// new connections, let in-flight requests finish, then close DB pools.
+// PM2 force-kills after kill_timeout if something hangs.
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) {
+    // Second Ctrl+C when running by hand: don't wait any longer.
+    process.exit(1);
+  }
+  shuttingDown = true;
+  console.log(`${signal} received, shutting down`);
+  // A long export/restore could keep the server open; don't wait forever.
+  setTimeout(() => process.exit(0), 10000).unref();
+  server.close(async () => {
+    await db.closeAllPools();
+    process.exit(0);
+  });
+  // Idle keep-alive connections would otherwise hold server.close() open.
+  if (server.closeIdleConnections) server.closeIdleConnections();
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

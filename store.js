@@ -5,14 +5,15 @@
 //     by a user and optionally shared with other users
 //   - saved SQL queries (private to the user who saved them)
 //
-// Good enough for a small internal admin tool. If you need concurrent
-// multi-user editing or something heavier, swap this for a real table.
+// Good enough for a small internal admin tool. Every function that changes
+// data runs under the data-directory lock (see datadir.js), so several PM2
+// cluster workers can share these files safely.
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { DATA_DIR, FILE_MODE, ensureDir, readJson, writeJson, withLock } = require('./datadir');
 
-const DATA_DIR = path.join(__dirname, 'data');
 const CONNECTIONS_FILE = path.join(DATA_DIR, 'connections.json');
 const QUERIES_FILE = path.join(DATA_DIR, 'queries.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
@@ -20,8 +21,10 @@ const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const ROLES = ['admin', 'user'];
 const USERNAME_RE = /^[a-zA-Z0-9._-]{2,32}$/;
 
+// Creates any missing data file. Runs on every start, so a fresh install
+// (or a deleted file) is regenerated automatically.
 function ensureStore() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  ensureDir();
 
   if (!fs.existsSync(CONNECTIONS_FILE)) {
     // Seed from config.js on first run, if it has a "databases" array.
@@ -67,6 +70,12 @@ function ensureStore() {
   }
 
   migrateOwnership();
+
+  // Files from older versions were created world-readable; they hold
+  // database passwords and password hashes.
+  for (const file of [CONNECTIONS_FILE, QUERIES_FILE, USERS_FILE]) {
+    try { fs.chmodSync(file, FILE_MODE); } catch (e) { /* e.g. not supported on Windows */ }
+  }
 }
 
 // Connections and saved queries created before multi-user support have no
@@ -89,15 +98,6 @@ function migrateOwnership() {
     if (!q.owner) { q.owner = admin.username; changed = true; }
   }
   if (changed) writeJson(QUERIES_FILE, queries);
-}
-
-function readJson(file) {
-  const raw = fs.readFileSync(file, 'utf8');
-  return raw.trim() ? JSON.parse(raw) : [];
-}
-
-function writeJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
 }
 
 function slugify(text) {
@@ -275,7 +275,6 @@ function newUserRecord({ username, password, role, displayName }) {
 }
 
 function listUsers() {
-  if (!fs.existsSync(USERS_FILE)) return [];
   return readJson(USERS_FILE);
 }
 
@@ -359,26 +358,29 @@ function deleteUser(username, transferTo) {
   return true;
 }
 
+// Wraps a function that changes data so it runs under the data-dir lock.
+const locked = (fn) => (...args) => withLock(() => fn(...args));
+
 module.exports = {
-  ensureStore,
   DATA_DIR,
   ROLES,
+  ensureStore: locked(ensureStore),
   listUsers,
   getUser,
   validateNewUser,
-  createUser,
-  updateUser,
-  deleteUser,
-  touchLastLogin,
+  createUser: locked(createUser),
+  updateUser: locked(updateUser),
+  deleteUser: locked(deleteUser),
+  touchLastLogin: locked(touchLastLogin),
   verifyPassword,
-  setConnectionSharing,
+  setConnectionSharing: locked(setConnectionSharing),
   listConnections,
   getConnection,
-  createConnection,
-  updateConnection,
-  deleteConnection,
+  createConnection: locked(createConnection),
+  updateConnection: locked(updateConnection),
+  deleteConnection: locked(deleteConnection),
   listQueries,
-  createQuery,
-  updateQuery,
-  deleteQuery
+  createQuery: locked(createQuery),
+  updateQuery: locked(updateQuery),
+  deleteQuery: locked(deleteQuery)
 };

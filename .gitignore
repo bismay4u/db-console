@@ -15,6 +15,6 @@ todos.txt
 
 
 
-# Runtime data written by the app (password hashes, query history)
-data/users.json
-data/query_log*.jsonl
+# Runtime data: created by the app on first start (connections with
+# passwords, users, sessions, query log). Never commit it.
+data/

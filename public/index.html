@@ -303,6 +303,11 @@
   </div>
 
   <div class="content">
+    <div class="alert alert-warning py-2 small d-flex align-items-center gap-2" x-show="usingDefaultPassword">
+      <i class="bi bi-shield-exclamation"></i>
+      <span>You're signed in with the default password. Anyone who knows it can sign in as you.</span>
+      <button class="btn btn-sm btn-outline-soft ms-auto" @click="openPasswordModal">Change password</button>
+    </div>
 
     <!-- ================= QUERY RUNNER ================= -->
     <template x-if="activeTab === 'runner'">
@@ -1180,13 +1185,34 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <table class="table table-sm mb-0" style="font-size:.83rem">
                   <tbody>
                     <tr><td class="text-muted-sm">PM2</td><td>
-                      <span x-show="sysStatus.pm2.managed" x-text="sysStatus.pm2.name + ' (id ' + sysStatus.pm2.id + ', ' + (sysStatus.pm2.execMode || 'fork') + ')'"></span>
+                      <span x-show="sysStatus.pm2.managed" x-text="sysStatus.pm2.name + ' · ' + (sysStatus.pm2.execMode === 'cluster_mode' ? 'cluster mode' : 'fork mode')"></span>
                       <span class="text-danger" x-show="!sysStatus.pm2.managed">Not running under PM2</span>
                     </td></tr>
                     <tr><td class="text-muted-sm">Node.js</td><td x-text="sysStatus.node + ' · ' + sysStatus.platform"></td></tr>
-                    <tr><td class="text-muted-sm">Uptime</td><td x-text="formatUptime(sysStatus.uptimeSec)"></td></tr>
+                    <tr><td class="text-muted-sm">Data directory</td><td><code x-text="sysStatus.dataDir"></code></td></tr>
+                    <tr x-show="!sysStatus.pm2.instances"><td class="text-muted-sm">Uptime</td><td x-text="formatUptime((sysStatus.now - sysStatus.startedAt) / 1000)"></td></tr>
                   </tbody>
                 </table>
+                <template x-if="sysStatus.pm2.instances">
+                  <div class="mt-2">
+                    <div class="text-muted-sm mb-1" x-text="sysStatus.pm2.instances.length + ' instance(s)'"></div>
+                    <table class="table table-sm mb-0" style="font-size:.8rem">
+                      <thead><tr class="text-muted-sm"><th>ID</th><th>PID</th><th>Status</th><th>Uptime</th><th>Restarts</th><th class="text-end">Memory</th></tr></thead>
+                      <tbody>
+                        <template x-for="p in sysStatus.pm2.instances" :key="p.id">
+                          <tr>
+                            <td><span x-text="p.id"></span> <span class="text-muted-sm" x-show="p.current" title="The instance that answered this request">(this)</span></td>
+                            <td x-text="p.pid"></td>
+                            <td><span class="badge rounded-pill" :class="p.status === 'online' ? 'badge-soft-success' : 'badge-soft-danger'" x-text="p.status"></span></td>
+                            <td x-text="p.startedAt ? formatUptime((sysStatus.now - p.startedAt) / 1000) : '—'"></td>
+                            <td x-text="p.restarts"></td>
+                            <td class="text-end" x-text="p.memory ? Math.round(p.memory / 1048576) + ' MB' : '—'"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
                 <details class="mt-2" x-show="sysStatus.git.available && sysStatus.git.changedFiles.length">
                   <summary class="text-muted-sm">Locally changed files</summary>
                   <pre class="console-out mt-1" x-text="sysStatus.git.changedFiles.join('\n')"></pre>
@@ -1202,7 +1228,8 @@ Separate multiple statements with ; — highlight text to run just that part."
             <div class="section-title">Update from git</div>
             <p class="text-muted-sm mb-2">
               Fetches the tracked branch, fast-forwards with <code>git pull --ff-only</code>, runs <code>npm install</code> only if
-              dependencies changed, then restarts the app through PM2. Everyone is signed out by the restart.
+              dependencies changed, then restarts the app through PM2 — in cluster mode a rolling reload, one instance at a time.
+              Users stay signed in.
             </p>
             <div class="d-flex flex-wrap gap-2 mb-2">
               <button class="btn btn-outline-soft btn-sm" @click="checkUpdates" :disabled="sysChecking || sysUpdating">
@@ -1240,7 +1267,7 @@ Separate multiple statements with ; — highlight text to run just that part."
               <pre class="console-out"><template x-for="(l, i) in sysLog" :key="i"><div :class="l.cls" x-text="l.text"></div></template></pre>
             </template>
             <div class="text-muted-sm mt-2" x-show="sysWaiting">
-              <span class="spinner-border spinner-border-sm me-1"></span>Waiting for the app to come back…
+              <span class="spinner-border spinner-border-sm me-1"></span><span x-text="sysWaitingText || 'Waiting for the app to come back…'"></span>
             </div>
           </div>
         </div>
@@ -1351,6 +1378,7 @@ Separate multiple statements with ; — highlight text to run just that part."
             <span class="text-muted-sm" x-show="explorePrimaryKey.includes(col)">(key)</span>
           </label>
           <input type="text" class="form-control form-control-sm" x-model="exploreRowModal.values[col]"
+                 :placeholder="exploreRowModal.mode === 'insert' ? 'default' : (exploreRowModal.values[col] === null ? 'NULL' : '')"
                  :disabled="exploreRowModal.mode === 'edit' && explorePrimaryKey.includes(col)">
         </div>
       </template>
@@ -1647,6 +1675,7 @@ function app() {
     username: '',
     displayName: '',
     role: '',
+    usingDefaultPassword: false,
     directory: [],                // [{ username, displayName }] of active users
 
     connections: [],
@@ -1689,6 +1718,7 @@ function app() {
     sysUpdating: false,
     sysRestarting: false,
     sysWaiting: false,
+    sysWaitingText: '',
     sysLog: [],
     queryModal: { open: false, id: null, form: {}, saving: false, error: '' },
 
@@ -1735,8 +1765,11 @@ function app() {
       this.username = sess.username;
       this.displayName = sess.displayName;
       this.role = sess.role;
+      this.usingDefaultPassword = sess.usingDefaultPassword;
       try {
-        this.history = JSON.parse(localStorage.getItem('dbconsole_history') || '[]');
+        // Older versions kept one history for everyone using this browser.
+        localStorage.removeItem('dbconsole_history');
+        this.history = JSON.parse(localStorage.getItem(this.historyKey()) || '[]');
       } catch (e) {
         this.history = [];
       }
@@ -1776,6 +1809,8 @@ function app() {
 
     async loadConnections() {
       this.connections = await fetch('/api/connections').then(r => r.json());
+      // A connection may have been deleted or unshared since it was selected.
+      this.selectedKeys = this.selectedKeys.filter(k => this.connections.some(c => c.key === k));
     },
     async loadQueries() {
       this.queries = await fetch('/api/queries').then(r => r.json());
@@ -1878,21 +1913,26 @@ function app() {
       if (hr < 24) return hr + 'h ago';
       return Math.floor(hr / 24) + 'd ago';
     },
+    // Run history is kept per user, so people sharing a browser don't see
+    // each other's queries.
+    historyKey() {
+      return 'dbconsole_history:' + this.username;
+    },
     pushHistory(sql, dbLabels, ok) {
       const entry = { id: Date.now() + Math.random(), sql, dbLabels, ok, timestamp: new Date().toISOString() };
       this.history.unshift(entry);
       if (this.history.length > 50) this.history = this.history.slice(0, 50);
-      localStorage.setItem('dbconsole_history', JSON.stringify(this.history));
+      localStorage.setItem(this.historyKey(), JSON.stringify(this.history));
     },
     removeHistoryEntry(id) {
       this.history = this.history.filter(h => h.id !== id);
-      localStorage.setItem('dbconsole_history', JSON.stringify(this.history));
+      localStorage.setItem(this.historyKey(), JSON.stringify(this.history));
     },
     async clearHistory() {
       const ok = await this.askConfirm('Clear run history?', 'This removes all locally stored run history on this device.', { confirmLabel: 'Clear', danger: true });
       if (!ok) return;
       this.history = [];
-      localStorage.removeItem('dbconsole_history');
+      localStorage.removeItem(this.historyKey());
       this.showToast('History cleared');
     },
 
@@ -2226,7 +2266,10 @@ function app() {
       if (!this.canEditRows()) return;
       const where = {};
       this.explorePrimaryKey.forEach((pk) => { where[pk] = row[pk]; });
-      this.exploreRowModal = { open: true, mode: 'edit', where, values: { ...row }, saving: false, error: '' };
+      // JSON columns arrive as objects; edit them as JSON text.
+      const values = {};
+      for (const [k, v] of Object.entries(row)) values[k] = v !== null && typeof v === 'object' ? JSON.stringify(v) : v;
+      this.exploreRowModal = { open: true, mode: 'edit', where, original: { ...values }, values, saving: false, error: '' };
     },
     openInsertRow() {
       const blank = {};
@@ -2239,14 +2282,26 @@ function app() {
       try {
         let res;
         if (this.exploreRowModal.mode === 'edit') {
+          // Send only the fields the user changed, so untouched values
+          // (binary data, JSON, values the browser can't round-trip) are
+          // never rewritten.
+          const changes = {};
+          for (const [k, v] of Object.entries(this.exploreRowModal.values)) {
+            if (v !== this.exploreRowModal.original[k]) changes[k] = v;
+          }
+          if (Object.keys(changes).length === 0) { this.exploreRowModal.open = false; return; }
           res = await fetch(base, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ where: this.exploreRowModal.where, changes: this.exploreRowModal.values })
+            body: JSON.stringify({ where: this.exploreRowModal.where, changes })
           });
         } else {
+          // Blank fields are left out, so the column's default (or
+          // AUTO_INCREMENT) applies.
+          const values = {};
+          for (const [k, v] of Object.entries(this.exploreRowModal.values)) if (v !== '' && v !== null) values[k] = v;
           res = await fetch(base, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ values: this.exploreRowModal.values })
+            body: JSON.stringify({ values })
           });
         }
         const data = await res.json();
@@ -2531,6 +2586,7 @@ function app() {
         const data = await res.json();
         if (!res.ok) { m.error = data.error || 'Failed to change password'; return; }
         m.open = false;
+        this.usingDefaultPassword = false;
         this.showToast('Password changed');
       } catch (e) {
         m.error = 'Network error, please try again';
@@ -2683,12 +2739,13 @@ function app() {
     async runUpdate() {
       const ok = await this.askConfirm(
         'Update and restart?',
-        'This pulls the latest code from git and restarts the app. Everyone will be signed out, and running queries will be cut off.',
+        'This pulls the latest code from git and restarts the app. Long-running queries, exports or restores in progress may be cut off.',
         { confirmLabel: 'Update & restart', danger: false }
       );
       if (!ok) return;
       this.sysUpdating = true; this.sysLog = [];
       let restarting = false;
+      let requestedAt = null;
       try {
         const res = await fetch('/api/system/update', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ restart: true })
@@ -2715,6 +2772,7 @@ function app() {
             else if (evt.type === 'error') this.sysLog.push({ cls: 'err', text: '✗ ' + evt.error });
             else if (evt.type === 'done') {
               restarting = evt.restarting;
+              requestedAt = evt.requestedAt;
               this.sysLog.push({
                 cls: 'ok',
                 text: evt.updated
@@ -2729,46 +2787,54 @@ function app() {
       } finally {
         this.sysUpdating = false;
       }
-      if (restarting) await this.waitForRestart();
+      if (restarting) await this.waitForRestart(requestedAt);
       else await this.loadSystemStatus();
     },
     async restartApp() {
-      const ok = await this.askConfirm('Restart the app?', 'Everyone will be signed out, and running queries will be cut off.', { confirmLabel: 'Restart', danger: false });
+      const ok = await this.askConfirm('Restart the app?', 'Long-running queries, exports or restores in progress may be cut off.', { confirmLabel: 'Restart', danger: false });
       if (!ok) return;
       this.sysRestarting = true;
       try {
         const res = await fetch('/api/system/restart', { method: 'POST' });
         const data = await res.json();
         if (!res.ok) { this.showToast(data.error || 'Restart failed', 'error'); return; }
-        await this.waitForRestart();
+        await this.waitForRestart(data.requestedAt);
       } finally {
         this.sysRestarting = false;
       }
     },
-    // Polls until the restarted app answers again. Sessions live in memory,
-    // so the restart signs everyone out and we end up on the login page.
-    async waitForRestart() {
-      this.sysWaiting = true;
+    // Polls until every PM2 instance has been (re)started after `requestedAt`
+    // (server time). Sessions are stored on disk, so we stay signed in.
+    async waitForRestart(requestedAt) {
+      this.sysWaiting = true; this.sysWaitingText = '';
+      const expected = (this.sysStatus && this.sysStatus.pm2.instances) ? this.sysStatus.pm2.instances.length : 1;
       const started = Date.now();
-      await new Promise(r => setTimeout(r, 2500));
-      while (Date.now() - started < 120000) {
+      await new Promise(r => setTimeout(r, 2000));
+      while (Date.now() - started < 180000) {
         try {
-          const sess = await fetch('/api/session', { cache: 'no-store' }).then(r => r.json());
-          if (!sess.authenticated) { window.location.href = '/login'; return; }
-          // Still signed in: the old process may not have stopped yet.
-          const st = await fetch('/api/system/status').then(r => r.json());
-          if (this.sysStatus && st.uptimeSec < this.sysStatus.uptimeSec) {
+          const res = await fetch('/api/system/status', { cache: 'no-store' });
+          if (res.status === 401) { window.location.href = '/login'; return; }
+          const st = await res.json();
+          const inst = st.pm2.instances;
+          const fresh = inst
+            ? inst.filter(p => p.status === 'online' && p.startedAt > requestedAt).length
+            : (st.startedAt > requestedAt ? 1 : 0);
+          const total = inst ? Math.max(inst.length, expected) : 1;
+          this.sysWaitingText = `Restarting… ${fresh} of ${total} instance(s) back`;
+          if (fresh >= total) {
             this.sysStatus = st; this.sysWaiting = false;
+            this.sysCheck = null; // the "N new commits" notice is now stale
             this.showToast('App restarted');
             return;
           }
         } catch (e) {
-          // app is down while it restarts
+          // the instance answering may be stopping
         }
         await new Promise(r => setTimeout(r, 1500));
       }
       this.sysWaiting = false;
-      this.showToast('The app did not come back within 2 minutes — check PM2 on the server', 'error');
+      await this.loadSystemStatus();
+      this.showToast('Not every instance came back within 3 minutes — check PM2 on the server', 'error');
     },
 
     async logout() {

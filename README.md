@@ -144,6 +144,8 @@ Export table data directly to CSV.
 
 The table export is **streamed from the database**, allowing large tables to be exported without loading the entire dataset into application memory.
 
+`NULL` values are written as `\N` (the MySQL `LOAD DATA` / `SELECT … INTO OUTFILE` convention), so they stay distinct from empty strings and an exported table imports back exactly. JSON columns are written as JSON text.
+
 Query results can also be exported from the Query Runner.
 
 ---
@@ -162,6 +164,8 @@ The import workflow provides:
 6. Insert into the database
 
 CSV files are parsed using PapaParse's streaming file API, avoiding the need to load a large file entirely into memory or send it as one large HTTP request.
+
+On import, `\N` becomes `NULL`. An empty value also becomes `NULL` for nullable non-text columns (numbers, dates, JSON...), where an empty string isn't a valid value; text columns keep empty strings.
 
 ---
 
@@ -300,14 +304,16 @@ Keep a deployment up to date from the browser:
 * **Check for updates** fetches from git and lists incoming commits
 * **Update & restart** runs `git pull --ff-only`, runs `npm install --omit=dev` only when `package.json` / `package-lock.json` changed, then restarts through PM2 (`pm2 reload` in cluster mode, `pm2 restart` otherwise)
 * **Restart only** restarts the PM2 process without updating
+* In cluster mode every instance is listed (PID, status, uptime, restarts, memory), and the restart is a rolling `pm2 reload` of all instances, one at a time
+* Only one update can run at a time, across all instances
 
 Requirements:
 
 * The app directory is a git clone with an upstream branch configured
-* The app runs under PM2 (see `ecosystem_copy.config.js`) — without PM2 the update still pulls the code, but you restart manually
-* The OS user running the app can run `git`, `npm` and `pm2`
+* The app runs under PM2 (see [Running with PM2](#running-with-pm2)) — without PM2 the update still pulls the code, but you restart manually
+* The OS user running the app can run `git`, `npm` and `pm2`, and `git pull` works without prompting for credentials
 
-Sessions are kept in memory, so a restart signs everyone out.
+Users stay signed in across updates and restarts (sessions are stored in the data directory).
 
 ---
 
@@ -402,6 +408,44 @@ http://localhost:3000
 
 Log in using the credentials configured in `config.js`.
 
+On first start the app creates its `data/` directory (connections, saved queries, users, sessions, query log). Nothing in it is part of the repository.
+
+---
+
+## Running with PM2
+
+```bash
+npm install -g pm2
+cp ecosystem_copy.config.js ecosystem.config.js   # adjust as needed
+pm2 start ecosystem.config.js
+pm2 save
+```
+
+**Cluster mode** (`exec_mode: "cluster"`) works with any number of instances (`instances: 2`, `4`, `'max'`...):
+
+* Sessions are stored in the data directory, so any instance can serve any request, and restarts don't sign users out
+* Data files are written atomically under a cross-process lock, so concurrent changes from different instances are never lost
+* Login rate limiting and the "update running" lock are shared by all instances
+* **Update & Restart** reloads every instance one at a time (`pm2 reload <name>`); `wait_ready` + `listen_timeout` in the ecosystem file make PM2 wait until each new instance is listening before stopping the old one
+
+All instances must share the same data directory (the default `./data` does).
+
+---
+
+## Upgrading an existing installation
+
+Older versions kept `data/connections.json` and `data/queries.json` in git. They are no longer tracked, so a plain `git pull` on a server that has changed them stops with *"Your local changes would be overwritten"*. Upgrade once with:
+
+```bash
+cp -a data /tmp/db-console-data-backup     # keep your connections and queries
+git checkout -- data                        # drop the tracked copies' local changes
+git pull
+cp -a /tmp/db-console-data-backup/. data/   # put your data back (now ignored by git)
+pm2 reload ecosystem.config.js              # or restart however you run it
+```
+
+On first start after the upgrade, existing connections and saved queries are assigned to the first admin, and the login from `config.js` becomes that admin.
+
 ---
 
 # Configuration
@@ -433,6 +477,14 @@ module.exports = {
 If you lose access to every admin account, stop the app, delete `data/users.json` and start it again: the admin from `appAuth` is recreated.
 
 Connections and saved queries created before multi-user support are assigned to that first admin automatically.
+
+### Other settings
+
+| Setting (env / `config.js`) | Default  | Purpose |
+| --------------------------- | -------- | ------- |
+| `PORT`                      | `3000`   | HTTP port |
+| `DATA_DIR` / `dataDir`      | `./data` | Where connections, users, sessions and the query log are stored |
+| `TRUST_PROXY` / `trustProxy`| off      | Set to `1` behind a reverse proxy, so client IPs (rate limiting) and HTTPS (secure cookies) are detected from `X-Forwarded-*` |
 
 ### Database Connections
 
@@ -469,13 +521,21 @@ By default:
 data/
 ├── connections.json     # connections, with owner and sharing
 ├── queries.json         # saved queries, per user
-├── users.json           # users and password hashes (not committed)
-└── query_log.jsonl      # query log, one JSON entry per line (not committed)
+├── users.json           # users and password hashes
+├── query_log.jsonl      # query log, one JSON entry per line
+├── sessions/            # one file per signed-in session
+└── login_attempts.json  # failed-login counters for rate limiting
 ```
 
 are used for persistent application data.
 
-The query log rotates at 20 MB to `query_log.1.jsonl`; one previous file is kept.
+* Everything is **created automatically** on first start, and recreated if deleted; the whole directory is ignored by git
+* Files are readable by the app's OS user only (`0600`) — they contain database passwords and password hashes
+* Writes are atomic and locked, so several PM2 cluster instances can share the directory
+* The query log rotates at 20 MB to `query_log.1.jsonl`; one previous file is kept
+* The location can be changed with `DATA_DIR`
+
+To back up DB Console itself, back up this directory.
 
 This makes the application easy to:
 
@@ -806,13 +866,18 @@ Do not enable it unless there is a specific requirement and you understand the a
 
 ### 5. Session secret
 
-Always replace the default session secret with a strong random value.
+Always replace the default session secret with a strong random value. The app logs a warning at startup while the sample value is in use.
 
 Example:
 
 ```bash
 openssl rand -hex 32
 ```
+
+### 6. Accounts
+
+* Change the default admin password: a banner is shown while an account still uses it
+* After 10 failed sign-ins for the same username from one IP (or 50 from one IP), sign-in is blocked for 15 minutes. Behind a reverse proxy, set `TRUST_PROXY=1` so the real client IP is used, otherwise every user shares the proxy's IP
 
 ---
 
@@ -913,6 +978,8 @@ db-console/
 ├── config.js
 ├── db.js
 ├── store.js        # users, connections, saved queries
+├── datadir.js      # data directory, atomic writes, cross-process lock
+├── sessionstore.js # file-based session store (shared by cluster workers)
 ├── querylog.js     # query log & analytics
 ├── system.js       # update & restart (git, npm, pm2)
 ├── ecosystem_copy.config.js
@@ -926,7 +993,8 @@ db-console/
 │   ├── connections.json
 │   ├── queries.json
 │   ├── users.json
-│   └── query_log.jsonl
+│   ├── query_log.jsonl
+│   └── sessions/
 │
 └── ...
 ```
@@ -981,7 +1049,7 @@ The project is intentionally small, but potential future improvements include:
 * [x] Password hashing
 * [ ] MFA / 2FA
 * [x] Audit logging
-* [ ] Login rate limiting
+* [x] Login rate limiting
 * [ ] Configurable session expiration
 * [ ] Secret-manager integrations
 
