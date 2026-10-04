@@ -1,5 +1,5 @@
 {
-  "name": "multi-db-client",
+  "name": "db-console",
   "version": "1.0.0",
   "description": "Connect to multiple databases run SQL/Natives commands against them",
   "main": "server.js",
