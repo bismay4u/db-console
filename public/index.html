@@ -864,6 +864,16 @@ Separate multiple statements with ; — highlight text to run just that part."
                   </div>
                   <div class="d-flex align-items-center gap-2">
                     <button class="btn btn-accent btn-sm" @click="openTableEditor('create')"><i class="bi bi-plus-lg me-1"></i>Create table</button>
+                    <div class="dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
+                      <button class="btn btn-outline-soft btn-sm" @click="open = !open"><i class="bi bi-plus-lg me-1"></i>New <i class="bi bi-chevron-down ms-1" style="font-size:.7rem"></i></button>
+                      <div class="dropdown-lite-menu" x-show="open" x-cloak @click="open = false">
+                        <a @click="openObjectEditor('view')"><i class="bi bi-eye"></i> View</a>
+                        <a @click="openObjectEditor('procedure')"><i class="bi bi-gear"></i> Procedure</a>
+                        <a @click="openObjectEditor('function')"><i class="bi bi-braces"></i> Function</a>
+                        <a @click="openObjectEditor('trigger')"><i class="bi bi-lightning-charge"></i> Trigger</a>
+                        <a @click="openObjectEditor('event')"><i class="bi bi-calendar-event"></i> Event</a>
+                      </div>
+                    </div>
                     <button class="btn btn-outline-soft btn-sm" @click="openDbModal('alter')"><i class="bi bi-pencil me-1"></i>Alter database</button>
                     <button class="btn btn-sm btn-outline-danger" @click="dropDatabase()"><i class="bi bi-trash me-1"></i>Drop</button>
                   </div>
@@ -969,6 +979,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <button class="btn btn-sm btn-outline-soft" style="padding:.05rem .4rem" title="Table actions" @click="open = !open"><i class="bi bi-three-dots"></i></button>
                       <div class="dropdown-lite-menu" x-show="open" x-cloak @click="open = false">
                         <a x-show="!exploreIsView()" @click="openTableEditor('alter')"><i class="bi bi-pencil"></i> Alter table…</a>
+                        <a x-show="exploreIsView()" @click="openObjectEditor('view', exploreTable)"><i class="bi bi-pencil"></i> Edit view…</a>
                         <a x-show="!exploreIsView()" @click="openTableAction('copy', [exploreTable])"><i class="bi bi-copy"></i> Copy…</a>
                         <a x-show="!exploreIsView()" @click="openTableAction('move', [exploreTable])"><i class="bi bi-box-arrow-right"></i> Move…</a>
                         <a x-show="!exploreIsView()" class="text-danger" @click="openTableAction('truncate', [exploreTable])"><i class="bi bi-eraser"></i> Truncate…</a>
@@ -1255,9 +1266,15 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <span class="use-db-chip" x-text="exploreObject.kind"></span>
                     <span class="text-muted-sm" x-text="exploreObject.meta"></span>
                   </div>
-                  <button class="btn btn-outline-soft btn-sm" @click="copyDefinition" :disabled="!exploreDefinition">
-                    <i class="bi bi-clipboard me-1"></i>Copy
-                  </button>
+                  <div class="d-flex gap-2">
+                    <button class="btn btn-outline-soft btn-sm" @click="copyDefinition" :disabled="!exploreDefinition">
+                      <i class="bi bi-clipboard me-1"></i>Copy
+                    </button>
+                    <button class="btn btn-accent btn-sm" @click="openObjectEditor(exploreObject.kind, exploreObject.name)" :disabled="!exploreDefinition">
+                      <i class="bi bi-pencil me-1"></i>Edit
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" @click="dropObject(exploreObject.kind, exploreObject.name)"><i class="bi bi-trash me-1"></i>Drop</button>
+                  </div>
                 </div>
                 <div class="p-2">
                   <div class="text-muted-sm" x-show="exploreDefLoading">
@@ -1981,6 +1998,34 @@ Separate multiple statements with ; — highlight text to run just that part."
       <button class="btn btn-outline-soft" :disabled="importModal.running" @click="importModal.open = false" x-text="importModal.step === 'done' ? 'Close' : 'Cancel'"></button>
       <button class="btn btn-accent" x-show="importModal.step === 'mapping'" @click="startImport" :disabled="importModal.running">
         Start import
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Explore: Object Editor (view / procedure / function / trigger / event) ===== -->
+<div class="modal-backdrop-custom" x-show="objectEditor.open" x-cloak @click.self="!objectEditor.saving && (objectEditor.open = false)">
+  <div class="modal-panel modal-panel-xl">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="(objectEditor.name ? 'Edit ' : 'New ') + objectEditor.kind + (objectEditor.name ? ' ' + objectEditor.name : '') + ' in ' + exploreDatabase"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="objectEditor.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="objectEditor.error" x-text="objectEditor.error"></div>
+      <div class="text-muted-sm mb-2">
+        Write the full <code x-text="'CREATE ' + objectEditor.kind.toUpperCase()"></code> statement. It runs as one statement, so <code>;</code> inside a BEGIN … END body is fine and no DELIMITER is needed.
+        <span x-show="objectEditor.name">Saving replaces the existing one; if the new definition fails, the original is put back.</span>
+      </div>
+      <textarea class="form-control sql-editor" rows="14" spellcheck="false" x-model="objectEditor.sql" @input.debounce.400ms="previewObject()"></textarea>
+      <div class="mt-3" x-show="objectEditor.preview">
+        <div class="text-muted-sm mb-1">SQL that will run:</div>
+        <pre class="definition-block mb-0" style="white-space:pre-wrap; max-height:180px" x-text="objectEditor.preview"></pre>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" :disabled="objectEditor.saving" @click="objectEditor.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveObject" :disabled="objectEditor.saving || !objectEditor.preview">
+        <span x-show="objectEditor.saving" class="spinner-border spinner-border-sm me-1"></span>Save
       </button>
     </div>
   </div>
@@ -2803,6 +2848,7 @@ function app() {
     ],
     indexModal: { open: false, editing: null, kind: 'INDEX', name: '', parts: [], sql: '', saving: false, error: '' },
     importModal: { open: false, step: 'pick', file: null, previewFields: [], previewRows: [], mapping: {}, truncate: false, imported: 0, failedBatches: 0, running: false, error: '' },
+    objectEditor: { open: false, kind: 'view', name: null, sql: '', preview: '', error: '', saving: false },
     exploreServer: false,
     serverTab: 'processes',
     serverProcesses: [],
@@ -4311,6 +4357,71 @@ function app() {
     },
 
     // ---- Explore: Backup / Restore ----
+    // ---- Views, procedures, functions, triggers, events ----
+    objectTemplate(kind) {
+      const firstTable = (this.exploreTables.find((t) => !/VIEW/i.test(t.type)) || { name: 'my_table' }).name;
+      return {
+        view: `CREATE VIEW \`new_view\` AS\nSELECT *\nFROM \`${firstTable}\`\nWHERE 1 = 1`,
+        procedure: 'CREATE PROCEDURE `new_procedure`(IN p_id INT)\nBEGIN\n  SELECT p_id;\nEND',
+        function: 'CREATE FUNCTION `new_function`(x INT) RETURNS INT\nDETERMINISTIC\nBEGIN\n  RETURN x * 2;\nEND',
+        trigger: `CREATE TRIGGER \`new_trigger\` BEFORE INSERT ON \`${firstTable}\`\nFOR EACH ROW\nBEGIN\n  -- e.g. SET NEW.created_at = NOW();\nEND`,
+        event: 'CREATE EVENT `new_event`\nON SCHEDULE EVERY 1 DAY\nDO\nBEGIN\n  -- e.g. DELETE FROM sessions WHERE expires < NOW();\nEND'
+      }[kind];
+    },
+    async openObjectEditor(kind, name) {
+      let sql = this.objectTemplate(kind);
+      if (name) {
+        try {
+          const data = await this.apiJson('GET', `${this.exploreBase()}/definition/${kind}/${encodeURIComponent(name)}`);
+          // DEFINER is dropped so saving works for users who can't set another definer.
+          sql = String(data.definition || '').replace(/\s*DEFINER\s*=\s*(`[^`]*`|'[^']*'|\S+)@(`[^`]*`|'[^']*'|\S+)/i, '');
+        } catch (e) {
+          this.showToast(e.message, 'error');
+          return;
+        }
+      }
+      this.objectEditor = { open: true, kind, name: name || null, sql, preview: '', error: '', saving: false };
+      this.previewObject();
+    },
+    async previewObject() {
+      const m = this.objectEditor;
+      try {
+        m.preview = (await this.apiJson('POST', `${this.exploreBase()}/objects/save`, { kind: m.kind, name: m.name, sql: m.sql, preview: true })).sql;
+        m.error = '';
+      } catch (e) { m.preview = ''; m.error = e.message; }
+    },
+    async saveObject() {
+      const m = this.objectEditor;
+      m.saving = true; m.error = '';
+      try {
+        const result = await this.apiJson('POST', `${this.exploreBase()}/objects/save`, { kind: m.kind, name: m.name, sql: m.sql });
+        m.open = false;
+        this.showToast(`${m.kind[0].toUpperCase() + m.kind.slice(1)} saved`);
+        await this.loadExploreTables();
+        if (m.kind === 'view') { await this.selectExploreTable(result.name); this.exploreView = 'structure'; }
+        else {
+          this.exploreNav = { procedure: 'routines', function: 'routines', trigger: 'triggers', event: 'events' }[m.kind];
+          await this.selectExploreObject(m.kind, result.name, '');
+        }
+      } catch (e) {
+        m.error = e.message;
+      } finally {
+        m.saving = false;
+      }
+    },
+    async dropObject(kind, name) {
+      const ok = await this.askConfirm(`Drop ${kind} ${name}?`, `DROP ${kind.toUpperCase()} \`${name}\` — this cannot be undone.`, { confirmLabel: 'Drop', danger: true });
+      if (!ok) return;
+      try {
+        await this.apiJson('POST', `${this.exploreBase()}/objects/drop`, { kind, name });
+        this.showToast(`${kind[0].toUpperCase() + kind.slice(1)} dropped`);
+        this.exploreObject = null; this.exploreTable = '';
+        await this.loadExploreTables();
+      } catch (e) {
+        this.showToast(e.message, 'error');
+      }
+    },
+
     // ---- Server tools ----
     exploreConnCanManage() {
       const c = this.connections.find((x) => x.key === this.exploreConnKey);

@@ -524,7 +524,89 @@ async function searchDatabase(key, database, term, { maxTables = 500 } = {}) {
   return { term: q, tablesSearched: Math.min(byTable.size, maxTables), results };
 }
 
+// ---------- views, procedures, functions, triggers, events ----------
+
+const OBJECT_KINDS = { view: 'VIEW', procedure: 'PROCEDURE', function: 'FUNCTION', trigger: 'TRIGGER', event: 'EVENT' };
+const CREATE_RE = /^CREATE\s+(?:OR\s+REPLACE\s+)?(?:ALGORITHM\s*=\s*\w+\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?:SQL\s+SECURITY\s+\w+\s+)?(?:AGGREGATE\s+)?(VIEW|PROCEDURE|FUNCTION|TRIGGER|EVENT)\s+(?:IF\s+NOT\s+EXISTS\s+)?((?:`[^`]+`|[\w$]+)(?:\s*\.\s*(?:`[^`]+`|[\w$]+))?)/i;
+
+function stripComments(sql) {
+  return String(sql).replace(/^(\s+|--[^\n]*(\n|$)|#[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, '');
+}
+
+function unquoteName(raw) {
+  const last = raw.split(/\s*\.\s*/).pop();
+  return last.startsWith('`') ? last.slice(1, -1).replace(/``/g, '`') : last;
+}
+
+// Runs statements on a dedicated connection with `database` selected (a
+// CREATE PROCEDURE etc. without a database prefix goes there), then
+// discards the connection.
+async function runInDatabase(key, database, statements) {
+  const conn = await getPool(key).getConnection();
+  try {
+    await conn.query(`USE ${esc(database)}`);
+    for (const sql of statements) await conn.query(sql);
+  } finally {
+    conn.destroy();
+  }
+}
+
+async function showCreate(key, database, kind, name) {
+  const conn = await getPool(key).getConnection();
+  try {
+    await conn.query(`USE ${esc(database)}`);
+    const [rows] = await conn.query(`SHOW CREATE ${OBJECT_KINDS[kind]} ${esc(name)}`);
+    const row = rows[0] || {};
+    const col = Object.keys(row).find((k) => /^Create /i.test(k) || k === 'SQL Original Statement');
+    return col ? row[col] : null;
+  } finally {
+    conn.destroy();
+  }
+}
+
+// Saves a view / procedure / function / trigger / event from its full CREATE
+// statement (run as one statement — no DELIMITER needed). When `name` is
+// given the existing object is replaced: it's dropped first and, if the new
+// definition fails, recreated from its original definition.
+async function saveObject(key, database, { kind, name, sql, preview } = {}) {
+  const keyword = OBJECT_KINDS[kind];
+  if (!keyword) throw new Error(`Unknown object type: ${kind}`);
+  const body = String(sql || '').trim().replace(/;\s*$/, '');
+  const m = CREATE_RE.exec(stripComments(body));
+  if (!m) throw new Error(`The definition must be a single CREATE ${keyword} statement`);
+  if (m[1].toUpperCase() !== keyword) throw new Error(`This is a CREATE ${m[1].toUpperCase()} statement, not CREATE ${keyword}`);
+  if (/^\s*DELIMITER\b/im.test(body)) throw new Error('Leave out DELIMITER lines — the statement is run as a whole');
+  const newName = unquoteName(m[2]);
+
+  const statements = [];
+  if (name) statements.push(`DROP ${keyword} IF EXISTS ${esc(name)}`);
+  statements.push(body);
+  const sqlText = statements.join(';\n');
+  if (preview) return { sql: sqlText, name: newName };
+
+  let original = null;
+  if (name) original = await showCreate(key, database, kind, name);
+  try {
+    await runInDatabase(key, database, statements);
+  } catch (err) {
+    if (original) await runInDatabase(key, database, [original]).catch(() => {});
+    err.sql = sqlText;
+    throw err;
+  }
+  return { sql: sqlText, name: newName };
+}
+
+async function dropObject(key, database, { kind, name, preview } = {}) {
+  const keyword = OBJECT_KINDS[kind];
+  if (!keyword) throw new Error(`Unknown object type: ${kind}`);
+  const sql = `DROP ${keyword} IF EXISTS ${esc(name)}`;
+  if (!preview) await runInDatabase(key, database, [sql]);
+  return { sql };
+}
+
 module.exports = {
+  saveObject,
+  dropObject,
   isMariaDb,
   getServerMeta,
   getDatabaseInfo,

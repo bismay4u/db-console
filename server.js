@@ -552,6 +552,8 @@ app.get('/api/explore/:key/:database/autocomplete', requireAuth, schemaRoute(asy
   for (const r of rows) (tables[r.t] = tables[r.t] || []).push(r.c);
   return { tables };
 }, { logged: false }));
+app.post('/api/explore/:key/:database/objects/save', requireAuth, schemaRoute((req, b) => schema.saveObject(req.params.key, req.params.database, b)));
+app.post('/api/explore/:key/:database/objects/drop', requireAuth, schemaRoute((req, b) => schema.dropObject(req.params.key, req.params.database, b)));
 app.post('/api/explore/:key/:database/tables', requireAuth, schemaRoute((req, b) => schema.createTable(req.params.key, req.params.database, b)));
 app.post('/api/explore/:key/:database/table-actions', requireAuth, schemaRoute((req, b) => schema.tableAction(req.params.key, req.params.database, b)));
 app.get('/api/explore/:key/:database/:table/schema', requireAuth, schemaRoute(async (req) => {
