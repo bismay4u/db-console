@@ -49,6 +49,8 @@ The application stores its configuration in simple JSON files and can run as a s
 
 Browse Database servers through a structured interface.
 
+When a database is open, the left menu slides away and is replaced by a full-height, compact list of its tables & views (plus routines, triggers and events), so the data grid gets the full width. **← Menu** brings the menu back; **Tables** shows the list again.
+
 * Browse all databases on a connection
 * Browse tables and views
 * View table data (**Data** tab)
@@ -239,12 +241,13 @@ Saved Queries
 
 Saved queries can be:
 
-* Created
+* Created — from the editor, or from any entry in the Query Runner's **History** tab
 * Edited
 * Deleted
 * Loaded directly into Query Runner
+* Shared with specific users, or with everyone
 
-Saved queries are private to the user who saved them.
+Saved queries belong to the user who saved them. Shared queries appear in the other users' Saved Queries; they can load them or save their own copy, but only the owner can edit, delete or re-share them. Running a shared query still requires access to a connection.
 
 ---
 
@@ -601,10 +604,11 @@ Only the owner or an admin can edit, delete or share a connection.
 ## Saved Queries
 
 ```http
-GET    /api/queries
+GET    /api/queries                # yours + shared with you
 POST   /api/queries
-PUT    /api/queries/:id
-DELETE /api/queries/:id
+PUT    /api/queries/:id            # owner only
+DELETE /api/queries/:id            # owner only
+PUT    /api/queries/:id/sharing    # owner only: { "sharedWith": ["alice"] } or ["*"]
 ```
 
 ---

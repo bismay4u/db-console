@@ -416,9 +416,35 @@ app.post('/api/connections/test', requireAuth, async (req, res) => {
   res.json(result);
 });
 
-// --- Saved queries CRUD (private to each user) ---
+// --- Saved queries ---
+// Each user sees their own saved queries plus those shared with them. Only
+// the owner can edit, delete or share a query; others can load it or save
+// their own copy.
+function queryView(q, user) {
+  const mine = q.owner === user.username;
+  const shared = q.sharedWith || [];
+  return {
+    ...q,
+    sharedWith: mine ? shared : undefined,
+    canManage: mine,
+    isShared: shared.length > 0,
+    sharedWithMe: !mine
+  };
+}
+
 app.get('/api/queries', requireAuth, (req, res) => {
-  res.json(store.listQueries(req.user.username));
+  res.json(store.listVisibleQueries(req.user.username).map((q) => queryView(q, req.user)));
+});
+
+app.put('/api/queries/:id/sharing', requireAuth, (req, res) => {
+  const { sharedWith } = req.body || {};
+  if (!Array.isArray(sharedWith)) return res.status(400).json({ error: 'sharedWith must be an array' });
+  const q = store.getQuery(req.params.id);
+  if (!q || (q.owner !== req.user.username && !(q.sharedWith || []).includes('*') && !(q.sharedWith || []).includes(req.user.username))) {
+    return res.status(404).json({ error: 'Query not found' });
+  }
+  if (q.owner !== req.user.username) return res.status(403).json({ error: 'Only the owner can share this query' });
+  res.json(queryView(store.setQuerySharing(req.params.id, sharedWith, req.user.username), req.user));
 });
 
 app.post('/api/queries', requireAuth, (req, res) => {
@@ -426,14 +452,14 @@ app.post('/api/queries', requireAuth, (req, res) => {
   if (!name || !sql) {
     return res.status(400).json({ error: 'name and sql are required' });
   }
-  res.status(201).json(store.createQuery({ name, sql, owner: req.user.username }));
+  res.status(201).json(queryView(store.createQuery({ name, sql, owner: req.user.username }), req.user));
 });
 
 app.put('/api/queries/:id', requireAuth, (req, res) => {
   const { name, sql } = req.body || {};
   const updated = store.updateQuery(req.params.id, { name, sql }, req.user.username);
   if (!updated) return res.status(404).json({ error: 'Query not found' });
-  res.json(updated);
+  res.json(queryView(updated, req.user));
 });
 
 app.delete('/api/queries/:id', requireAuth, (req, res) => {

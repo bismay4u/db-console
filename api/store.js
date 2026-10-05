@@ -3,7 +3,8 @@
 //   - app users (login accounts, roles)
 //   - database connections (added/edited/removed from the UI), each owned
 //     by a user and optionally shared with other users
-//   - saved SQL queries (private to the user who saved them)
+//   - saved SQL queries, each owned by a user and optionally shared with
+//     other users
 //
 // Good enough for a small internal admin tool. Every function that changes
 // data runs under the data-directory lock (see datadir.js), so several PM2
@@ -195,9 +196,32 @@ function deleteConnection(key) {
 
 // ---------- Saved queries ----------
 
-function listQueries(owner) {
-  const queries = readJson(QUERIES_FILE);
-  return owner ? queries.filter((q) => q.owner === owner) : queries;
+function listQueries() {
+  return readJson(QUERIES_FILE);
+}
+
+function isSharedWith(item, username) {
+  const shared = item.sharedWith || [];
+  return shared.includes('*') || shared.includes(username);
+}
+
+// Queries the user saved plus the ones shared with them.
+function listVisibleQueries(username) {
+  return listQueries().filter((q) => q.owner === username || isSharedWith(q, username));
+}
+
+function getQuery(id) {
+  return listQueries().find((q) => q.id === id) || null;
+}
+
+// sharedWith: array of usernames, or ['*'] for every user. Owner only.
+function setQuerySharing(id, sharedWith, owner) {
+  const queries = listQueries();
+  const idx = queries.findIndex((q) => q.id === id && q.owner === owner);
+  if (idx === -1) return null;
+  queries[idx] = { ...queries[idx], sharedWith: normalizeSharedWith(sharedWith, owner) };
+  writeJson(QUERIES_FILE, queries);
+  return queries[idx];
 }
 
 function createQuery(data) {
@@ -207,6 +231,7 @@ function createQuery(data) {
     name: data.name,
     sql: data.sql,
     owner: data.owner,
+    sharedWith: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -353,7 +378,11 @@ function deleteUser(username, transferTo) {
   }));
   writeJson(CONNECTIONS_FILE, conns);
 
-  const queries = listQueries().map((q) => (q.owner === username ? { ...q, owner: transferTo } : q));
+  const queries = listQueries().map((q) => ({
+    ...q,
+    owner: q.owner === username ? transferTo : q.owner,
+    sharedWith: (q.sharedWith || []).filter((u) => u !== username)
+  }));
   writeJson(QUERIES_FILE, queries);
   return true;
 }
@@ -380,7 +409,10 @@ module.exports = {
   updateConnection: locked(updateConnection),
   deleteConnection: locked(deleteConnection),
   listQueries,
+  listVisibleQueries,
+  getQuery,
   createQuery: locked(createQuery),
+  setQuerySharing: locked(setQuerySharing),
   updateQuery: locked(updateQuery),
   deleteQuery: locked(deleteQuery)
 };

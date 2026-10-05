@@ -22,6 +22,7 @@
     --danger:#e5484d;
     --success:#1fa971;
     --sidebar-w:208px;
+    --explore-sidebar-w:240px;
   }
   *{box-sizing:border-box}
   body{
@@ -31,15 +32,42 @@
     font-size:.925rem;
   }
   [x-cloak]{display:none!important}
+  /* Alpine's x-show hides an element with an inline display:none, which
+     Bootstrap's !important display utilities (d-flex, d-block…) override.
+     Make the hidden state win, so x-show works on any element. */
+  [x-show][style*="display: none"]{display:none!important}
 
   /* ---- Layout ---- */
   .sidebar{
     position:fixed; top:0; left:0; bottom:0; width:var(--sidebar-w);
     background:var(--card); border-right:1px solid var(--border);
-    display:flex; flex-direction:column; padding:1rem .75rem;
+    overflow:hidden; z-index:10;
+    transition:width .2s ease;
   }
+  /* The menu and the Explore navigator sit side by side and slide. */
+  .sidebar-panel{
+    position:absolute; inset:0; display:flex; flex-direction:column; padding:1rem .75rem;
+    transition:transform .22s ease, opacity .22s ease;
+  }
+  .sidebar-explore{ transform:translateX(100%); opacity:0; padding:.75rem .5rem .5rem; }
+  .sidebar.explore-mode{ width:var(--explore-sidebar-w); }
+  .sidebar.explore-mode .sidebar-menu{ transform:translateX(-100%); opacity:0; }
+  .sidebar.explore-mode .sidebar-explore{ transform:translateX(0); opacity:1; }
+  body.explore-mode .main{ margin-left:var(--explore-sidebar-w); }
+  .obj-list{ flex:1; min-height:0; overflow-y:auto; margin:0 -.25rem; padding:0 .25rem; }
+  .obj-row{
+    display:flex; align-items:center; gap:.4rem; padding:.22rem .45rem; border-radius:6px;
+    font-size:.8rem; cursor:pointer; color:var(--text); line-height:1.3;
+  }
+  .obj-row:hover{ background:var(--bg); }
+  .obj-row.selected{ background:var(--accent-soft); color:var(--accent); font-weight:600; }
+  .obj-row i{ font-size:.78rem; color:var(--muted); flex-shrink:0; }
+  .obj-row i.obj-view, .obj-row.selected i{ color:var(--accent); }
+  .obj-name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .obj-meta{ font-size:.66rem; color:var(--muted); font-weight:500; flex-shrink:0; font-variant-numeric:tabular-nums; }
   .main{
     margin-left:var(--sidebar-w);
+    transition:margin-left .2s ease;
     min-height:100vh;
     display:flex; flex-direction:column;
   }
@@ -246,9 +274,92 @@
   .confirm-panel{ background:#fff; border-radius:14px; width:100%; max-width:360px; box-shadow:0 20px 60px rgba(20,20,43,.25); padding:1.25rem; }
 </style>
 </head>
-<body x-data="app()" x-init="init()" x-cloak>
+<body x-data="app()" x-init="init()" x-cloak :class="exploreSidebarActive() && 'explore-mode'">
 
-<aside class="sidebar">
+<aside class="sidebar" :class="exploreSidebarActive() && 'explore-mode'">
+  <!-- Explore navigator: replaces the menu while browsing a database -->
+  <div class="sidebar-panel sidebar-explore" :inert="!exploreSidebarActive()">
+    <div class="d-flex align-items-center gap-2 mb-2">
+      <button class="btn btn-sm btn-outline-soft" @click="exploreSidebarHidden = true" title="Back to the menu">
+        <i class="bi bi-arrow-left"></i> Menu
+      </button>
+      <div class="text-truncate" style="line-height:1.15; min-width:0">
+        <div class="fw-semibold text-truncate" style="font-size:.82rem" x-text="exploreDatabase"></div>
+        <div class="text-muted-sm text-truncate" style="font-size:.7rem" x-text="labelFor(exploreConnKey)"></div>
+      </div>
+    </div>
+    <div class="tab-switch mb-2">
+      <button class="tab-btn" :class="exploreNav==='tables' && 'active'" @click="exploreNav='tables'" title="Tables & views">
+        <i class="bi bi-table"></i> <span x-text="exploreTables.length"></span>
+      </button>
+      <button class="tab-btn" x-show="exploreRoutines.length" :class="exploreNav==='routines' && 'active'" @click="exploreNav='routines'" title="Routines (procedures & functions)">
+        <i class="bi bi-gear"></i> <span x-text="exploreRoutines.length"></span>
+      </button>
+      <button class="tab-btn" x-show="exploreTriggers.length" :class="exploreNav==='triggers' && 'active'" @click="exploreNav='triggers'" title="Triggers">
+        <i class="bi bi-lightning-charge"></i> <span x-text="exploreTriggers.length"></span>
+      </button>
+      <button class="tab-btn" x-show="exploreEvents.length" :class="exploreNav==='events' && 'active'" @click="exploreNav='events'" title="Events">
+        <i class="bi bi-calendar-event"></i> <span x-text="exploreEvents.length"></span>
+      </button>
+    </div>
+    <input type="search" class="form-control form-control-sm mb-2" :placeholder="'Filter ' + { tables: 'tables & views', routines: 'routines', triggers: 'triggers', events: 'events' }[exploreNav] + '…'" x-model="exploreFilter">
+    <div class="text-muted-sm" x-show="exploreLoadingTables"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+
+    <div class="obj-list">
+      <template x-if="exploreNav === 'tables'">
+        <div>
+          <div class="text-muted-sm px-1" x-show="!exploreLoadingTables && filterList(exploreTables).length === 0">No tables or views.</div>
+          <template x-for="t in filterList(exploreTables)" :key="t.name">
+            <div class="obj-row" :class="exploreTable === t.name && 'selected'" @click="selectExploreTable(t.name)"
+                 :title="t.name + (/VIEW/i.test(t.type) ? ' (view)' : ' — ~' + (t.approxRows ?? 0) + ' rows · ' + (t.engine || 'n/a'))">
+              <i class="bi" :class="/VIEW/i.test(t.type) ? 'bi-eye obj-view' : 'bi-table'"></i>
+              <span class="obj-name" x-text="t.name"></span>
+              <span class="obj-meta" x-text="/VIEW/i.test(t.type) ? 'view' : compactCount(t.approxRows)"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+      <template x-if="exploreNav === 'routines'">
+        <div>
+          <template x-for="r in filterList(exploreRoutines)" :key="r.type + r.name">
+            <div class="obj-row" :class="exploreObject && exploreObject.kind === r.type.toLowerCase() && exploreObject.name === r.name && 'selected'"
+                 @click="selectExploreObject(r.type.toLowerCase(), r.name, r.modified ? 'modified ' + new Date(r.modified).toLocaleString() : '')" :title="r.name">
+              <i class="bi" :class="objectIcon(r.type.toLowerCase())"></i>
+              <span class="obj-name" x-text="r.name"></span>
+              <span class="obj-meta" x-text="r.type === 'PROCEDURE' ? 'proc' : 'func'"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+      <template x-if="exploreNav === 'triggers'">
+        <div>
+          <template x-for="t in filterList(exploreTriggers)" :key="t.name">
+            <div class="obj-row" :class="exploreObject && exploreObject.kind === 'trigger' && exploreObject.name === t.name && 'selected'"
+                 @click="selectExploreObject('trigger', t.name, t.timing + ' ' + t.event + ' on ' + t.tableName)" :title="t.timing + ' ' + t.event + ' on ' + t.tableName">
+              <i class="bi bi-lightning-charge"></i>
+              <span class="obj-name" x-text="t.name"></span>
+              <span class="obj-meta" x-text="t.tableName"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+      <template x-if="exploreNav === 'events'">
+        <div>
+          <template x-for="e in filterList(exploreEvents)" :key="e.name">
+            <div class="obj-row" :class="exploreObject && exploreObject.kind === 'event' && exploreObject.name === e.name && 'selected'"
+                 @click="selectExploreObject('event', e.name, e.status + ' · ' + eventSchedule(e))" :title="e.status + ' · ' + eventSchedule(e)">
+              <i class="bi bi-calendar-event"></i>
+              <span class="obj-name" x-text="e.name"></span>
+              <span class="obj-meta" x-text="e.status.toLowerCase()"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- Main menu -->
+  <div class="sidebar-panel sidebar-menu" :inert="exploreSidebarActive()">
   <div class="brand">
     <div class="brand-icon"><i class="bi bi-hdd-network"></i></div>
     <span class="fw-semibold">DB Console</span>
@@ -301,6 +412,7 @@
     <a class="nav-link-custom" @click="logout">
       <i class="bi bi-box-arrow-left"></i> Logout
     </a>
+  </div>
   </div>
 </aside>
 
@@ -389,7 +501,11 @@
                   <template x-for="q in queries" :key="q.id">
                     <div class="d-flex align-items-center justify-content-between px-2 py-1 rounded-2 saved-query-row" @click="sql = q.sql">
                       <div class="text-truncate me-2">
-                        <div class="fw-medium text-truncate" style="font-size:.83rem" x-text="q.name"></div>
+                        <div class="fw-medium text-truncate" style="font-size:.83rem">
+                          <span x-text="q.name"></span>
+                          <i class="bi bi-people text-muted ms-1" x-show="q.sharedWithMe" :title="'Shared with you by ' + userLabel(q.owner)"></i>
+                          <i class="bi bi-share text-muted ms-1" x-show="q.canManage && q.isShared" title="You shared this query"></i>
+                        </div>
                         <code class="sql-preview" style="max-width:190px" x-text="q.sql"></code>
                       </div>
                       <i class="bi bi-arrow-right-circle text-muted"></i>
@@ -417,7 +533,10 @@
                         <code class="sql-preview d-block" style="max-width:190px" x-text="h.sql"></code>
                         <div class="text-muted-sm text-truncate" x-text="h.dbLabels.join(', ')"></div>
                       </div>
-                      <button class="btn btn-sm btn-ghost-danger flex-shrink-0" @click.stop="removeHistoryEntry(h.id)"><i class="bi bi-x"></i></button>
+                      <div class="d-flex flex-column gap-1 flex-shrink-0">
+                        <button class="btn btn-sm btn-outline-soft" title="Save as a saved query" @click.stop="openQueryModal(null, h.sql)"><i class="bi bi-bookmark-plus"></i></button>
+                        <button class="btn btn-sm btn-ghost-danger" title="Remove from history" @click.stop="removeHistoryEntry(h.id)"><i class="bi bi-x"></i></button>
+                      </div>
                     </div>
                   </template>
                 </div>
@@ -557,6 +676,9 @@ Separate multiple statements with ; — highlight text to run just that part."
           </span>
 
           <div class="d-flex align-items-center gap-2 ms-auto" x-show="exploreDatabase">
+            <button class="btn btn-outline-soft btn-sm" x-show="exploreSidebarHidden" @click="exploreSidebarHidden = false" title="Show the tables & views list">
+              <i class="bi bi-layout-sidebar me-1"></i>Tables
+            </button>
             <a class="btn btn-outline-soft btn-sm" :href="backupUrl()" target="_blank">
               <i class="bi bi-cloud-arrow-down me-1"></i>Backup
             </a>
@@ -569,98 +691,12 @@ Separate multiple statements with ; — highlight text to run just that part."
         <div class="alert alert-danger py-2 small" x-show="exploreError" x-text="exploreError"></div>
 
         <div class="row g-2" x-show="exploreDatabase">
-          <div class="col-lg-3">
-            <div class="card-surface p-2">
-              <div class="tab-switch mb-2">
-                <button class="tab-btn" :class="exploreNav==='tables' && 'active'" @click="exploreNav='tables'" title="Tables & views">
-                  <i class="bi bi-table"></i> <span x-text="exploreTables.length"></span>
-                </button>
-                <button class="tab-btn" x-show="exploreRoutines.length" :class="exploreNav==='routines' && 'active'" @click="exploreNav='routines'" title="Routines (procedures & functions)">
-                  <i class="bi bi-gear"></i> <span x-text="exploreRoutines.length"></span>
-                </button>
-                <button class="tab-btn" x-show="exploreTriggers.length" :class="exploreNav==='triggers' && 'active'" @click="exploreNav='triggers'" title="Triggers">
-                  <i class="bi bi-lightning-charge"></i> <span x-text="exploreTriggers.length"></span>
-                </button>
-                <button class="tab-btn" x-show="exploreEvents.length" :class="exploreNav==='events' && 'active'" @click="exploreNav='events'" title="Events">
-                  <i class="bi bi-calendar-event"></i> <span x-text="exploreEvents.length"></span>
-                </button>
-              </div>
-              <div class="section-title mb-2" x-text="{ tables: 'Tables & views', routines: 'Routines', triggers: 'Triggers', events: 'Events' }[exploreNav]"></div>
-              <input type="text" class="form-control form-control-sm mb-2" placeholder="Filter…" x-model="exploreFilter">
-
-              <div class="text-muted-sm" x-show="exploreLoadingTables">
-                <span class="spinner-border spinner-border-sm me-1"></span>Loading…
-              </div>
-
-              <!-- Tables & views -->
-              <template x-if="exploreNav === 'tables'">
-                <div class="d-flex flex-column gap-1" style="max-height:520px; overflow-y:auto;">
-                  <div class="text-muted-sm" x-show="!exploreLoadingTables && filterList(exploreTables).length === 0">No tables or views.</div>
-                  <template x-for="t in filterList(exploreTables)" :key="t.name">
-                    <div class="conn-row" :class="exploreTable === t.name && 'selected'" @click="selectExploreTable(t.name)">
-                      <i class="bi" :class="/VIEW/i.test(t.type) ? 'bi-eye' : 'bi-table'" :style="/VIEW/i.test(t.type) ? 'color:var(--accent)' : 'color:var(--muted)'"></i>
-                      <div class="conn-meta">
-                        <div class="conn-label text-truncate" x-text="t.name"></div>
-                        <div class="conn-sub" x-text="/VIEW/i.test(t.type) ? 'view' : ((t.approxRows ?? 0) + ' rows · ' + (t.engine || 'n/a'))"></div>
-                      </div>
-                    </div>
-                  </template>
-                </div>
-              </template>
-
-              <!-- Routines -->
-              <template x-if="exploreNav === 'routines'">
-                <div class="d-flex flex-column gap-1" style="max-height:520px; overflow-y:auto;">
-                  <template x-for="r in filterList(exploreRoutines)" :key="r.type + r.name">
-                    <div class="conn-row" :class="exploreObject && exploreObject.kind === r.type.toLowerCase() && exploreObject.name === r.name && 'selected'"
-                         @click="selectExploreObject(r.type.toLowerCase(), r.name, r.modified ? 'modified ' + new Date(r.modified).toLocaleString() : '')">
-                      <i class="bi" :class="objectIcon(r.type.toLowerCase())" style="color:var(--muted)"></i>
-                      <div class="conn-meta">
-                        <div class="conn-label text-truncate" x-text="r.name"></div>
-                        <div class="conn-sub" x-text="r.type.toLowerCase()"></div>
-                      </div>
-                    </div>
-                  </template>
-                </div>
-              </template>
-
-              <!-- Triggers -->
-              <template x-if="exploreNav === 'triggers'">
-                <div class="d-flex flex-column gap-1" style="max-height:520px; overflow-y:auto;">
-                  <template x-for="t in filterList(exploreTriggers)" :key="t.name">
-                    <div class="conn-row" :class="exploreObject && exploreObject.kind === 'trigger' && exploreObject.name === t.name && 'selected'"
-                         @click="selectExploreObject('trigger', t.name, t.timing + ' ' + t.event + ' on ' + t.tableName)">
-                      <i class="bi bi-lightning-charge" style="color:var(--muted)"></i>
-                      <div class="conn-meta">
-                        <div class="conn-label text-truncate" x-text="t.name"></div>
-                        <div class="conn-sub" x-text="t.timing + ' ' + t.event + ' · ' + t.tableName"></div>
-                      </div>
-                    </div>
-                  </template>
-                </div>
-              </template>
-
-              <!-- Events -->
-              <template x-if="exploreNav === 'events'">
-                <div class="d-flex flex-column gap-1" style="max-height:520px; overflow-y:auto;">
-                  <template x-for="e in filterList(exploreEvents)" :key="e.name">
-                    <div class="conn-row" :class="exploreObject && exploreObject.kind === 'event' && exploreObject.name === e.name && 'selected'"
-                         @click="selectExploreObject('event', e.name, e.status + ' · ' + eventSchedule(e))">
-                      <i class="bi bi-calendar-event" style="color:var(--muted)"></i>
-                      <div class="conn-meta">
-                        <div class="conn-label text-truncate" x-text="e.name"></div>
-                        <div class="conn-sub" x-text="e.status + ' · ' + eventSchedule(e)"></div>
-                      </div>
-                    </div>
-                  </template>
-                </div>
-              </template>
-            </div>
-          </div>
-
-          <div class="col-lg-9">
+          <div class="col-12">
             <div class="card-surface p-4 text-center text-muted-sm" x-show="!exploreTable && !exploreObject">
               <i class="bi bi-arrow-left-circle me-1"></i> Select a table, view or other object on the left.
+              <div class="mt-2" x-show="exploreSidebarHidden">
+                <button class="btn btn-outline-soft btn-sm" @click="exploreSidebarHidden = false"><i class="bi bi-layout-sidebar me-1"></i>Show tables</button>
+              </div>
             </div>
 
             <div x-show="exploreTable">
@@ -937,25 +973,34 @@ Separate multiple statements with ; — highlight text to run just that part."
         <div class="table-responsive">
           <table class="table table-modern mb-0">
             <thead>
-              <tr><th>Name</th><th>SQL</th><th>Updated</th><th class="text-end">Actions</th></tr>
+              <tr><th>Name</th><th>SQL</th><th>Owner</th><th>Access</th><th>Updated</th><th class="text-end">Actions</th></tr>
             </thead>
             <tbody>
               <template x-for="q in queries" :key="q.id">
                 <tr>
                   <td class="fw-medium" x-text="q.name"></td>
                   <td><code class="sql-preview" x-text="q.sql"></code></td>
+                  <td class="text-muted-sm" x-text="q.owner === username ? 'You' : userLabel(q.owner)"></td>
+                  <td><span class="share-chip" :class="q.canManage && 'mine'" x-text="accessLabel(q)"></span></td>
                   <td class="text-muted-sm" x-text="new Date(q.updatedAt).toLocaleString()"></td>
-                  <td class="text-end">
+                  <td class="text-end text-nowrap">
                     <button class="btn btn-sm btn-outline-soft me-1" @click="sql = q.sql; activeTab = 'runner'">
                       <i class="bi bi-play"></i> Load
                     </button>
-                    <button class="btn btn-sm btn-outline-soft me-1" @click="openQueryModal(q)"><i class="bi bi-pencil"></i></button>
-                    <button class="btn btn-sm btn-ghost-danger" @click="removeQuery(q.id)"><i class="bi bi-trash"></i></button>
+                    <template x-if="q.canManage">
+                      <span>
+                        <button class="btn btn-sm btn-outline-soft me-1" title="Share" @click="openShareModal(q, 'query')"><i class="bi bi-share"></i></button>
+                        <button class="btn btn-sm btn-outline-soft me-1" title="Edit" @click="openQueryModal(q)"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-ghost-danger" title="Delete" @click="removeQuery(q.id)"><i class="bi bi-trash"></i></button>
+                      </span>
+                    </template>
+                    <button class="btn btn-sm btn-outline-soft" x-show="!q.canManage" title="Save your own copy to edit"
+                            @click="openQueryModal(null, q.sql, q.name + ' (copy)')"><i class="bi bi-copy"></i></button>
                   </td>
                 </tr>
               </template>
               <tr x-show="queries.length === 0">
-                <td colspan="4" class="text-center text-muted-sm py-4">No saved queries yet.</td>
+                <td colspan="6" class="text-center text-muted-sm py-4">No saved queries yet.</td>
               </tr>
             </tbody>
           </table>
@@ -1655,14 +1700,18 @@ Separate multiple statements with ; — highlight text to run just that part."
 <div class="modal-backdrop-custom" x-show="shareModal.open" x-cloak @click.self="shareModal.open = false">
   <div class="modal-panel">
     <div class="modal-header-custom">
-      <h2 class="h6 mb-0 fw-semibold">Share <span x-text="shareModal.label"></span></h2>
+      <h2 class="h6 mb-0 fw-semibold">Share <span x-text="shareModal.kind === 'query' ? 'saved query' : ''"></span> <span x-text="shareModal.label"></span></h2>
       <button class="btn btn-sm btn-outline-soft" @click="shareModal.open = false"><i class="bi bi-x-lg"></i></button>
     </div>
     <div class="modal-body-custom">
       <div class="alert alert-danger py-2 small" x-show="shareModal.error" x-text="shareModal.error"></div>
-      <p class="text-muted-sm">
+      <p class="text-muted-sm" x-show="shareModal.kind !== 'query'">
         People you share with can run queries, browse, export, back up and restore with this connection.
         They can't see its password, edit it, delete it or share it further.
+      </p>
+      <p class="text-muted-sm" x-show="shareModal.kind === 'query'">
+        People you share with see this query under Saved Queries and can load it into the Query Runner or save their own copy.
+        They can't edit, delete or share it further, and they still need access to a connection to run it.
       </p>
       <div class="form-check form-switch mb-3">
         <input class="form-check-input" type="checkbox" id="shareAll" x-model="shareModal.all">
@@ -1822,7 +1871,7 @@ function app() {
     currentDbs: {},               // { [connKey]: db } after USE, if not the connection's default
 
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
-    shareModal: { open: false, key: null, label: '', owner: '', all: false, users: [], saving: false, error: '' },
+    shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], saving: false, error: '' },
     userModal: { open: false, editing: false, form: {}, saving: false, error: '' },
     passwordModal: { open: false, current: '', next: '', confirm: '', saving: false, error: '' },
 
@@ -1858,6 +1907,7 @@ function app() {
 
     // ---- Explore ----
     exploreConnKey: '',
+    exploreSidebarHidden: false,  // user went "back" to the menu while in Explore
     exploreDatabases: [],
     exploreDatabase: '',
     exploreTables: [],            // tables AND views (each has .type)
@@ -1949,7 +1999,7 @@ function app() {
         runner: 'Run SQL across one or more databases — separate statements with ; or highlight text to run just that part',
         explore: 'Browse databases, tables and rows with clicks — writing SQL is a last resort here',
         connections: 'Manage the databases this tool can connect to',
-        queries: 'Your reusable SQL snippets — saved queries are private to you',
+        queries: 'Reusable SQL — yours, plus queries others have shared with you',
         logs: this.isAdmin() ? 'Everything run against a database, by every user' : 'Everything you have run against a database',
         analytics: this.isAdmin() ? 'Usage across all users and connections' : 'Your usage over time',
         users: 'Who can sign in, and what they can do',
@@ -2245,11 +2295,11 @@ function app() {
     },
 
     // ---- Saved queries ----
-    openQueryModal(query, prefillSql) {
+    openQueryModal(query, prefillSql, prefillName) {
       this.queryModal = {
         open: true,
         id: query ? query.id : null,
-        form: { name: query ? query.name : '', sql: query ? query.sql : (prefillSql || '') },
+        form: { name: query ? query.name : (prefillName || ''), sql: query ? query.sql : (prefillSql || '') },
         saving: false, error: ''
       };
     },
@@ -2304,7 +2354,18 @@ function app() {
         this.exploreLoadingDatabases = false;
       }
     },
+    // The sidebar shows the tables & views list while a database is open in Explore.
+    exploreSidebarActive() {
+      return this.activeTab === 'explore' && Boolean(this.exploreDatabase) && !this.exploreSidebarHidden;
+    },
+    compactCount(n) {
+      n = Number(n) || 0;
+      if (n < 1000) return String(n);
+      if (n < 1e6) return (n / 1e3).toFixed(n < 1e4 ? 1 : 0).replace(/\.0$/, '') + 'k';
+      return (n / 1e6).toFixed(n < 1e7 ? 1 : 0).replace(/\.0$/, '') + 'M';
+    },
     async selectExploreDatabase(dbName) {
+      this.exploreSidebarHidden = false;
       this.exploreDatabase = dbName;
       this.resetExploreObjects();
       this.exploreError = '';
@@ -2904,10 +2965,14 @@ function app() {
     },
 
     // ---- Sharing ----
-    openShareModal(conn) {
-      const shared = conn.sharedWith || [];
+    // kind: 'connection' (item = connection) or 'query' (item = saved query)
+    openShareModal(item, kind = 'connection') {
+      const shared = item.sharedWith || [];
       this.shareModal = {
-        open: true, key: conn.key, label: conn.label, owner: conn.owner,
+        open: true, kind,
+        key: kind === 'query' ? item.id : item.key,
+        label: kind === 'query' ? item.name : item.label,
+        owner: item.owner,
         all: shared.includes('*'), users: shared.filter(u => u !== '*'),
         saving: false, error: ''
       };
@@ -2916,14 +2981,17 @@ function app() {
     async saveSharing() {
       this.shareModal.saving = true; this.shareModal.error = '';
       try {
-        const res = await fetch(`/api/connections/${this.shareModal.key}/sharing`, {
+        const url = this.shareModal.kind === 'query'
+          ? `/api/queries/${encodeURIComponent(this.shareModal.key)}/sharing`
+          : `/api/connections/${this.shareModal.key}/sharing`;
+        const res = await fetch(url, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sharedWith: this.shareModal.all ? ['*'] : this.shareModal.users })
         });
         const data = await res.json();
         if (!res.ok) { this.shareModal.error = data.error || 'Failed to save'; return; }
         this.shareModal.open = false;
-        await this.loadConnections();
+        await (this.shareModal.kind === 'query' ? this.loadQueries() : this.loadConnections());
         this.showToast('Sharing updated');
       } catch (e) {
         this.shareModal.error = 'Network error, please try again';
