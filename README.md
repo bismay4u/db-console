@@ -162,58 +162,64 @@ Connections
 
 ---
 
-### 📊 CSV Export
+### 📊 Export
 
-Export table data directly to CSV.
+**Export** (Explore → database) lets you choose:
 
-The table export is **streamed from the database**, allowing large tables to be exported without loading the entire dataset into application memory.
+* **What:** structure + data, structure only, or data only
+* **Format:** SQL, gzipped SQL, CSV or TSV (several tables as CSV/TSV come as a `.tar.gz` with one file per table)
+* **Tables** (with their approximate row counts and sizes)
+* **Structure:** `DROP` + `CREATE`, `CREATE`, or `CREATE IF NOT EXISTS`; views, procedures and functions, triggers, events; optionally `CREATE DATABASE` + `USE`
+* **Data:** `INSERT`, `INSERT IGNORE`, `INSERT … ON DUPLICATE KEY UPDATE` or `REPLACE`; rows per `INSERT`; `TRUNCATE` before the rows (data only)
+* **Consistent snapshot:** all tables are read in one transaction (like `mysqldump --single-transaction`), so a busy database is dumped as it was at one moment, without locking it (InnoDB)
 
-`NULL` values are written as `\N` (the MySQL `LOAD DATA` / `SELECT … INTO OUTFILE` convention), so they stay distinct from empty strings and an exported table imports back exactly. JSON columns are written as JSON text.
+Exports are built for large databases:
 
-Query results can also be exported from the Query Runner.
+* Rows are **streamed** from the database straight into the download (and through gzip), with backpressure: a slow download pauses the query instead of filling memory. A million-row table exports with the server using roughly 50 MB more memory than when idle.
+* Each `INSERT` is also capped at about 1 MB, so rows with large values never produce a statement bigger than the restoring server's `max_allowed_packet`.
+* Like `mysqldump`, SQL dumps set `FOREIGN_KEY_CHECKS=0`, `UNIQUE_CHECKS=0`, `SQL_MODE=NO_AUTO_VALUE_ON_ZERO` (a row with id 0 keeps it) and `TIME_ZONE='+00:00'` (`TIMESTAMP` values restore unchanged on a server in another time zone), and put the previous values back at the end.
+* Routines, triggers and events are written in `DELIMITER ;;` blocks, triggers after the data, `DEFINER` clauses removed, generated columns left out of the `INSERT`s. JSON is written exactly as stored.
+* Multi-table CSV/TSV exports start downloading at once; each table goes through a temporary file (tar needs its size up front) that is deleted as soon as it's in the archive.
+* Cancelling a download stops the query on the database server.
+* File names say what's inside and when: `shop-20260105-0930.sql.gz`, `shop-schema-….sql`, `shop-data-….sql`.
 
----
-
-### 📥 CSV Import
-
-Import CSV data into an existing table.
-
-The import workflow provides:
-
-1. Select CSV file
-2. Preview data
-3. Map CSV columns to table columns
-4. Optionally truncate the table
-5. Upload in batches
-6. Insert into the database
-
-CSV files are parsed using PapaParse's streaming file API, avoiding the need to load a large file entirely into memory or send it as one large HTTP request.
-
-On import, `\N` becomes `NULL`. An empty value also becomes `NULL` for nullable non-text columns (numbers, dates, JSON...), where an empty string isn't a valid value; text columns keep empty strings.
+CSV/TSV: `NULL` is written as `\N` (the MySQL `LOAD DATA` convention; a real `\N` text is quoted), binary values as Base64, JSON as JSON text. The table's **Data** tab also exports the rows matching its current search and filters as CSV.
 
 ---
 
-### 💾 Export, Backup & Restore
+### 📥 Import (CSV / TSV)
 
-Export a database without the MySQL command-line tools. **Export** lets you choose:
+Import a CSV or TSV file — also gzipped (`.csv.gz`) — into an existing table:
 
-* Format: SQL, gzipped SQL, CSV or TSV (several tables as CSV/TSV come as a `.tar.gz` with one file per table)
-* Which tables
-* Structure: `DROP` + `CREATE`, `CREATE` only, or none
-* Data on or off
-* Views, procedures and functions, triggers and events
+1. Pick the file; the first row must be a header. The format and delimiter (`,` `;` tab `|`) are detected, and the first rows are shown
+2. Map each file column to a table column (matched by name automatically), or skip it
+3. Choose:
+   * **When a key already exists:** error, skip the row (`INSERT IGNORE`), update the row (`ON DUPLICATE KEY UPDATE`) or replace it
+   * **When a row fails:** stop and report its line number, or skip it (the skipped rows and their errors are listed) and continue
+   * **All or nothing** (default): the whole import is one transaction — if it fails or is stopped, nothing is kept. Otherwise rows are committed every 10,000
+   * Empty the table first (inside the transaction when "all or nothing" is on, so it's undone on failure); don't check foreign keys; binary columns hold Base64
+4. Watch the progress bar (percent, rows per second, time left), and stop it at any time
 
-SQL dumps are written like `mysqldump`: routines, triggers and events in `DELIMITER ;;` blocks, triggers after the data, `DEFINER` clauses removed, generated columns left out of the `INSERT`s. Everything is streamed from the database straight to the download.
+The file is **uploaded as a stream and parsed on the server as it arrives**, then inserted in multi-row batches sized to the server's `max_allowed_packet`. Neither the browser nor the server holds the file in memory, and the upload only goes as fast as the database inserts it. Tested with a 120 MB, 1,000,000-row file (≈ 30 s, ≈ 50 MB extra server memory).
 
-The older **backup** endpoint still produces a `database-backup.tar.gz` (tables, data and views), using only Node.js built-ins (`zlib` and a small TAR writer).
+When a batch fails, it is rolled back to a savepoint and retried row by row, so the error names the exact line (`Line 1234: Data too long for column 'country'`). MySQL warnings (e.g. values truncated under `INSERT IGNORE`) are counted and the first ones shown.
 
-### Restore
+CSV follows RFC 4180 (quoted fields, `""`, newlines inside quotes). TSV is MySQL-style (backslash escapes, as written by `SELECT … INTO OUTFILE` and by DB Console). An unquoted `\N` is `NULL`; an empty value is `NULL` for nullable non-text columns (numbers, dates…). Files exported by DB Console import back **exactly** (verified with `CHECKSUM TABLE` on a million rows with NULLs, empty strings, quotes, newlines, tabs, JSON, binary data, emoji and `TIMESTAMP`s).
 
-Restore `.sql`, `.sql.gz` or `.tar.gz` files — including dumps made by `mysqldump`.
+---
 
-Restore processing is streamed and executed statement-by-statement, with live progress and error reporting. The SQL splitter understands `DELIMITER`, comments, quoted strings and escapes, so procedures, functions, triggers and events restore too.
+### 💾 Restore
 
-Large database dumps therefore do not need to be loaded completely into memory.
+Restore `.sql`, `.sql.gz` or `.tar.gz` files — including dumps made by `mysqldump`:
+
+* The file is streamed and run statement by statement as it uploads; large dumps never sit in memory
+* The SQL splitter understands `DELIMITER`, comments, quoted strings and escapes, so procedures, functions, triggers and events restore too
+* **If a statement fails:** stop there (default), or continue and list the errors
+* Foreign key checks can be turned off for the restore, so tables load in any order
+* Statements run with autocommit off and are committed every 200 statements or 2 seconds — much faster than one commit per `INSERT`
+* A progress bar shows how much of the file has been processed; **Stop** ends it (what already ran stays applied)
+
+The older **backup** endpoint still produces a `database-backup.tar.gz` (tables, data and views) using only Node.js built-ins.
 
 ---
 
@@ -702,47 +708,60 @@ When a connection is shared read-only, every non-`GET` request under `/api/explo
 
 ---
 
-## CSV
-
-Export:
+## Import
 
 ```http
-GET /api/explore/:key/:database/:table/export.csv
+POST /api/explore/:key/:database/:table/import-file?options={...}
+Content-Type: application/octet-stream
+
+<the CSV / TSV file as the raw body>
 ```
 
-Import:
+`options` (JSON): `format` (`csv` | `tsv`), `delimiter`, `gzip`, `columns` (one entry per file column: the table column it goes into, or `null` to skip it), `onDuplicate` (`error` | `skip` | `update` | `replace`), `onError` (`stop` | `skip`), `atomic` (default `true`), `truncate`, `foreignKeyChecks` (default `true`), `base64Binary` (default `true`), `batchRows` (default 1000).
 
-```http
-POST /api/explore/:key/:database/:table/import
-```
+The response is newline-delimited JSON: `{"type":"progress","rows":…,"bytes":…,"inserted":…,"skipped":…,"warnings":…}` a few times a second, then `{"type":"done",…}` (with `errors` for skipped rows and `warningSamples`) or `{"type":"error","error":"Line 4: …","line":4,"kept":…}`.
+
+The older `POST /api/explore/:key/:database/:table/import` (`{ columns, rows, truncate }` as JSON) still works for small batches.
 
 ---
 
 ## Export & Backup
 
 ```http
-GET /api/explore/:key/:database/export?options={"format":"sql","tables":[],"structure":"drop-create","data":true,"views":true,"routines":true,"triggers":true,"events":true}
+GET /api/explore/:key/:database/export?options={...}
+GET /api/explore/:key/:database/:table/export.csv      # the Data tab: current filters and sort
 GET /api/explore/:key/:database/backup.tar.gz
 ```
 
-`format` is `sql`, `sql.gz`, `csv` or `tsv`; `structure` is `drop-create`, `create` or `none`; an empty `tables` means all tables.
+`options` (JSON):
+
+```text
+format            sql | sql.gz | csv | tsv
+tables            names (empty/omitted = all)
+structure         drop-create | create | create-if-not-exists | none
+data              true | false
+views, routines, triggers, events    true | false
+createDatabase    true | false
+insertMode        insert | ignore | update | replace
+rowsPerInsert     1–10000 (default 500; each INSERT is also capped at ~1 MB)
+truncate          TRUNCATE each table before its rows
+singleTransaction consistent snapshot (default true)
+```
+
+Structure only = `{"data": false}`; data only = `{"structure": "none"}`.
 
 ---
 
 ## Restore
 
 ```http
-POST /api/explore/:key/:database/restore?format=sql
+POST /api/explore/:key/:database/restore?format=sql|sqlgz|targz&onError=stop|continue&foreignKeyChecks=0|1
+Content-Type: application/octet-stream
+
+<the dump as the raw body>
 ```
 
-or:
-
-```http
-POST /api/explore/:key/:database/restore?format=targz
-POST /api/explore/:key/:database/restore?format=sqlgz
-```
-
-Restore responses are delivered as newline-delimited JSON progress events.
+Responses are newline-delimited JSON progress events (`executed`, `failed`, `bytes`), then `{"type":"done", executed, failed, errors, stopped}`.
 
 ---
 
@@ -943,69 +962,51 @@ SQL exports include tables, data, views, procedures, functions, triggers and eve
 * `DEFINER` clauses are removed, so restored views and routines belong to the restoring user.
 * Views are written using `SHOW CREATE VIEW` without the database name, so a dump can be restored into a database with a different name; a view that explicitly refers to *another* database still does.
 * Users, grants and server settings are not part of a database export.
-* Restore runs statements one after another, so a very large dump takes a while; if a statement fails the restore stops there and reports it (nothing is rolled back).
+* Restore runs statements one after another (committing every few hundred), so a very large dump takes a while. If a statement fails, the restore stops there by default; what ran before it stays applied (a dump can't be rolled back as a whole, since `CREATE`/`DROP` commit implicitly).
 
 ---
 
 # Large Database Handling
 
-DB Console is designed to avoid unnecessary memory consumption.
+Export, import and restore are all streamed, so their memory use doesn't grow with the size of the data. Measured on a 1,000,000-row table (MariaDB, one server, gzip on):
 
-### Export
+| Operation | Time | Server memory |
+|---|---|---|
+| Export SQL (.sql.gz, 17 MB) | ~8 s | +50 MB |
+| Restore that file | ~23 s | +25 MB |
+| Export CSV (120 MB) | ~9 s | +5 MB |
+| Import that CSV (all or nothing) | ~28 s | +40 MB |
 
-Table exports are streamed:
-
-```text
-Database
-  ↓
-Rows
-  ↓
-CSV stream
-  ↓
-HTTP response
-  ↓
-Browser
-```
-
-The entire table does not need to exist in application memory.
-
-### Backup
+Every round trip was checked with `CHECKSUM TABLE`: the data comes back identical.
 
 ```text
-Database
-  ↓
-Table-by-table dump
-  ↓
-Temporary file
-  ↓
-TAR
-  ↓
-GZIP
-  ↓
-HTTP stream
+Export:   Database ─rows→ INSERT / CSV writer ─→ gzip ─→ HTTP download   (paused while the browser is slow)
+Import:   Upload ─→ gunzip ─→ CSV/TSV parser ─→ multi-row INSERTs ─→ Database   (upload paused while inserting)
+Restore:  Upload ─→ gunzip / untar ─→ SQL splitter ─→ statements ─→ Database
 ```
 
-### Restore
+Cancelling is safe: a stopped download ends its query on the database server; a stopped "all or nothing" import leaves nothing behind; no connection is leaked.
 
-```text
-Upload
-  ↓
-Stream
-  ↓
-GZIP / TAR processing
-  ↓
-SQL parser
-  ↓
-Statement
-  ↓
-Database
+### Behind a reverse proxy
+
+Uploads and downloads can take minutes. DB Console itself has no upload size limit or request timeout for them, but a proxy in front of it may. For nginx:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:4000;
+    client_max_body_size 0;           # no upload size limit (or e.g. 5g)
+    proxy_request_buffering off;      # stream uploads instead of spooling them to disk first
+    proxy_buffering off;              # stream downloads and progress events
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
 ```
 
-This keeps memory usage relatively bounded even when processing large databases.
+### Limits worth knowing
 
-However, very large restores can still take considerable time because statements are executed sequentially.
-
-If DB Console is deployed behind a reverse proxy, configure appropriate request and response timeouts.
+* A single row bigger than the target server's `max_allowed_packet` can't be restored or imported (that's a MySQL limit).
+* The consistent snapshot covers InnoDB tables; MyISAM tables are read as they are at the moment each is dumped.
+* "All or nothing" imports of many millions of rows hold one large transaction; on a busy server, turning it off (commit every 10,000 rows) is lighter.
 
 ---
 
@@ -1024,6 +1025,7 @@ db-console/
 ├── api/
 │   ├── db.js             # MySQL pools, queries, explore, CSV, export/restore
 │   ├── schema.js         # databases, tables, columns, foreign keys, objects, diagram
+│   ├── importer.js       # streaming CSV / TSV import
 │   ├── serveradmin.js    # process list, variables, accounts and privileges
 │   ├── store.js          # users, connections, saved queries
 │   ├── datadir.js        # data directory, atomic writes, cross-process lock

@@ -10,6 +10,7 @@ const querylog = require('./api/querylog');
 const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
+const importer = require('./api/importer');
 const FileSessionStore = require('./api/sessionstore');
 const { DATA_DIR, readJson, writeJson, withLock } = require('./api/datadir');
 
@@ -24,7 +25,10 @@ const DEFAULT_SESSION_SECRET = 'replace-this-with-a-random-string';
 const trustProxy = process.env.TRUST_PROXY ?? config.trustProxy;
 if (trustProxy) app.set('trust proxy', trustProxy === 'true' || trustProxy === '1' ? 1 : trustProxy);
 
-app.use(express.json());
+// Large enough for long SQL in the Query Runner and big bulk edits. File
+// uploads (import, restore) are streamed as raw bodies and don't go through
+// this parser.
+app.use(express.json({ limit: '20mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Sessions are stored as files in the data directory, so every PM2 cluster
@@ -781,6 +785,38 @@ app.get('/api/explore/:key/:database/:table/export.csv', requireAuth, async (req
 // --- CSV import: insert one already-parsed batch of rows into a table ---
 // The frontend streams+batches the CSV file client-side, so large files
 // never arrive here as one giant payload. Each batch is one log entry.
+// Streaming import: the CSV/TSV file is the raw request body; options are a
+// JSON query parameter (see importer.importDelimited). Progress and the
+// result are sent back as newline-delimited JSON while the file uploads.
+app.post('/api/explore/:key/:database/:table/import-file', requireAuth, async (req, res) => {
+  let options;
+  try {
+    options = JSON.parse(req.query.options || '{}');
+  } catch (err) {
+    return res.status(400).json({ error: 'options must be valid JSON' });
+  }
+  const start = Date.now();
+  const describe = (r) => `IMPORT ${options.format === 'tsv' ? 'TSV' : 'CSV'} INTO ${qualified(req)}: ${r.inserted} row(s)`
+    + `${r.skipped ? `, ${r.skipped} skipped` : ''} · duplicates: ${options.onDuplicate || 'error'}${options.truncate ? ' · emptied first' : ''}`;
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-store');
+  const send = (evt) => { if (!res.writableEnded) res.write(JSON.stringify(evt) + '\n'); };
+  try {
+    const result = await importer.importDelimited(req.params.key, req.params.database, req.params.table, req, options,
+      (progress) => send({ type: 'progress', ...progress }));
+    logAction(req, { source: 'import', sql: describe(result), type: 'INSERT', ok: true, durationMs: Date.now() - start, affectedRows: result.inserted });
+    send({ type: 'done', ...result });
+  } catch (err) {
+    const r = err.result || { inserted: 0 };
+    logAction(req, { source: 'import', sql: describe(r), type: 'INSERT', ok: false, error: err.message, durationMs: Date.now() - start });
+    send({ type: 'error', error: err.message, ...(err.result || {}) });
+  }
+  // Rejected before reading the file (e.g. bad options): let the upload
+  // finish (discarded) so the browser receives the answer.
+  if (!req.complete && !req.destroyed) await new Promise((resolve) => { req.on('end', resolve); req.on('close', resolve); req.resume(); });
+  res.end();
+});
+
 app.post('/api/explore/:key/:database/:table/import', requireAuth, async (req, res) => {
   const { columns, rows, truncate } = req.body || {};
   const start = Date.now();
@@ -853,17 +889,18 @@ app.get('/api/explore/:key/:database/export', requireAuth, async (req, res) => {
 app.post('/api/explore/:key/:database/restore', requireAuth, async (req, res) => {
   const { key, database } = req.params;
   const format = ['targz', 'sqlgz'].includes(req.query.format) ? req.query.format : 'sql';
+  const restoreOptions = { onError: req.query.onError === 'continue' ? 'continue' : 'stop', foreignKeyChecks: req.query.foreignKeyChecks === '1' };
   const start = Date.now();
   const entry = { source: 'restore', sql: `RESTORE ${qualified(req)} FROM .${{ targz: 'tar.gz', sqlgz: 'sql.gz', sql: 'sql' }[format]} file`, type: 'OTHER' };
   res.setHeader('Content-Type', 'application/x-ndjson');
   try {
     const result = await db.restoreDump(key, database, req, format, (progress) => {
       res.write(JSON.stringify({ type: 'progress', ...progress }) + '\n');
-    });
+    }, restoreOptions);
     logAction(req, {
       ...entry,
       ok: result.failed === 0,
-      error: result.failed ? `${result.failed} statement(s) failed` : null,
+      error: result.failed ? `${result.failed} statement(s) failed${result.stopped ? ' (stopped at the first error)' : ''}` : null,
       statementCount: result.executed,
       durationMs: Date.now() - start
     });
@@ -1034,6 +1071,10 @@ const server = app.listen(PORT, () => {
   // before routing traffic to a reloaded worker and stopping the old one.
   if (process.send) process.send('ready');
 });
+// Node closes a request that takes longer than 5 minutes to upload by
+// default; a restore or import of a multi-GB file can take much longer.
+// Slow-header protection (headersTimeout) stays on.
+server.requestTimeout = 0;
 
 // Graceful shutdown: PM2 sends SIGINT on reload/restart/stop. Stop taking
 // new connections, let in-flight requests finish, then close DB pools.

@@ -11,6 +11,7 @@ const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { StringDecoder } = require('string_decoder');
+const { Transform, pipeline } = require('stream');
 
 // key -> { configStr, pool }
 const poolCache = new Map();
@@ -78,7 +79,10 @@ async function closeAllPools() {
 // download) would be thrown as an uncaught exception and kill the process.
 // Query errors still reach the query stream's own 'error' handler.
 function createStreamingConnection(conn) {
-  const rawConn = mysqlUtil.createConnection(poolConfig(conn));
+  // Exports read JSON columns as the stored text (jsonStrings): parsing and
+  // re-serialising them would change their formatting (MariaDB keeps JSON
+  // as text, so an export → import round trip must not touch it).
+  const rawConn = mysqlUtil.createConnection({ ...poolConfig(conn), jsonStrings: true });
   rawConn.on('error', (err) => {
     if (err.code !== 'ERR_STREAM_WRITE_AFTER_END') console.error(`MySQL streaming connection error: ${err.message}`);
   });
@@ -1001,7 +1005,8 @@ function csvField(value) {
   else if (Buffer.isBuffer(value)) value = value.toString('base64');
   else if (isJsonValue(value)) value = JSON.stringify(value);
   const str = String(value);
-  return /[",\n\r]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
+  // A real "\N" text value is quoted so it isn't read back as NULL.
+  return /[",\n\r]/.test(str) || str === CSV_NULL ? '"' + str.replace(/"/g, '""') + '"' : str;
 }
 
 // Streams a table's full contents (no LIMIT) to `res` as CSV, one row at a
@@ -1182,18 +1187,65 @@ function writeWithDelimiter(dest, sql) {
   dest.write(`DELIMITER ;;\n${sql};;\nDELIMITER ;\n\n`);
 }
 
-// Writes an SQL dump of `database` to `dest` (anything with .write()).
+// Promise wrapper for a query on a raw (callback) connection.
+function rawQuery(rawConn, sql, params) {
+  return new Promise((resolve, reject) => rawConn.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
+}
+
+// Writes to a stream and waits for 'drain' when its buffer is full, so a
+// slow download never makes the dump pile up in memory. Rejects if the
+// destination is closed (a cancelled download) while waiting.
+function writeAndWait(dest, text) {
+  if (dest.write(text) || !dest.once) return null;
+  return new Promise((resolve, reject) => {
+    const onDrain = () => { dest.off('close', onClose); resolve(); };
+    const onClose = () => { dest.off('drain', onDrain); reject(new Error('Download cancelled by the client')); };
+    dest.once('drain', onDrain);
+    dest.once('close', onClose);
+  });
+}
+
+const INSERT_MODES = {
+  insert: 'INSERT INTO',
+  ignore: 'INSERT IGNORE INTO',
+  replace: 'REPLACE INTO',
+  update: 'INSERT INTO' // + ON DUPLICATE KEY UPDATE
+};
+// One INSERT statement is flushed at this many bytes even if rowsPerInsert
+// isn't reached, so rows with large values never make a statement bigger
+// than the restoring server's max_allowed_packet (4 MB by default on old
+// MySQL versions, 16–64 MB on newer ones).
+const DUMP_STATEMENT_MAX_BYTES = 1024 * 1024;
+
+// Writes an SQL dump of `database` to `dest` (a writable stream).
 // Options (all optional; the defaults make a full backup):
-//   tables:    names to include (default: all tables and views)
-//   structure: 'drop-create' | 'create' | 'none'
-//   data:      include INSERTs for tables (default true)
-//   views, routines, triggers, events: include those objects (default true)
-// Procedures, functions, triggers and events are written between DELIMITER
-// lines (like mysqldump), which the restore splitter understands.
+//   tables:         names to include (default: all tables and views)
+//   structure:      'drop-create' | 'create' | 'create-if-not-exists' | 'none'
+//   data:           include the rows (default true)
+//   insertMode:     'insert' | 'ignore' | 'replace' | 'update' (ON DUPLICATE KEY UPDATE)
+//   rowsPerInsert:  rows per INSERT statement (1–10000, default 500; also capped at ~1 MB)
+//   truncate:       TRUNCATE each table before its rows (useful for data-only dumps)
+//   createDatabase: start with CREATE DATABASE IF NOT EXISTS + USE
+//   singleTransaction: read all tables in one consistent snapshot (default true)
+//   views, routines, triggers, events: include those objects (default true;
+//                   ignored when structure is 'none')
+// Like mysqldump, the dump sets FOREIGN_KEY_CHECKS=0, UNIQUE_CHECKS=0,
+// SQL_MODE=NO_AUTO_VALUE_ON_ZERO and TIME_ZONE='+00:00' (TIMESTAMP values are
+// read in UTC, so they restore unchanged on a server in another time zone)
+// and puts the previous values back at the end. Procedures, functions,
+// triggers and events are written between DELIMITER lines.
 async function streamDatabaseBackup(key, database, dest, opts = {}) {
   const conn = store.getConnection(key);
   if (!conn) throw new Error(`Unknown connection: ${key}`);
-  const o = { structure: 'drop-create', data: true, views: true, routines: true, triggers: true, events: true, ...opts };
+  const o = {
+    structure: 'drop-create', data: true, views: true, routines: true, triggers: true, events: true,
+    insertMode: 'insert', rowsPerInsert: 500, truncate: false, createDatabase: false, singleTransaction: true,
+    ...opts
+  };
+  if (!['drop-create', 'create', 'create-if-not-exists', 'none'].includes(o.structure)) throw new Error(`Unknown structure option: ${o.structure}`);
+  if (!INSERT_MODES[o.insertMode]) throw new Error(`Unknown insert mode: ${o.insertMode}`);
+  const rowsPerInsert = Math.min(Math.max(Number(o.rowsPerInsert) || 500, 1), 10000);
+  const withStructure = o.structure !== 'none';
 
   const pool = getPool(key);
   // Definitions are read with the dumped database selected: SHOW CREATE VIEW
@@ -1201,171 +1253,185 @@ async function streamDatabaseBackup(key, database, dest, opts = {}) {
   // couldn't be restored into a different database. This connection's
   // default database changes, so it's discarded at the end.
   const meta = await pool.getConnection();
+  // Rows are read on one dedicated streaming connection, in a single
+  // consistent snapshot (like mysqldump --single-transaction): every table is
+  // dumped as it was at the same moment, without locking anything (InnoDB).
+  const rawConn = o.data ? createStreamingConnection(conn) : null;
+  let failed = false;
   try {
-  await meta.query(`USE ${esc(database)}`);
-  const objects = await listTables(key, database);
-  const wanted = Array.isArray(o.tables) && o.tables.length ? new Set(o.tables) : null;
-  const included = objects.filter((t) => !wanted || wanted.has(t.name));
-  const tables = included.filter((t) => !/VIEW/i.test(t.type || ''));
-  const views = o.views ? included.filter((t) => /VIEW/i.test(t.type || '')) : [];
-  const BATCH_SIZE = 200;
-  const section = (title) => dest.write(`-- --------------------------------------------------\n-- ${title}\n-- --------------------------------------------------\n\n`);
-
-  dest.write(`-- DB Console dump of \`${database}\`\n-- Generated ${new Date().toISOString()}\n\n`);
-  dest.write('SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\n\n');
-
-  for (const t of tables) {
-    const table = t.name;
-    section(`Table: \`${table}\``);
-
-    if (o.structure !== 'none') {
-      const [createRows] = await meta.query(`SHOW CREATE TABLE ${esc(table)}`);
-      if (o.structure === 'drop-create') dest.write(`DROP TABLE IF EXISTS ${esc(table)};\n`);
-      dest.write(`${createRows[0]['Create Table']};\n\n`);
+    await meta.query(`USE ${esc(database)}`);
+    if (rawConn) {
+      await rawQuery(rawConn, "SET SESSION time_zone = '+00:00'");
+      if (o.singleTransaction) {
+        await rawQuery(rawConn, 'SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        await rawQuery(rawConn, 'START TRANSACTION WITH CONSISTENT SNAPSHOT');
+      }
     }
-    if (!o.data) continue;
+    const objects = await listTables(key, database);
+    const wanted = Array.isArray(o.tables) && o.tables.length ? new Set(o.tables) : null;
+    const included = objects.filter((t) => !wanted || wanted.has(t.name));
+    const tables = included.filter((t) => !/VIEW/i.test(t.type || ''));
+    const views = withStructure && o.views ? included.filter((t) => /VIEW/i.test(t.type || '')) : [];
+    const section = (title) => writeAndWait(dest, `-- --------------------------------------------------\n-- ${title}\n-- --------------------------------------------------\n\n`);
 
-    // Generated (computed) columns can't be inserted into; leave them out.
-    const { columns } = await getTableColumns(key, database, table);
-    const columnNames = columns.filter((c) => !/\b(VIRTUAL|STORED|PERSISTENT)\b/i.test(c.extra || '')).map((c) => c.name);
-    const colClause = columnNames.map(esc).join(', ');
-    const selectCols = columnNames.map(esc).join(', ');
+    const what = [withStructure && 'structure', o.data && 'data'].filter(Boolean).join(' + ') || 'objects';
+    await writeAndWait(dest, [
+      `-- DB Console dump of \`${database}\` (${what})`,
+      `-- Generated ${new Date().toISOString()}${o.data && o.singleTransaction ? ', consistent snapshot' : ''}`,
+      '',
+      'SET NAMES utf8mb4;',
+      'SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0;',
+      'SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0;',
+      "SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO';",
+      "SET @OLD_TIME_ZONE=@@TIME_ZONE, TIME_ZONE='+00:00';",
+      '', ''
+    ].join('\n'));
+    if (o.createDatabase) {
+      const [[dbRow]] = await meta.query('SHOW CREATE DATABASE ' + esc(database));
+      const create = String(dbRow['Create Database']).replace(/^CREATE DATABASE\s+(\/\*!32312 IF NOT EXISTS\*\/\s*)?/i, 'CREATE DATABASE IF NOT EXISTS ');
+      await writeAndWait(dest, `${create};\nUSE ${esc(database)};\n\n`);
+    }
 
-    const rawConn = createStreamingConnection(conn);
-    await new Promise((resolve, reject) => {
-      let batch = [];
-      let wroteAnyRow = false;
+    for (const t of tables) {
+      const table = t.name;
+      await section(`Table: \`${table}\``);
 
-      const queryStream = rawConn
-        .query(`SELECT ${selectCols} FROM ${esc(database)}.${esc(table)}`)
-        .stream({ highWaterMark: BATCH_SIZE });
-      // A cancelled download never drains; stop instead of waiting forever.
-      const onClose = () => reject(new Error('Download cancelled by the client'));
-      if (dest.once && !dest.path) dest.once('close', onClose);
+      if (withStructure) {
+        const [createRows] = await meta.query(`SHOW CREATE TABLE ${esc(table)}`);
+        let create = createRows[0]['Create Table'];
+        if (o.structure === 'drop-create') await writeAndWait(dest, `DROP TABLE IF EXISTS ${esc(table)};\n`);
+        if (o.structure === 'create-if-not-exists') create = create.replace(/^CREATE TABLE/i, 'CREATE TABLE IF NOT EXISTS');
+        await writeAndWait(dest, `${create};\n\n`);
+      }
+      if (!o.data) continue;
+      if (o.truncate) await writeAndWait(dest, `TRUNCATE TABLE ${esc(table)};\n`);
 
-      // Respects backpressure: if the destination can't keep up, pause the
-      // query instead of buffering the table in memory.
-      const flush = () => {
-        if (batch.length === 0) return;
-        const valuesSql = batch
-          .map((row) => '(' + columnNames.map((c) => sqlLiteral(row[c])).join(',') + ')')
-          .join(',\n');
-        const ok = dest.write(`INSERT INTO ${esc(table)} (${colClause}) VALUES\n${valuesSql};\n`);
-        batch = [];
-        if (!ok && dest.once) {
-          queryStream.pause();
-          dest.once('drain', () => queryStream.resume());
-        }
-      };
+      // Generated (computed) columns can't be inserted into; leave them out.
+      const { columns } = await getTableColumns(key, database, table);
+      const columnNames = columns.filter((c) => !/\b(VIRTUAL|STORED|PERSISTENT)\b/i.test(c.extra || '')).map((c) => c.name);
+      const head = `${INSERT_MODES[o.insertMode]} ${esc(table)} (${columnNames.map(esc).join(', ')}) VALUES\n`;
+      const tail = o.insertMode === 'update'
+        ? `\nON DUPLICATE KEY UPDATE ${columnNames.map((c) => `${esc(c)} = VALUES(${esc(c)})`).join(', ')};\n`
+        : ';\n';
 
-      queryStream.on('data', (row) => {
-        wroteAnyRow = true;
-        batch.push(row);
-        if (batch.length >= BATCH_SIZE) {
+      await new Promise((resolve, reject) => {
+        let batch = [];
+        let batchBytes = 0;
+        let wroteAnyRow = false;
+        let settled = false;
+        const done = (err) => { if (settled) return; settled = true; dest.off && dest.off('close', onClose); if (err) reject(err); else resolve(); };
+        const onClose = () => done(new Error('Download cancelled by the client'));
+        if (dest.once && !dest.path) dest.once('close', onClose);
+
+        const queryStream = rawConn
+          .query(`SELECT ${columnNames.map(esc).join(', ')} FROM ${esc(database)}.${esc(table)}`)
+          .stream({ highWaterMark: 100 });
+
+        // Respects backpressure: if the destination can't keep up, pause the
+        // query instead of buffering the table in memory.
+        const flush = () => {
+          if (batch.length === 0) return;
+          const ok = dest.write(head + batch.join(',\n') + tail);
+          batch = []; batchBytes = 0;
+          if (!ok && dest.once) {
+            queryStream.pause();
+            dest.once('drain', () => queryStream.resume());
+          }
+        };
+        queryStream.on('data', (row) => {
+          wroteAnyRow = true;
+          const values = '(' + columnNames.map((c) => sqlLiteral(row[c])).join(',') + ')';
+          if (batch.length && batchBytes + values.length > DUMP_STATEMENT_MAX_BYTES) flush();
+          batch.push(values);
+          batchBytes += values.length + 2;
+          if (batch.length >= rowsPerInsert) flush();
+        });
+        queryStream.on('end', () => {
           flush();
-        }
+          if (wroteAnyRow) dest.write('\n');
+          done();
+        });
+        queryStream.on('error', done);
       });
-      queryStream.on('end', () => {
-        flush();
-        if (wroteAnyRow) dest.write('\n');
-        if (dest.off) dest.off('close', onClose);
-        resolve();
-      });
-      queryStream.on('error', reject);
-    }).then(
-      () => closeStreamingConnection(rawConn, false),
-      (err) => { closeStreamingConnection(rawConn, true); throw err; }
-    );
-  }
+    }
 
-  // Views after the tables they read from.
-  if (o.structure !== 'none') {
+    // Views after the tables they read from.
     for (const v of views) {
       const [rows] = await meta.query(`SHOW CREATE VIEW ${esc(v.name)}`);
-      section(`View: \`${v.name}\``);
-      if (o.structure === 'drop-create') dest.write(`DROP VIEW IF EXISTS ${esc(v.name)};\n`);
-      dest.write(`${stripDefiner(rows[0]['Create View'])};\n\n`);
+      await section(`View: \`${v.name}\``);
+      let create = stripDefiner(rows[0]['Create View']);
+      if (o.structure === 'drop-create') await writeAndWait(dest, `DROP VIEW IF EXISTS ${esc(v.name)};\n`);
+      else create = create.replace(/^CREATE\s+(ALGORITHM\s*=\s*\w+\s+)?/i, (m, alg) => `CREATE OR REPLACE ${alg || ''}`);
+      await writeAndWait(dest, `${create};\n\n`);
     }
-  }
 
-  if (o.routines) {
-    for (const r of await listRoutines(key, database)) {
-      const kind = r.type === 'FUNCTION' ? 'FUNCTION' : 'PROCEDURE';
-      const [rows] = await meta.query(`SHOW CREATE ${kind} ${esc(r.name)}`);
-      const create = rows[0] && rows[0][kind === 'FUNCTION' ? 'Create Function' : 'Create Procedure'];
-      if (!create) continue; // no privilege to read the body
-      section(`${kind === 'FUNCTION' ? 'Function' : 'Procedure'}: \`${r.name}\``);
-      dest.write(`DROP ${kind} IF EXISTS ${esc(r.name)};\n`);
-      writeWithDelimiter(dest, stripDefiner(create));
+    if (withStructure && o.routines) {
+      for (const r of await listRoutines(key, database)) {
+        const kind = r.type === 'FUNCTION' ? 'FUNCTION' : 'PROCEDURE';
+        const [rows] = await meta.query(`SHOW CREATE ${kind} ${esc(r.name)}`);
+        const create = rows[0] && rows[0][kind === 'FUNCTION' ? 'Create Function' : 'Create Procedure'];
+        if (!create) continue; // no privilege to read the body
+        await section(`${kind === 'FUNCTION' ? 'Function' : 'Procedure'}: \`${r.name}\``);
+        await writeAndWait(dest, `DROP ${kind} IF EXISTS ${esc(r.name)};\n`);
+        writeWithDelimiter(dest, stripDefiner(create));
+      }
     }
-  }
 
-  // Triggers after the data, so restoring rows doesn't fire them.
-  if (o.triggers) {
-    const tableNames = new Set(tables.map((t) => t.name));
-    for (const t of await listTriggers(key, database)) {
-      if (wanted && !tableNames.has(t.tableName)) continue;
-      const [rows] = await meta.query(`SHOW CREATE TRIGGER ${esc(t.name)}`);
-      const create = rows[0] && rows[0]['SQL Original Statement'];
-      if (!create) continue;
-      section(`Trigger: \`${t.name}\``);
-      dest.write(`DROP TRIGGER IF EXISTS ${esc(t.name)};\n`);
-      writeWithDelimiter(dest, stripDefiner(create));
+    // Triggers after the data, so restoring rows doesn't fire them.
+    if (withStructure && o.triggers) {
+      const tableNames = new Set(tables.map((t) => t.name));
+      for (const t of await listTriggers(key, database)) {
+        if (wanted && !tableNames.has(t.tableName)) continue;
+        const [rows] = await meta.query(`SHOW CREATE TRIGGER ${esc(t.name)}`);
+        const create = rows[0] && rows[0]['SQL Original Statement'];
+        if (!create) continue;
+        await section(`Trigger: \`${t.name}\``);
+        await writeAndWait(dest, `DROP TRIGGER IF EXISTS ${esc(t.name)};\n`);
+        writeWithDelimiter(dest, stripDefiner(create));
+      }
     }
-  }
 
-  if (o.events) {
-    for (const e of await listEvents(key, database)) {
-      const [rows] = await meta.query(`SHOW CREATE EVENT ${esc(e.name)}`);
-      const create = rows[0] && rows[0]['Create Event'];
-      if (!create) continue;
-      section(`Event: \`${e.name}\``);
-      dest.write(`DROP EVENT IF EXISTS ${esc(e.name)};\n`);
-      writeWithDelimiter(dest, stripDefiner(create));
+    if (withStructure && o.events) {
+      for (const e of await listEvents(key, database)) {
+        const [rows] = await meta.query(`SHOW CREATE EVENT ${esc(e.name)}`);
+        const create = rows[0] && rows[0]['Create Event'];
+        if (!create) continue;
+        await section(`Event: \`${e.name}\``);
+        await writeAndWait(dest, `DROP EVENT IF EXISTS ${esc(e.name)};\n`);
+        writeWithDelimiter(dest, stripDefiner(create));
+      }
     }
-  }
 
-  dest.write('SET FOREIGN_KEY_CHECKS=1;\n');
+    await writeAndWait(dest, [
+      'SET TIME_ZONE=@OLD_TIME_ZONE;',
+      'SET SQL_MODE=@OLD_SQL_MODE;',
+      'SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS;',
+      'SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS;',
+      `-- Dump completed ${new Date().toISOString()}`,
+      ''
+    ].join('\n'));
+  } catch (err) {
+    failed = true;
+    throw err;
   } finally {
     meta.destroy();
+    if (rawConn) closeStreamingConnection(rawConn, failed);
   }
-}
-
-// Streams files as one gzipped tar archive (sizes are known up front).
-async function streamFilesAsTarGz(files, res) {
-  const gzip = zlib.createGzip();
-  gzip.pipe(res);
-  await new Promise((resolve, reject) => {
-    res.on('finish', resolve);
-    res.on('error', reject);
-    gzip.on('error', reject);
-    res.on('close', () => { if (!res.writableFinished) { gzip.destroy(); reject(new Error('Download cancelled by the client')); } });
-    (async () => {
-      for (const f of files) {
-        const { size } = await fs.promises.stat(f.path);
-        gzip.write(buildTarHeader(f.name, size));
-        await new Promise((ok, fail) => {
-          const rs = fs.createReadStream(f.path);
-          rs.on('error', fail);
-          rs.on('end', ok);
-          rs.pipe(gzip, { end: false });
-        });
-        const pad = (512 - (size % 512)) % 512;
-        if (pad) gzip.write(Buffer.alloc(pad));
-      }
-      gzip.write(Buffer.alloc(1024));
-      gzip.end();
-    })().catch(reject);
-  });
 }
 
 // Export dialog. options: { format: 'sql' | 'sql.gz' | 'csv' | 'tsv', tables,
 // structure, data, views, routines, triggers, events }. Returns the file name
 // via onStart(filename, contentType) before writing.
+function fileStamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
 async function exportDatabase(key, database, res, options, onStart) {
   const format = ['sql', 'sql.gz', 'csv', 'tsv'].includes(options.format) ? options.format : 'sql';
   if (format === 'sql' || format === 'sql.gz') {
-    onStart(`${database}.${format}`, format === 'sql' ? 'application/sql; charset=utf-8' : 'application/gzip');
+    const what = options.data === false ? '-schema' : (options.structure === 'none' ? '-data' : '');
+    onStart(`${database}${what}-${fileStamp()}.${format}`, format === 'sql' ? 'application/sql; charset=utf-8' : 'application/gzip');
     if (format === 'sql') {
       await streamDatabaseBackup(key, database, res, options);
       return;
@@ -1392,18 +1458,40 @@ async function exportDatabase(key, database, res, options, onStart) {
     await streamTableCsv(key, database, tables[0], res, { format });
     return;
   }
+  // tar needs each entry's size up front, so each table is written to a temp
+  // file and then appended to the archive, one table at a time: the
+  // download starts at once and at most one table is on disk at any moment.
+  onStart(`${database}-${format}-${fileStamp()}.tar.gz`, 'application/gzip');
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'dbconsole-export-'));
+  const gzip = zlib.createGzip();
+  gzip.pipe(res);
+  let cancelled = false;
+  res.on('close', () => { if (!res.writableFinished) { cancelled = true; gzip.destroy(); } });
   try {
-    const files = [];
     for (const t of tables) {
-      const file = path.join(dir, `${files.length}.${format}`);
+      if (cancelled) throw new Error('Download cancelled by the client');
+      const file = path.join(dir, `${crypto.randomBytes(6).toString('hex')}.${format}`);
       const ws = fs.createWriteStream(file);
-      await streamTableCsv(key, database, t, ws, { format });
-      await new Promise((resolve, reject) => { ws.on('finish', resolve); ws.on('error', reject); ws.end(); });
-      files.push({ name: `${t}.${format}`, path: file });
+      try {
+        await streamTableCsv(key, database, t, ws, { format });
+        await new Promise((resolve, reject) => { ws.on('finish', resolve); ws.on('error', reject); ws.end(); });
+        const { size } = await fs.promises.stat(file);
+        await writeAndWait(gzip, buildTarHeader(`${t}.${format}`, size));
+        for await (const chunk of fs.createReadStream(file)) await writeAndWait(gzip, chunk);
+        const pad = (512 - (size % 512)) % 512;
+        if (pad) await writeAndWait(gzip, Buffer.alloc(pad));
+      } finally {
+        ws.destroy();
+        fs.promises.rm(file, { force: true }).catch(() => {});
+      }
     }
-    onStart(`${database}-${format}.tar.gz`, 'application/gzip');
-    await streamFilesAsTarGz(files, res);
+    await writeAndWait(gzip, Buffer.alloc(1024));
+    await new Promise((resolve, reject) => {
+      gzip.on('error', reject);
+      res.on('finish', resolve);
+      res.on('close', () => (res.writableFinished ? resolve() : reject(new Error('Download cancelled by the client'))));
+      gzip.end();
+    });
   } finally {
     fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -1462,11 +1550,21 @@ async function streamDatabaseBackupTarGz(key, database, res) {
 
 // Executes a SQL dump against `database`, reading it incrementally from
 // `readableStream` (e.g. the raw HTTP request body) so a very large file is
-// never buffered whole. `format` is 'sql' or 'targz' — for 'targz' the
-// stream is gunzipped and the tar container is stripped before its SQL
-// content is fed to the statement splitter. Calls onProgress({executed,
-// failed}) as it goes.
-async function restoreDump(key, database, readableStream, format, onProgress) {
+// never buffered whole. `format` is 'sql', 'sqlgz' (gzipped .sql) or 'targz'
+// (Backup archive: gunzipped, tar container stripped).
+// Options:
+//   onError:  'stop' (default) — stop at the first failing statement;
+//             'continue' — run the rest and report the first errors
+//   foreignKeyChecks: false (default) runs with FOREIGN_KEY_CHECKS=0, so
+//             tables can be loaded in any order
+// Statements run with autocommit off and are committed every few hundred
+// statements or seconds, which is much faster than one commit per INSERT.
+// Calls onProgress({ executed, failed, bytes }) as it goes; `bytes` is how
+// much of the (compressed) upload has been processed.
+const RESTORE_COMMIT_EVERY = 200;
+const RESTORE_COMMIT_MS = 2000;
+
+async function restoreDump(key, database, readableStream, format, onProgress, { onError = 'stop', foreignKeyChecks = false } = {}) {
   const pool = getPool(key);
   const dbConn = await pool.getConnection();
   const splitter = new SqlStatementStream();
@@ -1476,23 +1574,52 @@ async function restoreDump(key, database, readableStream, format, onProgress) {
   const decoder = new StringDecoder('utf8');
   let executed = 0;
   let failed = 0;
+  let bytes = 0;
+  let sinceCommit = 0;
+  let lastCommit = Date.now();
+  let stopped = null;
   const errors = [];
 
+  const commit = async () => {
+    await dbConn.query('COMMIT');
+    sinceCommit = 0; lastCommit = Date.now();
+  };
   const runStatement = async (stmt) => {
+    if (stopped) return;
     try {
       await dbConn.query(stmt);
       executed++;
     } catch (err) {
       failed++;
-      if (errors.length < 20) errors.push({ statement: stmt.slice(0, 200), error: err.message });
+      if (errors.length < 20) errors.push({ statement: stmt.slice(0, 300), error: err.message, number: executed + failed });
+      if (onError !== 'continue') { stopped = errors[errors.length - 1] || { error: err.message }; return; }
     }
+    if (++sinceCommit >= RESTORE_COMMIT_EVERY || Date.now() - lastCommit > RESTORE_COMMIT_MS) await commit();
   };
 
-  // targz: gzip + tar (Backup button); sqlgz: a gzipped .sql file; sql: plain.
-  const sourceStream = tarExtractor || format === 'sqlgz' ? readableStream.pipe(zlib.createGunzip()) : readableStream;
+  // Counts the raw bytes read, before any decompression. The upload is
+  // piped in by hand (not through pipeline()) so that stopping early doesn't
+  // destroy the request socket before the response is sent; a cancelled
+  // upload is passed on as an error instead.
+  const counter = new Transform({ transform(chunk, enc, cb) { bytes += chunk.length; cb(null, chunk); } });
+  const sourceStream = tarExtractor || format === 'sqlgz' ? pipeline(counter, zlib.createGunzip(), () => {}) : counter;
+  const uploadEnded = () => readableStream.complete || readableStream.readableEnded;
+  const onAbort = () => { if (!uploadEnded()) counter.destroy(new Error('Upload cancelled')); };
+  readableStream.on('close', onAbort);
+  readableStream.on('error', onAbort);
+  readableStream.pipe(counter);
+
+  let lastProgress = 0;
+  const progress = (force) => {
+    if (!onProgress || (!force && Date.now() - lastProgress < 300)) return;
+    lastProgress = Date.now();
+    onProgress({ executed, failed, bytes });
+  };
 
   try {
     await dbConn.query(`USE ${esc(database)}`);
+    await dbConn.query('SET autocommit = 0');
+    if (!foreignKeyChecks) await dbConn.query('SET FOREIGN_KEY_CHECKS = 0');
 
     for await (const chunk of sourceStream) {
       const textChunks = tarExtractor ? tarExtractor.feed(chunk) : [chunk];
@@ -1500,16 +1627,34 @@ async function restoreDump(key, database, readableStream, format, onProgress) {
         const statements = splitter.feed(decoder.write(tc));
         for (const stmt of statements) await runStatement(stmt);
       }
-      if (onProgress) onProgress({ executed, failed });
+      progress();
+      if (stopped) break;
     }
-    const rest = splitter.feed(decoder.end()).concat(splitter.flush());
-    for (const stmt of rest) await runStatement(stmt);
-    if (onProgress) onProgress({ executed, failed });
+    if (!stopped) {
+      const rest = splitter.feed(decoder.end()).concat(splitter.flush());
+      for (const stmt of rest) await runStatement(stmt);
+    }
+    // Keep what ran before a failing statement, so "executed" is accurate.
+    await commit();
+    progress(true);
   } finally {
+    readableStream.off('close', onAbort);
+    readableStream.off('error', onAbort);
     // The dump ran USE and SET statements (e.g. FOREIGN_KEY_CHECKS=0) on
-    // this connection; never hand it back to the pool.
+    // this connection; never hand it back to the pool. Destroying it also
+    // rolls back anything uncommitted if the upload was cancelled.
     dbConn.destroy();
   }
 
-  return { executed, failed, errors };
+  // Stopped at an error: discard the rest of the upload (without running
+  // it) so the response can still be delivered.
+  if (stopped && !uploadEnded()) {
+    readableStream.unpipe(counter);
+    await new Promise((resolve) => {
+      readableStream.on('end', resolve);
+      readableStream.on('close', resolve);
+      readableStream.resume();
+    });
+  }
+  return { executed, failed, errors, bytes, stopped: Boolean(stopped) };
 }

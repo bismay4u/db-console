@@ -310,6 +310,14 @@
 
   /* ---- Confirm dialog (reuses modal-backdrop-custom) ---- */
   .confirm-panel{ background:#fff; border-radius:14px; width:100%; max-width:360px; box-shadow:0 20px 60px rgba(20,20,43,.25); padding:1.25rem; }
+  /* Export: what-to-export cards */
+  .export-what{ display:grid; grid-template-columns:repeat(3, 1fr); gap:.5rem; }
+  .export-card{ display:flex; flex-direction:column; gap:.15rem; padding:.6rem .7rem; border:1px solid var(--border); border-radius:10px; cursor:pointer; }
+  .export-card .bi{ color:var(--muted); font-size:1.05rem; }
+  .export-card.active{ border-color:var(--accent); background:var(--accent-soft); }
+  .export-card.active .bi{ color:var(--accent); }
+  .export-card.disabled{ opacity:.45; cursor:not-allowed; }
+  @media (max-width: 576px){ .export-what{ grid-template-columns:1fr; } }
   /* Read-only share: hide everything that would change the database */
   .explore-ro .rw-only{ display:none!important; }
   /* Schema diagram */
@@ -2002,41 +2010,62 @@ Separate multiple statements with ; — highlight text to run just that part."
 
 <!-- ===== Explore: CSV Import Modal ===== -->
 <div class="modal-backdrop-custom" x-show="importModal.open" x-cloak @click.self="!importModal.running && (importModal.open = false)">
-  <div class="modal-panel modal-panel-lg">
+  <div class="modal-panel modal-panel-xl">
     <div class="modal-header-custom">
-      <h2 class="h6 mb-0 fw-semibold">Import CSV into <span x-text="exploreTable"></span></h2>
+      <h2 class="h6 mb-0 fw-semibold">Import into <span x-text="exploreTable"></span></h2>
       <button class="btn btn-sm btn-outline-soft" :disabled="importModal.running" @click="importModal.open = false"><i class="bi bi-x-lg"></i></button>
     </div>
-    <div class="modal-body-custom" style="max-height:65vh; overflow-y:auto;">
-      <div class="alert alert-danger py-2 small" x-show="importModal.error" x-text="importModal.error"></div>
+    <div class="modal-body-custom" style="max-height:70vh; overflow-y:auto;">
+      <div class="alert alert-danger py-2 small" x-show="importModal.error" style="white-space:pre-wrap" x-text="importModal.error"></div>
 
       <!-- Step 1: pick file -->
       <template x-if="importModal.step === 'pick'">
         <div>
-          <label class="form-label small fw-medium">CSV file (first row must be a header)</label>
-          <input type="file" accept=".csv,text/csv" class="form-control form-control-sm" @change="onImportFileSelected($event)">
-          <div class="text-muted-sm mt-2">Large files are streamed and sent in batches — the whole file is never held in memory.</div>
+          <label class="form-label small fw-medium">CSV or TSV file (the first row must be a header)</label>
+          <input type="file" accept=".csv,.tsv,.txt,.gz,text/csv,text/tab-separated-values" class="form-control form-control-sm" @change="onImportFileSelected($event)">
+          <div class="text-muted-sm mt-2">
+            The file is streamed to the server and inserted in batches as it uploads, so files with millions of rows work.
+            <code>.gz</code> files are accepted too. <code>\N</code> is read as NULL, as in DB Console's own exports.
+          </div>
         </div>
       </template>
 
-      <!-- Step 2: mapping preview -->
+      <!-- Step 2: options and column mapping -->
       <template x-if="importModal.step === 'mapping'">
         <div>
-          <div class="text-muted-sm mb-2">Map each CSV column to a table column, or leave it as "Skip".</div>
-          <div class="table-responsive mb-3">
+          <div class="d-flex flex-wrap gap-3 mb-3 align-items-end">
+            <div>
+              <label class="form-label small fw-medium mb-1">File</label>
+              <div class="small"><i class="bi bi-file-earmark-text me-1"></i><span x-text="(importModal.file || {}).name"></span> · <span x-text="formatBytes((importModal.file || {}).size || 0)"></span></div>
+            </div>
+            <div>
+              <label class="form-label small fw-medium mb-1">Format</label>
+              <select class="form-select form-select-sm" x-model="importModal.format" @change="previewImportFile()">
+                <option value="csv">CSV (quoted fields)</option>
+                <option value="tsv">TSV (MySQL-style, backslash escapes)</option>
+              </select>
+            </div>
+            <div x-show="importModal.format === 'csv'">
+              <label class="form-label small fw-medium mb-1">Delimiter</label>
+              <select class="form-select form-select-sm" x-model="importModal.delimiter" @change="previewImportFile()">
+                <option value=",">Comma ,</option><option value=";">Semicolon ;</option><option value="&#9;">Tab</option><option value="|">Pipe |</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="text-muted-sm mb-1">Map each file column to a table column, or skip it:</div>
+          <div class="table-responsive mb-3" style="max-height:260px; overflow-y:auto; border:1px solid var(--border); border-radius:9px">
             <table class="table table-modern mb-0">
-              <thead><tr><th>CSV column</th><th>Sample value</th><th>Maps to</th></tr></thead>
+              <thead><tr><th>File column</th><th>Sample values</th><th style="width:220px">Goes into</th></tr></thead>
               <tbody>
-                <template x-for="f in importModal.previewFields" :key="f">
+                <template x-for="(f, idx) in importModal.previewFields" :key="idx">
                   <tr>
                     <td class="fw-medium" x-text="f"></td>
-                    <td class="text-muted-sm" x-text="importModal.previewRows[0] ? importModal.previewRows[0][f] : ''"></td>
+                    <td class="text-muted-sm text-truncate" style="max-width:320px" x-text="importModal.previewRows.slice(0, 3).map(r => r[idx] === null ? 'NULL' : r[idx]).join(' · ')"></td>
                     <td>
-                      <select class="form-select form-select-sm" x-model="importModal.mapping[f]">
-                        <option value="__skip__">Skip</option>
-                        <template x-for="tc in availableTargetColumns()" :key="tc">
-                          <option :value="tc" x-text="tc"></option>
-                        </template>
+                      <select class="form-select form-select-sm" x-model="importModal.mapping[idx]">
+                        <option value="">Skip</option>
+                        <template x-for="tc in importTargetColumns()" :key="tc"><option :value="tc" x-text="tc" :selected="importModal.mapping[idx] === tc"></option></template>
                       </select>
                     </td>
                   </tr>
@@ -2044,11 +2073,44 @@ Separate multiple statements with ; — highlight text to run just that part."
               </tbody>
             </table>
           </div>
-          <div class="form-check">
-            <input type="checkbox" class="form-check-input" id="importTruncate" x-model="importModal.truncate">
-            <label class="form-check-label text-muted-sm" for="importTruncate">
-              Delete all existing rows in this table before importing
-            </label>
+
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label small fw-medium mb-1">When a row's key already exists</label>
+              <select class="form-select form-select-sm" x-model="importModal.onDuplicate">
+                <option value="error">Treat it as an error</option>
+                <option value="skip">Skip the row (INSERT IGNORE)</option>
+                <option value="update">Update the existing row (ON DUPLICATE KEY UPDATE)</option>
+                <option value="replace">Replace the existing row (REPLACE)</option>
+              </select>
+              <div class="text-muted-sm mt-1" x-show="importModal.onDuplicate === 'skip'">MySQL's IGNORE also turns other bad values into warnings (they're counted and shown).</div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-medium mb-1">When a row fails</label>
+              <select class="form-select form-select-sm" x-model="importModal.onError">
+                <option value="stop">Stop the import and report the line</option>
+                <option value="skip">Skip that row, report it, and continue</option>
+              </select>
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input type="checkbox" class="form-check-input" id="impAtomic" x-model="importModal.atomic">
+                <label class="form-check-label small" for="impAtomic"><strong>All or nothing</strong> — run the whole import in one transaction; if it stops or is cancelled, nothing is kept</label>
+              </div>
+              <div class="text-muted-sm ms-4" x-show="!importModal.atomic">Rows are committed every 10,000 rows; if it stops, the rows before that point stay.</div>
+              <div class="form-check">
+                <input type="checkbox" class="form-check-input" id="importTruncate" x-model="importModal.truncate">
+                <label class="form-check-label small" for="importTruncate">Delete all existing rows in this table first</label>
+              </div>
+              <div class="form-check">
+                <input type="checkbox" class="form-check-input" id="impFk" x-model="importModal.noFkChecks">
+                <label class="form-check-label small" for="impFk">Don't check foreign keys during the import</label>
+              </div>
+              <div class="form-check" x-show="exploreColumns.some(c => /binary|blob|^bit/i.test(c.type))">
+                <input type="checkbox" class="form-check-input" id="impB64" x-model="importModal.base64Binary">
+                <label class="form-check-label small" for="impB64">Binary columns contain Base64 (as DB Console exports them)</label>
+              </div>
+            </div>
           </div>
         </div>
       </template>
@@ -2056,19 +2118,54 @@ Separate multiple statements with ; — highlight text to run just that part."
       <!-- Step 3: importing / done -->
       <template x-if="importModal.step === 'importing' || importModal.step === 'done'">
         <div>
-          <div class="d-flex align-items-center gap-2 mb-2">
-            <span x-show="importModal.running" class="spinner-border spinner-border-sm"></span>
-            <strong x-text="importModal.imported"></strong> row(s) imported
-            <span class="text-danger" x-show="importModal.failedBatches"> · <span x-text="importModal.failedBatches"></span> batch error(s)</span>
+          <div class="progress mb-2" style="height:8px">
+            <div class="progress-bar" :class="importModal.result && importModal.result.type === 'error' ? 'bg-danger' : ''" :style="`width:${importPercent()}%`"></div>
           </div>
-          <div class="text-muted-sm" x-show="importModal.step === 'done'">Import finished.</div>
+          <div class="d-flex flex-wrap gap-3 small mb-2">
+            <span x-show="importModal.progress.inserted !== undefined"><strong x-text="Number(importModal.progress.inserted || 0).toLocaleString()"></strong> row(s) imported</span>
+            <span x-show="importModal.progress.inserted === undefined && importModal.running"><span class="spinner-border spinner-border-sm me-1"></span>Uploading and importing…</span>
+            <span class="text-warning" x-show="importModal.progress.skipped" x-text="Number(importModal.progress.skipped || 0).toLocaleString() + ' skipped'"></span>
+            <span class="text-muted-sm" x-show="importModal.progress.warnings" x-text="Number(importModal.progress.warnings || 0).toLocaleString() + ' warning(s)'"></span>
+            <span class="text-muted-sm" x-text="importPercent() + '% · ' + formatBytes(importDone()) + ' of ' + formatBytes((importModal.file || {}).size || 0)"></span>
+            <span class="text-muted-sm" x-show="importModal.running && importRate()" x-text="importRate()"></span>
+          </div>
+          <template x-if="importModal.result">
+            <div>
+              <div class="alert py-2 small mb-2" :class="importModal.result.type === 'done' ? 'alert-success' : 'alert-danger'">
+                <span x-show="importModal.result.type === 'done'">
+                  Import finished: <strong x-text="Number(importModal.result.inserted).toLocaleString()"></strong> row(s) imported<span x-show="importModal.result.skipped" x-text="', ' + importModal.result.skipped + ' skipped'"></span>.
+                </span>
+                <span x-show="importModal.result.type === 'error'">
+                  <strong>Import stopped.</strong> <span x-text="importModal.result.error"></span><br>
+                  <span x-text="importModal.result.atomic !== false ? 'Nothing was imported (all or nothing).' : Number(importModal.result.kept || 0).toLocaleString() + ' row(s) committed before the error were kept.'"></span>
+                </span>
+              </div>
+              <template x-if="importModal.result.errors && importModal.result.errors.length">
+                <div class="mb-2">
+                  <div class="text-muted-sm mb-1">Skipped rows<span x-show="importModal.result.errors.length >= 50"> (first 50)</span>:</div>
+                  <div style="max-height:160px; overflow-y:auto">
+                    <template x-for="e in importModal.result.errors" :key="e.line + e.error">
+                      <div class="small"><span class="text-muted-sm" x-text="'Line ' + e.line + ':'"></span> <span x-text="e.error"></span></div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+              <template x-if="importModal.result.warningSamples && importModal.result.warningSamples.length">
+                <div>
+                  <div class="text-muted-sm mb-1">Warnings (first few):</div>
+                  <template x-for="w in importModal.result.warningSamples" :key="w"><div class="small" x-text="w"></div></template>
+                </div>
+              </template>
+            </div>
+          </template>
         </div>
       </template>
     </div>
     <div class="modal-footer-custom">
-      <button class="btn btn-outline-soft" :disabled="importModal.running" @click="importModal.open = false" x-text="importModal.step === 'done' ? 'Close' : 'Cancel'"></button>
-      <button class="btn btn-accent" x-show="importModal.step === 'mapping'" @click="startImport" :disabled="importModal.running">
-        Start import
+      <button class="btn btn-outline-soft" x-show="!importModal.running" @click="importModal.open = false" x-text="importModal.step === 'done' ? 'Close' : 'Cancel'"></button>
+      <button class="btn btn-outline-danger" x-show="importModal.running" @click="cancelImport()"><i class="bi bi-stop-circle me-1"></i>Stop import</button>
+      <button class="btn btn-accent" x-show="importModal.step === 'mapping'" @click="startImport" :disabled="!!(importModal.running || !importModal.mapping.some(Boolean))">
+        <i class="bi bi-upload me-1"></i>Start import
       </button>
     </div>
   </div>
@@ -2164,41 +2261,77 @@ Separate multiple statements with ; — highlight text to run just that part."
 
 <!-- ===== Explore: Export Modal ===== -->
 <div class="modal-backdrop-custom" x-show="exportModal.open" x-cloak @click.self="exportModal.open = false">
-  <div class="modal-panel modal-panel-lg">
+  <div class="modal-panel modal-panel-xl">
     <div class="modal-header-custom">
       <h2 class="h6 mb-0 fw-semibold">Export <span x-text="exploreDatabase"></span></h2>
       <button class="btn btn-sm btn-outline-soft" @click="exportModal.open = false"><i class="bi bi-x-lg"></i></button>
     </div>
-    <div class="modal-body-custom">
+    <div class="modal-body-custom" style="max-height:72vh; overflow-y:auto">
       <div class="row g-3">
-        <div class="col-md-5">
+        <div class="col-md-7">
+          <label class="form-label small fw-medium">What to export</label>
+          <div class="export-what mb-3">
+            <template x-for="w in [['both', 'Structure + data', 'Tables, their rows, and the other objects', 'bi-database'], ['structure', 'Structure only', 'CREATE statements, no rows', 'bi-diagram-3'], ['data', 'Data only', 'Rows only (INSERTs or CSV/TSV)', 'bi-table']]" :key="w[0]">
+              <label class="export-card" :class="[exportModal.what === w[0] && 'active', !exportModal.format.startsWith('sql') && w[0] !== 'data' && 'disabled']">
+                <input type="radio" class="d-none" :value="w[0]" x-model="exportModal.what" :disabled="!exportModal.format.startsWith('sql') && w[0] !== 'data'">
+                <i class="bi" :class="w[3]"></i>
+                <span class="fw-medium small" x-text="w[1]"></span>
+                <span class="text-muted-sm" x-text="w[2]"></span>
+              </label>
+            </template>
+          </div>
+
           <label class="form-label small fw-medium">Format</label>
-          <template x-for="f in [['sql.gz', 'SQL, gzipped (.sql.gz)'], ['sql', 'SQL (.sql)'], ['csv', 'CSV (one file per table)'], ['tsv', 'TSV (one file per table)']]" :key="f[0]">
-            <div class="form-check">
-              <input class="form-check-input" type="radio" :id="'fmt-' + f[0]" :value="f[0]" x-model="exportModal.format">
-              <label class="form-check-label small" :for="'fmt-' + f[0]" x-text="f[1]"></label>
-            </div>
-          </template>
+          <div class="d-flex flex-wrap gap-3 mb-3">
+            <template x-for="f in [['sql.gz', 'SQL, gzipped'], ['sql', 'SQL'], ['csv', 'CSV'], ['tsv', 'TSV']]" :key="f[0]">
+              <div class="form-check">
+                <input class="form-check-input" type="radio" :id="'fmt-' + f[0]" :value="f[0]" x-model="exportModal.format" @change="exportFormatChanged()">
+                <label class="form-check-label small" :for="'fmt-' + f[0]" x-text="f[1]"></label>
+              </div>
+            </template>
+          </div>
+
           <template x-if="exportModal.format.startsWith('sql')">
-            <div class="mt-3">
-              <label class="form-label small fw-medium">Table structure</label>
-              <select class="form-select form-select-sm mb-2" x-model="exportModal.structure">
-                <option value="drop-create">DROP + CREATE</option>
-                <option value="create">CREATE only</option>
-                <option value="none">None (data only)</option>
-              </select>
-              <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-data" x-model="exportModal.data"><label class="form-check-label small" for="exp-data">Data (INSERT statements)</label></div>
-              <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-views" x-model="exportModal.views"><label class="form-check-label small" for="exp-views">Views</label></div>
-              <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-routines" x-model="exportModal.routines"><label class="form-check-label small" for="exp-routines">Procedures &amp; functions</label></div>
-              <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-triggers" x-model="exportModal.triggers"><label class="form-check-label small" for="exp-triggers">Triggers</label></div>
-              <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-events" x-model="exportModal.events"><label class="form-check-label small" for="exp-events">Events</label></div>
+            <div class="row g-3">
+              <div class="col-sm-6" x-show="exportModal.what !== 'data'">
+                <div class="section-title mb-1">Structure</div>
+                <select class="form-select form-select-sm mb-2" x-model="exportModal.structure">
+                  <option value="drop-create">DROP + CREATE (replace existing tables)</option>
+                  <option value="create">CREATE</option>
+                  <option value="create-if-not-exists">CREATE IF NOT EXISTS</option>
+                </select>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-views" x-model="exportModal.views"><label class="form-check-label small" for="exp-views">Views</label></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-routines" x-model="exportModal.routines"><label class="form-check-label small" for="exp-routines">Procedures &amp; functions</label></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-triggers" x-model="exportModal.triggers"><label class="form-check-label small" for="exp-triggers">Triggers</label></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-events" x-model="exportModal.events"><label class="form-check-label small" for="exp-events">Events</label></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-createdb" x-model="exportModal.createDatabase"><label class="form-check-label small" for="exp-createdb">CREATE DATABASE + USE</label></div>
+              </div>
+              <div class="col-sm-6" x-show="exportModal.what !== 'structure'">
+                <div class="section-title mb-1">Data</div>
+                <select class="form-select form-select-sm mb-2" x-model="exportModal.insertMode">
+                  <option value="insert">INSERT</option>
+                  <option value="ignore">INSERT IGNORE (skip existing keys)</option>
+                  <option value="update">INSERT … ON DUPLICATE KEY UPDATE</option>
+                  <option value="replace">REPLACE</option>
+                </select>
+                <div class="d-flex align-items-center gap-2 mb-2">
+                  <label class="small text-nowrap" for="exp-rows">Rows per INSERT</label>
+                  <input type="number" min="1" max="10000" class="form-control form-control-sm" style="width:100px" id="exp-rows" x-model.number="exportModal.rowsPerInsert">
+                </div>
+                <div class="form-check" x-show="exportModal.what === 'data'"><input class="form-check-input" type="checkbox" id="exp-trunc" x-model="exportModal.truncate"><label class="form-check-label small" for="exp-trunc">TRUNCATE each table before its rows</label></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-snap" x-model="exportModal.singleTransaction"><label class="form-check-label small" for="exp-snap">Consistent snapshot of all tables</label></div>
+              </div>
             </div>
           </template>
-          <div class="text-muted-sm mt-3" x-show="!exportModal.format.startsWith('sql')">
-            One table downloads as a single file; several are packed into a .tar.gz. NULL is written as <code>\N</code>.
+          <div class="text-muted-sm" x-show="!exportModal.format.startsWith('sql')">
+            One file per table; one table downloads as a single file, several are packed into a .tar.gz. NULL is written as <code>\N</code>, binary values as Base64 — the Import dialog reads them back exactly.
+          </div>
+          <div class="text-muted-sm mt-3">
+            <i class="bi bi-info-circle me-1"></i>Rows are streamed from the database straight into the download, so tables with millions of rows export without loading them into memory.
+            <span x-show="exportModal.format.startsWith('sql') && exportModal.singleTransaction && exportModal.what !== 'structure'">All tables are read at the same moment (InnoDB), without locking them.</span>
           </div>
         </div>
-        <div class="col-md-7">
+        <div class="col-md-5">
           <div class="d-flex align-items-center justify-content-between mb-1">
             <label class="form-label small fw-medium mb-0">Tables <span class="text-muted-sm" x-text="'(' + exportModal.tables.length + ' of ' + exploreTables.length + ')'"></span></label>
             <div>
@@ -2206,15 +2339,16 @@ Separate multiple statements with ; — highlight text to run just that part."
               <button class="btn btn-link btn-sm p-0 text-decoration-none" @click="exportModal.tables = []">None</button>
             </div>
           </div>
-          <div style="max-height:320px; overflow-y:auto; border:1px solid var(--border); border-radius:9px; padding:.25rem">
+          <div style="max-height:360px; overflow-y:auto; border:1px solid var(--border); border-radius:9px; padding:.25rem">
             <template x-for="t in exploreTables" :key="t.name">
               <label class="obj-row" style="cursor:pointer">
                 <input type="checkbox" class="form-check-input m-0" :value="t.name" x-model="exportModal.tables">
                 <span class="obj-name" x-text="t.name"></span>
-                <span class="obj-meta" x-text="/VIEW/i.test(t.type) ? 'view' : formatBytes(t.dataLength)"></span>
+                <span class="obj-meta" x-text="/VIEW/i.test(t.type) ? 'view' : '~' + compactCount(t.approxRows) + ' rows · ' + formatBytes(t.dataLength)"></span>
               </label>
             </template>
           </div>
+          <div class="text-muted-sm mt-1" x-text="exportSummary()"></div>
         </div>
       </div>
     </div>
@@ -2245,18 +2379,34 @@ Separate multiple statements with ; — highlight text to run just that part."
         <div>
           <label class="form-label small fw-medium">.sql backup file</label>
           <input type="file" accept=".sql,.tar.gz,.gz,text/plain,application/gzip,application/x-gzip" class="form-control form-control-sm" @change="onRestoreFileSelected($event)">
-          <div class="text-muted-sm mt-2">Accepts a .sql or .sql.gz file (including mysqldump output with DELIMITER blocks) or a .tar.gz backup.</div>
+          <div class="text-muted-sm mt-2">Accepts a .sql or .sql.gz file (including mysqldump output with DELIMITER blocks) or a .tar.gz backup. The file is streamed and run as it uploads, so large dumps work.</div>
+          <div class="mt-3">
+            <label class="form-label small fw-medium mb-1">If a statement fails</label>
+            <select class="form-select form-select-sm" x-model="restoreModal.onError">
+              <option value="stop">Stop there (statements before it stay applied)</option>
+              <option value="continue">Continue with the rest and list the errors</option>
+            </select>
+          </div>
+          <div class="form-check mt-2">
+            <input type="checkbox" class="form-check-input" id="restFk" x-model="restoreModal.noFkChecks">
+            <label class="form-check-label small" for="restFk">Don't check foreign keys while restoring (tables can load in any order)</label>
+          </div>
         </div>
       </template>
 
       <template x-if="restoreModal.running || restoreModal.done">
         <div>
-          <div class="d-flex align-items-center gap-2 mb-1">
-            <span x-show="restoreModal.running" class="spinner-border spinner-border-sm"></span>
-            <strong x-text="restoreModal.progress.executed || 0"></strong> statement(s) executed
-            <span class="text-danger" x-show="restoreModal.progress.failed"> · <span x-text="restoreModal.progress.failed"></span> failed</span>
+          <div class="progress mb-2" style="height:8px">
+            <div class="progress-bar" :class="restoreModal.progress.failed && 'bg-danger'" :style="`width:${restorePercent()}%`"></div>
           </div>
-          <div class="text-muted-sm" x-show="restoreModal.done">Restore finished.</div>
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-1 small">
+            <span x-show="restoreModal.progress.bytes !== undefined"><strong x-text="Number(restoreModal.progress.executed || 0).toLocaleString()"></strong> statement(s) executed</span>
+            <span x-show="restoreModal.progress.bytes === undefined && restoreModal.running"><span class="spinner-border spinner-border-sm me-1"></span>Uploading and restoring…</span>
+            <span class="text-danger" x-show="restoreModal.progress.failed"> · <span x-text="restoreModal.progress.failed"></span> failed</span>
+            <span class="text-muted-sm" x-text="restorePercent() + '% · ' + formatBytes(Math.max(restoreModal.progress.bytes || 0, restoreModal.uploaded || 0)) + ' of ' + formatBytes(restoreModal.file ? restoreModal.file.size : 0)"></span>
+          </div>
+          <div class="small" :class="restoreModal.progress.stopped ? 'text-danger' : 'text-muted-sm'" x-show="restoreModal.done && !restoreModal.error"
+               x-text="restoreModal.progress.stopped ? 'Stopped at the first error. Statements before it were applied.' : 'Restore finished.'"></div>
           <div class="mt-2" x-show="restoreModal.errors && restoreModal.errors.length">
             <div class="text-muted-sm mb-1">First errors:</div>
             <div style="max-height:160px; overflow-y:auto;">
@@ -2272,8 +2422,9 @@ Separate multiple statements with ; — highlight text to run just that part."
       </template>
     </div>
     <div class="modal-footer-custom">
-      <button class="btn btn-outline-soft" :disabled="restoreModal.running" @click="restoreModal.open = false" x-text="restoreModal.done ? 'Close' : 'Cancel'"></button>
-      <button class="btn btn-accent" x-show="!restoreModal.done" @click="startRestore" :disabled="restoreModal.running || !restoreModal.file">
+      <button class="btn btn-outline-soft" x-show="!restoreModal.running" @click="restoreModal.open = false" x-text="restoreModal.done ? 'Close' : 'Cancel'"></button>
+      <button class="btn btn-outline-danger" x-show="restoreModal.running" @click="restoreModal.xhr && restoreModal.xhr.abort()"><i class="bi bi-stop-circle me-1"></i>Stop</button>
+      <button class="btn btn-accent" x-show="!restoreModal.done && !restoreModal.running" @click="startRestore" :disabled="!!(restoreModal.running || !restoreModal.file)">
         <span x-show="restoreModal.running" class="spinner-border spinner-border-sm me-1"></span>
         Start restore
       </button>
@@ -2993,7 +3144,7 @@ function app() {
       { value: 'IS NULL', label: 'IS NULL' }, { value: 'IS NOT NULL', label: 'IS NOT NULL' }
     ],
     indexModal: { open: false, editing: null, kind: 'INDEX', name: '', parts: [], sql: '', saving: false, error: '' },
-    importModal: { open: false, step: 'pick', file: null, previewFields: [], previewRows: [], mapping: {}, truncate: false, imported: 0, failedBatches: 0, running: false, error: '' },
+    importModal: { open: false, step: 'pick', file: null, previewFields: [], previewRows: [], mapping: [], running: false, error: '', progress: {}, result: null },
     objectEditor: { open: false, kind: 'view', name: null, sql: '', preview: '', error: '', saving: false },
     exploreServer: false,
     serverTab: 'processes',
@@ -3006,8 +3157,8 @@ function app() {
     serverAutoRefresh: false,
     serverTimer: null,
     accountModal: { open: false, mode: 'create', user: '', host: '%', password: '', db: '*', table: '*', privileges: [], sql: '', error: '', saving: false },
-    exportModal: { open: false, format: 'sql.gz', structure: 'drop-create', data: true, views: true, routines: true, triggers: true, events: true, tables: [] },
-    restoreModal: { open: false, file: null, running: false, done: false, progress: { executed: 0, failed: 0 }, errors: [], error: '' },
+    exportModal: { open: false, what: 'both', format: 'sql.gz', structure: 'drop-create', views: true, routines: true, triggers: true, events: true, tables: [] },
+    restoreModal: { open: false, file: null, running: false, done: false, progress: { executed: 0, failed: 0 }, errors: [], error: '', onError: 'stop', noFkChecks: true, xhr: null },
 
     async init() {
       const sess = await fetch('/api/session').then(r => r.json());
@@ -4611,115 +4762,168 @@ function app() {
 
     // ---- Explore: CSV import ----
     openImportModal() {
-      this.importModal = { open: true, step: 'pick', file: null, previewFields: [], previewRows: [], mapping: {}, truncate: false, imported: 0, failedBatches: 0, running: false, error: '' };
+      this.importModal = {
+        open: true, step: 'pick', file: null, format: 'csv', delimiter: ',', gzip: false,
+        previewFields: [], previewRows: [], mapping: [],
+        onDuplicate: 'error', onError: 'stop', atomic: true, truncate: false, noFkChecks: false, base64Binary: true,
+        running: false, error: '', progress: {}, result: null, startedAt: 0, xhr: null
+      };
     },
-    availableTargetColumns() {
-      return this.exploreResultColumns.length ? this.exploreResultColumns : this.exploreColumns.map((c) => c.name);
+    // Table columns a file column can go into (generated columns can't be written).
+    importTargetColumns() {
+      return this.exploreColumns.filter((c) => !/\b(VIRTUAL|STORED|PERSISTENT)\b/i.test(c.extra || '')).map((c) => c.name);
     },
-    onImportFileSelected(event) {
+    async onImportFileSelected(event) {
       const file = event.target.files[0];
       if (!file) return;
-      this.importModal.file = file;
-      this.importModal.error = '';
-      Papa.parse(file, {
-        header: true,
-        skipEmptyLines: true,
-        preview: 5,
-        complete: (results) => {
-          const fields = results.meta.fields || [];
-          const targetCols = this.availableTargetColumns();
-          const mapping = {};
-          fields.forEach((f) => {
-            const match = targetCols.find((tc) => tc.toLowerCase() === f.toLowerCase());
-            mapping[f] = match || '__skip__';
-          });
-          this.importModal.previewFields = fields;
-          this.importModal.previewRows = results.data;
-          this.importModal.mapping = mapping;
-          this.importModal.step = 'mapping';
-        },
-        error: (err) => { this.importModal.error = 'Failed to read CSV: ' + err.message; }
+      const m = this.importModal;
+      m.file = file; m.error = '';
+      m.gzip = /\.gz$/i.test(file.name);
+      const inner = file.name.replace(/\.gz$/i, '');
+      m.format = /\.(tsv|tab)$/i.test(inner) ? 'tsv' : 'csv';
+      await this.previewImportFile(true);
+    },
+    // Reads the start of the file (decompressing .gz in the browser) to show
+    // the header, sample values and guess the delimiter.
+    async readImportHead() {
+      const m = this.importModal;
+      const slice = m.file.slice(0, 256 * 1024);
+      if (!m.gzip) return slice.text();
+      if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot preview .gz files');
+      const reader = slice.stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+      const decoder = new TextDecoder();
+      let text = '';
+      try {
+        while (text.length < 128 * 1024) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          text += decoder.decode(value, { stream: true });
+        }
+      } catch (e) { /* the slice ends mid-stream; what we have is enough */ }
+      reader.cancel().catch(() => {});
+      return text;
+    },
+    async previewImportFile(detect = false) {
+      const m = this.importModal;
+      let text;
+      try { text = (await this.readImportHead()).replace(/^\uFEFF/, ''); } catch (e) { m.error = 'Could not read the file: ' + e.message; return; }
+      const lines = text.split('\n');
+      if (lines.length > 1) lines.pop(); // possibly cut off
+      let rows;
+      if (m.format === 'tsv') {
+        const un = (f) => (f === '\\N' ? null : f.replace(/\\(.)/g, (x, c) => ({ t: '\t', n: '\n', r: '\r', 0: '\0' }[c] ?? c)));
+        rows = lines.filter((l) => l.replace(/\r$/, '') !== '').slice(0, 6).map((l) => l.replace(/\r$/, '').split('\t').map(un));
+      } else {
+        const parsed = Papa.parse(lines.join('\n'), { delimiter: detect ? '' : m.delimiter, preview: 6, skipEmptyLines: true });
+        if (detect && parsed.meta.delimiter && [',', ';', '\t', '|'].includes(parsed.meta.delimiter)) m.delimiter = parsed.meta.delimiter;
+        rows = parsed.data.map((r) => r.map((f) => (f === '\\N' ? null : f)));
+      }
+      if (!rows.length) { m.error = 'The file looks empty'; return; }
+      const fields = rows[0].map((f) => (f === null ? '\\N' : String(f)));
+      const targets = this.importTargetColumns();
+      const old = m.previewFields.join('\u0000') === fields.join('\u0000') ? m.mapping : null;
+      m.previewFields = fields;
+      m.previewRows = rows.slice(1);
+      m.mapping = old || fields.map((f) => targets.find((t) => t.toLowerCase() === f.trim().toLowerCase()) || '');
+      m.step = 'mapping';
+    },
+    importPercent() {
+      const m = this.importModal;
+      if (m.result && m.result.type === 'done') return 100;
+      return m.file && m.file.size ? Math.min(m.running ? 99 : 100, Math.floor((this.importDone() / m.file.size) * 100)) : 0;
+    },
+    importDone() {
+      const m = this.importModal;
+      return Math.max(m.progress.bytes || 0, m.uploaded || 0);
+    },
+    importRate() {
+      const m = this.importModal;
+      const secs = (Date.now() - m.startedAt) / 1000;
+      const done = this.importDone();
+      if (secs < 2 || !done) return '';
+      if (!m.file) return '';
+      const left = (m.file.size - done) / (done / secs);
+      const speed = m.progress.inserted ? `${Math.round(m.progress.inserted / secs).toLocaleString()} rows/s` : `${this.formatBytes(done / secs)}/s`;
+      return `${speed} · about ${left > 90 ? Math.round(left / 60) + ' min' : Math.max(1, Math.round(left)) + ' s'} left`;
+    },
+    // POSTs a file as the raw request body and reads the newline-delimited
+    // JSON events the server streams back while it processes the upload.
+    // XHR (not fetch) so the response can be read while uploading in every
+    // browser. Returns { promise, xhr }.
+    // onUpload(sentBytes) reports upload progress: browsers may only hand
+    // over the server's events once the upload is complete, but the server
+    // reads the upload only as fast as it processes it, so the bytes sent
+    // track the work done closely.
+    uploadWithEvents(url, file, onEvent, onUpload) {
+      const xhr = new XMLHttpRequest();
+      const promise = new Promise((resolve, reject) => {
+        let seen = 0;
+        const consume = () => {
+          const text = xhr.responseText;
+          let nl;
+          while ((nl = text.indexOf('\n', seen)) !== -1) {
+            const line = text.slice(seen, nl).trim();
+            seen = nl + 1;
+            if (line) { try { onEvent(JSON.parse(line)); } catch (e) { /* not JSON (e.g. an error page) */ } }
+          }
+        };
+        xhr.open('POST', url);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        xhr.onprogress = consume;
+        if (onUpload) xhr.upload.onprogress = (e) => onUpload(e.loaded);
+        xhr.onload = () => {
+          consume();
+          if (xhr.status >= 400 && !seen) {
+            let msg = `Server error ${xhr.status}`;
+            try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) { /* keep status */ }
+            reject(new Error(msg));
+          } else resolve();
+        };
+        xhr.onerror = () => reject(new Error('Network error — the connection was lost'));
+        xhr.onabort = () => reject(new Error('Cancelled'));
+        xhr.send(file);
       });
+      return { promise, xhr };
     },
     async startImport() {
-      if (this.importModal.truncate) {
+      const m = this.importModal;
+      if (m.truncate) {
         const ok = await this.askConfirm(
-          'Truncate table before import?',
-          `All existing rows in "${this.exploreTable}" will be permanently deleted before the import runs.`,
-          { confirmLabel: 'Truncate & import', danger: true }
+          'Delete existing rows first?',
+          `All existing rows in "${this.exploreTable}" will be deleted before the import.` + (m.atomic ? ' If the import fails they are put back (all or nothing).' : ' This is not undone if the import fails.'),
+          { confirmLabel: 'Delete & import', danger: true }
         );
         if (!ok) return;
       }
-
-      this.importModal.step = 'importing';
-      this.importModal.running = true;
-      this.importModal.imported = 0;
-      this.importModal.failedBatches = 0;
-      this.importModal.error = '';
-
-      const mapping = this.importModal.mapping;
-      const uniqueTargetCols = [...new Set(Object.values(mapping).filter((v) => v !== '__skip__'))];
-      const BATCH_SIZE = 500;
-      let buffer = [];
-      let isFirstBatch = true;
-
-      const sendBatch = async (rows) => {
-        if (rows.length === 0) return;
-        const mappedRows = rows.map((r) => {
-          const out = {};
-          for (const [csvCol, targetCol] of Object.entries(mapping)) {
-            if (targetCol === '__skip__') continue;
-            out[targetCol] = r[csvCol];
-          }
-          return out;
-        });
-        try {
-          const url = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/import`;
-          const res = await fetch(url, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ columns: uniqueTargetCols, rows: mappedRows, truncate: isFirstBatch && this.importModal.truncate })
-          });
-          const data = await res.json();
-          if (!res.ok) { this.importModal.failedBatches++; this.importModal.error = data.error || 'Import batch failed'; }
-          else { this.importModal.imported += data.affectedRows || mappedRows.length; }
-        } catch (e) {
-          this.importModal.failedBatches++;
-          this.importModal.error = 'Network error during import';
-        }
-        isFirstBatch = false;
+      const options = {
+        format: m.format, delimiter: m.delimiter, gzip: m.gzip,
+        columns: m.mapping.map((c) => c || null),
+        onDuplicate: m.onDuplicate, onError: m.onError, atomic: m.atomic, truncate: m.truncate,
+        foreignKeyChecks: !m.noFkChecks, base64Binary: m.base64Binary
       };
-
-      await new Promise((resolve) => {
-        Papa.parse(this.importModal.file, {
-          header: true,
-          skipEmptyLines: true,
-          worker: false,
-          step: (results, parser) => {
-            buffer.push(results.data);
-            if (buffer.length >= BATCH_SIZE) {
-              parser.pause();
-              const batch = buffer.splice(0);
-              sendBatch(batch).then(() => parser.resume());
-            }
-          },
-          complete: async () => {
-            if (buffer.length) await sendBatch(buffer.splice(0));
-            resolve();
-          },
-          error: (err) => {
-            this.importModal.error = 'Failed to parse CSV: ' + err.message;
-            resolve();
-          }
-        });
-      });
-
-      this.importModal.running = false;
-      this.importModal.step = 'done';
+      m.step = 'importing'; m.running = true; m.error = ''; m.result = null; m.progress = {}; m.uploaded = 0; m.startedAt = Date.now();
+      const url = `${this.tableBase()}/import-file?options=${encodeURIComponent(JSON.stringify(options))}`;
+      const upload = this.uploadWithEvents(url, m.file, (evt) => {
+        if (evt.type === 'progress') m.progress = evt;
+        else { m.result = evt; m.progress = { ...m.progress, ...evt }; }
+      }, (sent) => { m.uploaded = sent; });
+      m.xhr = upload.xhr;
+      try {
+        await upload.promise;
+        if (!m.result) m.error = 'The server ended the import without a result';
+      } catch (e) {
+        m.error = e.message === 'Cancelled'
+          ? 'Import stopped. ' + (m.atomic ? 'Nothing was imported (all or nothing).' : 'Rows committed before stopping (every 10,000) were kept.')
+          : e.message;
+      } finally {
+        m.running = false; m.step = 'done'; m.xhr = null;
+      }
       await this.loadExploreRows();
-      this.showToast(
-        `Imported ${this.importModal.imported} row(s)` + (this.importModal.failedBatches ? ` — ${this.importModal.failedBatches} batch error(s)` : ''),
-        this.importModal.failedBatches ? 'error' : 'success'
-      );
+      if (m.result && m.result.type === 'done') this.showToast(`Imported ${Number(m.result.inserted).toLocaleString()} row(s)`);
+      else this.showToast('Import did not complete', 'error');
+    },
+    cancelImport() {
+      if (this.importModal.xhr) this.importModal.xhr.abort();
     },
 
     // ---- Explore: Backup / Restore ----
@@ -4882,19 +5086,50 @@ function app() {
 
     openExportModal() {
       this.exportModal = {
-        open: true, format: 'sql.gz', structure: 'drop-create', data: true,
-        views: true, routines: true, triggers: true, events: true,
+        open: true, what: 'both', format: 'sql.gz', structure: 'drop-create',
+        views: true, routines: true, triggers: true, events: true, createDatabase: false,
+        insertMode: 'insert', rowsPerInsert: 500, truncate: false, singleTransaction: true,
         tables: this.exploreTables.map((t) => t.name)
       };
+    },
+    // CSV/TSV hold data only; switching back to SQL restores the earlier choice.
+    exportFormatChanged() {
+      const m = this.exportModal;
+      if (!m.format.startsWith('sql')) {
+        if (m.what !== 'data') m.whatBeforeCsv = m.what;
+        m.what = 'data';
+      } else if (m.whatBeforeCsv) {
+        m.what = m.whatBeforeCsv;
+        m.whatBeforeCsv = null;
+      }
+    },
+    exportSummary() {
+      const m = this.exportModal;
+      const picked = this.exploreTables.filter((t) => m.tables.includes(t.name) && !/VIEW/i.test(t.type));
+      const rows = picked.reduce((a, t) => a + Number(t.approxRows || 0), 0);
+      const bytes = picked.reduce((a, t) => a + Number(t.dataLength || 0), 0);
+      return m.what === 'structure' ? `${m.tables.length} object(s), structure only` : `About ${compactCountText(rows)} rows, ${this.formatBytes(bytes)} of table data`;
+      function compactCountText(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n); }
     },
     exportUrl() {
       const m = this.exportModal;
       const all = m.tables.length === this.exploreTables.length;
+      const sql = m.format.startsWith('sql');
       const options = {
-        format: m.format, structure: m.structure, data: m.data,
-        views: m.views, routines: m.routines, triggers: m.triggers, events: m.events,
+        format: m.format,
         tables: all ? undefined : m.tables
       };
+      if (sql) {
+        Object.assign(options, {
+          structure: m.what === 'data' ? 'none' : m.structure,
+          data: m.what !== 'structure',
+          views: m.views, routines: m.routines, triggers: m.triggers, events: m.events,
+          createDatabase: m.what !== 'data' && m.createDatabase,
+          insertMode: m.insertMode, rowsPerInsert: m.rowsPerInsert || 500,
+          truncate: m.what === 'data' && m.truncate,
+          singleTransaction: m.singleTransaction
+        });
+      }
       return `${this.exploreBase()}/export?options=${encodeURIComponent(JSON.stringify(options))}`;
     },
     backupUrl() {
@@ -4902,7 +5137,12 @@ function app() {
       return `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/backup.tar.gz`;
     },
     openRestoreModal() {
-      this.restoreModal = { open: true, file: null, running: false, done: false, progress: { executed: 0, failed: 0 }, errors: [], error: '' };
+      this.restoreModal = { open: true, file: null, running: false, done: false, progress: { executed: 0, failed: 0 }, errors: [], error: '', onError: 'stop', noFkChecks: true, xhr: null };
+    },
+    restorePercent() {
+      const m = this.restoreModal;
+      if (m.done && !m.error && !m.progress.stopped) return 100;
+      return m.file && m.file.size ? Math.min(m.running ? 99 : 100, Math.floor((Math.max(m.progress.bytes || 0, m.uploaded || 0) / m.file.size) * 100)) : 0;
     },
     onRestoreFileSelected(event) {
       this.restoreModal.file = event.target.files[0] || null;
@@ -4922,39 +5162,28 @@ function app() {
       this.restoreModal.running = true;
       this.restoreModal.error = '';
       this.restoreModal.progress = { executed: 0, failed: 0 };
+      this.restoreModal.uploaded = 0;
       this.restoreModal.done = false;
 
+      const m = this.restoreModal;
       try {
-        const url = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/restore?format=${format}`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: this.restoreModal.file
-        });
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            const evt = JSON.parse(line);
-            if (evt.type === 'progress') this.restoreModal.progress = evt;
-            else if (evt.type === 'done') { this.restoreModal.progress = evt; this.restoreModal.errors = evt.errors || []; this.restoreModal.done = true; }
-            else if (evt.type === 'error') { this.restoreModal.error = evt.error; }
-          }
-        }
+        const q = new URLSearchParams({ format, onError: m.onError, foreignKeyChecks: m.noFkChecks ? '0' : '1' });
+        const upload = this.uploadWithEvents(`${this.exploreBase()}/restore?${q}`, m.file, (evt) => {
+          if (evt.type === 'progress') m.progress = evt;
+          else if (evt.type === 'done') { m.progress = evt; m.errors = evt.errors || []; }
+          else if (evt.type === 'error') m.error = evt.error;
+        }, (sent) => { m.uploaded = sent; });
+        m.xhr = upload.xhr;
+        await upload.promise;
       } catch (e) {
-        this.restoreModal.error = 'Network error during restore';
+        m.error = e.message === 'Cancelled' ? 'Restore stopped. Statements already run (committed every few hundred) stay applied.' : e.message;
       } finally {
         this.restoreModal.running = false;
         this.restoreModal.done = true;
         await this.loadExploreTables();
-        this.showToast(this.restoreModal.error ? 'Restore failed' : 'Restore finished', this.restoreModal.error ? 'error' : 'success');
+        this.restoreModal.xhr = null;
+        const bad = this.restoreModal.error || this.restoreModal.progress.failed;
+        this.showToast(bad ? 'Restore finished with errors' : 'Restore finished', bad ? 'error' : 'success');
       }
     },
 
