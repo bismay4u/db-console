@@ -8,6 +8,7 @@ const store = require('./api/store');
 const db = require('./api/db');
 const querylog = require('./api/querylog');
 const system = require('./api/system');
+const schema = require('./api/schema');
 const FileSessionStore = require('./api/sessionstore');
 const { DATA_DIR, readJson, writeJson, withLock } = require('./api/datadir');
 
@@ -509,6 +510,49 @@ app.get('/api/explore/:key/:database/tables', requireAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ---- Schema editing (databases, tables, columns, foreign keys) ----
+// Every endpoint accepts preview: true to return the SQL without running it.
+// Changes are written to the query log as DDL.
+function schemaRoute(handler, { logged = true } = {}) {
+  return async (req, res) => {
+    const start = Date.now();
+    const body = req.body || {};
+    try {
+      const result = await handler(req, body);
+      if (logged && !body.preview && result && result.sql) {
+        logAction(req, { source: 'explore', sql: result.sql, type: 'DDL', ok: true, durationMs: Date.now() - start });
+      }
+      res.json(result);
+    } catch (err) {
+      if (logged && !body.preview) {
+        logAction(req, { source: 'explore', sql: err.sql || `(${req.method} ${req.path})`, type: 'DDL', ok: false, error: err.message, durationMs: Date.now() - start });
+      }
+      res.status(400).json({ error: err.message });
+    }
+  };
+}
+
+app.get('/api/explore/:key/meta', requireAuth, schemaRoute((req) => schema.getServerMeta(req.params.key), { logged: false }));
+app.post('/api/explore/:key/databases', requireAuth, schemaRoute((req, b) => schema.createDatabase(req.params.key, b)));
+app.get('/api/explore/:key/:database/info', requireAuth, schemaRoute((req) => schema.getDatabaseInfo(req.params.key, req.params.database), { logged: false }));
+app.put('/api/explore/:key/:database', requireAuth, schemaRoute((req, b) => schema.alterDatabase(req.params.key, req.params.database, b)));
+app.delete('/api/explore/:key/:database', requireAuth, schemaRoute((req, b) => schema.dropDatabase(req.params.key, req.params.database, b)));
+app.get('/api/explore/:key/:database/search', requireAuth, schemaRoute((req) => schema.searchDatabase(req.params.key, req.params.database, req.query.q), { logged: false }));
+app.get('/api/explore/:key/:database/foreign-keys', requireAuth, schemaRoute((req) => schema.getDatabaseForeignKeys(req.params.key, req.params.database), { logged: false }));
+app.post('/api/explore/:key/:database/tables', requireAuth, schemaRoute((req, b) => schema.createTable(req.params.key, req.params.database, b)));
+app.post('/api/explore/:key/:database/table-actions', requireAuth, schemaRoute((req, b) => schema.tableAction(req.params.key, req.params.database, b)));
+app.get('/api/explore/:key/:database/:table/schema', requireAuth, schemaRoute(async (req) => {
+  const { key, database, table } = req.params;
+  const [info, columns, foreignKeys] = await Promise.all([
+    schema.getTableInfo(key, database, table),
+    schema.getColumnsDetailed(key, database, table),
+    schema.getForeignKeys(key, database, table)
+  ]);
+  return { info, columns, foreignKeys };
+}, { logged: false }));
+app.post('/api/explore/:key/:database/:table/alter', requireAuth, schemaRoute((req, b) => schema.alterTable(req.params.key, req.params.database, req.params.table, b)));
+app.post('/api/explore/:key/:database/:table/foreign-keys', requireAuth, schemaRoute((req, b) => schema.alterForeignKey(req.params.key, req.params.database, req.params.table, b)));
 
 // Create / alter / drop an index: { drop?: name, add?: { kind, name, columns: [{ column, length }] }, preview? }.
 // With preview: true, only returns the ALTER TABLE statement.

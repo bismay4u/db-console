@@ -176,6 +176,24 @@
   .index-kind.kind-unique{ background:#e7f8f1; color:var(--success); }
   .index-kind.kind-fulltext, .index-kind.kind-spatial{ background:#fff4e5; color:#a35a00; }
 
+  /* ---- Small dropdown menu ---- */
+  .dropdown-lite{ position:relative; display:inline-block; }
+  .dropdown-lite-menu{
+    position:absolute; top:calc(100% + 4px); left:0; z-index:20; min-width:180px;
+    background:#fff; border:1px solid var(--border); border-radius:10px; padding:.3rem;
+    box-shadow:0 8px 24px rgba(20,20,43,.12);
+  }
+  .dropdown-lite-menu a{ display:flex; align-items:center; gap:.5rem; padding:.35rem .55rem; border-radius:6px; font-size:.83rem; color:var(--text); cursor:pointer; text-decoration:none; }
+  .dropdown-lite-menu a:hover{ background:var(--bg); }
+  .dropdown-lite-menu a.text-danger{ color:var(--danger)!important; }
+  .fk-link{ text-decoration:none; border-bottom:1px dashed currentColor; }
+  .modal-panel.modal-panel-xl{ max-width:1100px; }
+  .col-editor td{ padding:.25rem .3rem; vertical-align:middle; }
+  .col-editor .form-control, .col-editor .form-select{ font-size:.8rem; padding:.2rem .4rem; }
+  .col-editor th{ font-size:.66rem; text-transform:uppercase; color:var(--muted); font-weight:600; padding:.25rem .3rem; white-space:nowrap; }
+  .col-editor tr.col-new td{ background:#f3fbf7; }
+  .col-editor tr.col-changed td{ background:#fffaf0; }
+
   /* ---- Connection row picker ---- */
   .conn-row{
     display:flex; align-items:center; gap:.55rem;
@@ -667,6 +685,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <option :value="d" x-text="d"></option>
               </template>
             </select>
+            <button class="btn btn-outline-soft btn-sm" title="Create a database" @click="openDbModal('create')"><i class="bi bi-plus-lg"></i></button>
           </div>
           <span class="text-muted-sm" x-show="exploreLoadingDatabases">
             <span class="spinner-border spinner-border-sm me-1"></span>Loading databases…
@@ -692,12 +711,118 @@ Separate multiple statements with ; — highlight text to run just that part."
 
         <div class="row g-2" x-show="exploreDatabase">
           <div class="col-12">
-            <div class="card-surface p-4 text-center text-muted-sm" x-show="!exploreTable && !exploreObject">
-              <i class="bi bi-arrow-left-circle me-1"></i> Select a table, view or other object on the left.
-              <div class="mt-2" x-show="exploreSidebarHidden">
-                <button class="btn btn-outline-soft btn-sm" @click="exploreSidebarHidden = false"><i class="bi bi-layout-sidebar me-1"></i>Show tables</button>
+            <!-- DATABASE OVERVIEW (no table selected) -->
+            <template x-if="!exploreTable && !exploreObject">
+              <div>
+                <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-center justify-content-between gap-2">
+                  <div class="d-flex align-items-center gap-3">
+                    <div class="d-flex align-items-center gap-2">
+                      <i class="bi bi-database" style="color:var(--accent)"></i>
+                      <strong style="font-size:.9rem" x-text="exploreDatabase"></strong>
+                      <span class="use-db-chip" x-show="exploreDbInfo" x-text="exploreDbInfo && exploreDbInfo.collation"></span>
+                    </div>
+                    <div class="tab-switch" style="width:auto">
+                      <button class="tab-btn" :class="overviewTab==='tables' && 'active'" @click="overviewTab='tables'">
+                        Tables <span class="tab-count" x-text="exploreTables.length"></span>
+                      </button>
+                      <button class="tab-btn" :class="overviewTab==='search' && 'active'" @click="overviewTab='search'">Search</button>
+                    </div>
+                  </div>
+                  <div class="d-flex align-items-center gap-2">
+                    <button class="btn btn-accent btn-sm" @click="openTableEditor('create')"><i class="bi bi-plus-lg me-1"></i>Create table</button>
+                    <button class="btn btn-outline-soft btn-sm" @click="openDbModal('alter')"><i class="bi bi-pencil me-1"></i>Alter database</button>
+                    <button class="btn btn-sm btn-outline-danger" @click="dropDatabase()"><i class="bi bi-trash me-1"></i>Drop</button>
+                  </div>
+                </div>
+
+                <!-- Tables overview with bulk actions -->
+                <template x-if="overviewTab === 'tables'">
+                  <div class="card-surface">
+                    <div class="d-flex flex-wrap align-items-center gap-2 px-2 py-2" style="border-bottom:1px solid var(--border)">
+                      <span class="text-muted-sm" x-text="overviewSelected.length ? overviewSelected.length + ' selected' : 'Select tables for bulk actions'"></span>
+                      <template x-if="overviewSelected.length">
+                        <div class="d-flex flex-wrap gap-1">
+                          <template x-for="a in ['optimize', 'analyze', 'check', 'repair']" :key="a">
+                            <button class="btn btn-outline-soft btn-sm text-capitalize" @click="openTableAction(a, overviewSelected)" x-text="a"></button>
+                          </template>
+                          <button class="btn btn-outline-soft btn-sm" @click="openTableAction('copy', overviewSelected)"><i class="bi bi-copy me-1"></i>Copy…</button>
+                          <button class="btn btn-outline-soft btn-sm" @click="openTableAction('move', overviewSelected)"><i class="bi bi-box-arrow-right me-1"></i>Move…</button>
+                          <button class="btn btn-sm btn-outline-danger" @click="openTableAction('truncate', overviewSelected)">Truncate</button>
+                          <button class="btn btn-sm btn-outline-danger" @click="openTableAction('drop', overviewSelected)"><i class="bi bi-trash me-1"></i>Drop</button>
+                        </div>
+                      </template>
+                    </div>
+                    <div class="table-responsive">
+                      <table class="table table-modern mb-0">
+                        <thead>
+                          <tr>
+                            <th style="width:1%"><input type="checkbox" class="form-check-input" :checked="exploreTables.length && overviewSelected.length === exploreTables.length"
+                                     @change="overviewSelected = $event.target.checked ? exploreTables.map(t => t.name) : []"></th>
+                            <th>Table</th><th>Engine</th><th class="text-end">Rows</th><th class="text-end">Data</th><th class="text-end">Index</th>
+                            <th class="text-end">Auto inc.</th><th>Collation</th><th>Comment</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="t in exploreTables" :key="t.name">
+                            <tr :class="overviewSelected.includes(t.name) && 'row-selected'">
+                              <td><input type="checkbox" class="form-check-input" :value="t.name" x-model="overviewSelected"></td>
+                              <td><a href="#" class="fw-medium text-decoration-none" @click.prevent="selectExploreTable(t.name)" x-text="t.name"></a></td>
+                              <td class="text-muted-sm" x-text="/VIEW/i.test(t.type) ? 'view' : (t.engine || '')"></td>
+                              <td class="text-end" x-text="/VIEW/i.test(t.type) ? '' : '~' + Number(t.approxRows || 0).toLocaleString()"></td>
+                              <td class="text-end text-muted-sm" x-text="formatBytes(t.dataLength)"></td>
+                              <td class="text-end text-muted-sm" x-text="formatBytes(t.indexLength)"></td>
+                              <td class="text-end text-muted-sm" x-text="t.autoIncrement ?? ''"></td>
+                              <td class="text-muted-sm" x-text="t.collation || ''"></td>
+                              <td class="text-muted-sm text-truncate" style="max-width:220px" :title="t.comment" x-text="t.comment || ''"></td>
+                            </tr>
+                          </template>
+                          <tr x-show="exploreTables.length === 0">
+                            <td colspan="9" class="text-center text-muted-sm py-4">This database has no tables yet. Click "Create table".</td>
+                          </tr>
+                        </tbody>
+                        <tfoot x-show="exploreTables.length">
+                          <tr class="text-muted-sm">
+                            <td></td><td x-text="exploreTables.length + ' table(s)'"></td><td></td>
+                            <td class="text-end" x-text="'~' + exploreTables.reduce((a, t) => a + Number(t.approxRows || 0), 0).toLocaleString()"></td>
+                            <td class="text-end" x-text="formatBytes(exploreTables.reduce((a, t) => a + Number(t.dataLength || 0), 0))"></td>
+                            <td class="text-end" x-text="formatBytes(exploreTables.reduce((a, t) => a + Number(t.indexLength || 0), 0))"></td>
+                            <td colspan="3"></td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Search all tables -->
+                <template x-if="overviewTab === 'search'">
+                  <div class="card-surface p-3">
+                    <div class="d-flex gap-2 mb-3" style="max-width:520px">
+                      <input type="search" class="form-control form-control-sm" placeholder="Search every table in this database…"
+                             x-model="dbSearch.term" @keydown.enter="searchDatabase()">
+                      <button class="btn btn-accent btn-sm text-nowrap" @click="searchDatabase()" :disabled="dbSearch.running || !dbSearch.term.trim()">
+                        <span x-show="dbSearch.running" class="spinner-border spinner-border-sm me-1"></span>Search
+                      </button>
+                    </div>
+                    <div class="alert alert-danger py-2 small" x-show="dbSearch.error" x-text="dbSearch.error"></div>
+                    <template x-if="dbSearch.result">
+                      <div>
+                        <div class="text-muted-sm mb-2" x-text="dbSearch.result.results.filter(r => r.count).length + ' table(s) contain ‘' + dbSearch.result.term + '’ (' + dbSearch.result.tablesSearched + ' searched)'"></div>
+                        <template x-for="r in dbSearch.result.results" :key="r.table">
+                          <div class="obj-row" style="font-size:.85rem" @click="r.count && openSearchResult(r.table)">
+                            <i class="bi bi-table"></i>
+                            <span class="obj-name" x-text="r.table"></span>
+                            <span class="obj-meta text-danger" x-show="r.error" x-text="r.error"></span>
+                            <span class="obj-meta" x-show="r.count" x-text="r.count + ' matching row(s)'"></span>
+                          </div>
+                        </template>
+                        <div class="text-muted-sm" x-show="!dbSearch.result.results.length">No matches.</div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
               </div>
-            </div>
+            </template>
 
             <div x-show="exploreTable">
               <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-center justify-content-between gap-2">
@@ -706,6 +831,16 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <i class="bi" :class="exploreIsView() ? 'bi-eye' : 'bi-table'" style="color:var(--accent)"></i>
                     <strong style="font-size:.9rem" x-text="exploreTable"></strong>
                     <span class="use-db-chip" x-show="exploreIsView()">VIEW</span>
+                    <div class="dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
+                      <button class="btn btn-sm btn-outline-soft" style="padding:.05rem .4rem" title="Table actions" @click="open = !open"><i class="bi bi-three-dots"></i></button>
+                      <div class="dropdown-lite-menu" x-show="open" x-cloak @click="open = false">
+                        <a x-show="!exploreIsView()" @click="openTableEditor('alter')"><i class="bi bi-pencil"></i> Alter table…</a>
+                        <a x-show="!exploreIsView()" @click="openTableAction('copy', [exploreTable])"><i class="bi bi-copy"></i> Copy…</a>
+                        <a x-show="!exploreIsView()" @click="openTableAction('move', [exploreTable])"><i class="bi bi-box-arrow-right"></i> Move…</a>
+                        <a x-show="!exploreIsView()" class="text-danger" @click="openTableAction('truncate', [exploreTable])"><i class="bi bi-eraser"></i> Truncate…</a>
+                        <a class="text-danger" @click="openTableAction('drop', [exploreTable])"><i class="bi bi-trash"></i> Drop…</a>
+                      </div>
+                    </div>
                   </div>
                   <div class="tab-switch" style="width:auto">
                     <button class="tab-btn" :class="exploreView==='data' && 'active'" @click="exploreView='data'">Data</button>
@@ -790,7 +925,12 @@ Separate multiple statements with ; — highlight text to run just that part."
                               <button class="btn btn-sm btn-ghost-danger" title="Delete row" @click="deleteExploreRow(row)"><i class="bi bi-trash"></i></button>
                             </td>
                             <template x-for="col in exploreResultColumns" :key="col">
-                              <td :class="row[col] === null && 'cell-null'" x-text="formatCell(row[col])"></td>
+                              <td :class="row[col] === null && 'cell-null'">
+                                <template x-if="fkForColumn(col) && row[col] !== null">
+                                  <a href="#" class="fk-link" :title="'Open the referenced row in ' + (fkForColumn(col) || {}).refTable" @click.prevent="fkForColumn(col) && followFk(fkForColumn(col), row[col])" x-text="formatCell(row[col])"></a>
+                                </template>
+                                <template x-if="!(fkForColumn(col) && row[col] !== null)"><span x-text="formatCell(row[col])"></span></template>
+                              </td>
                             </template>
                           </tr>
                         </template>
@@ -826,22 +966,67 @@ Separate multiple statements with ; — highlight text to run just that part."
               <template x-if="exploreView === 'structure'">
                 <div>
                   <div class="card-surface mb-2">
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 px-3 py-2" style="border-bottom:1px solid var(--border)">
+                      <div class="text-muted-sm" x-show="exploreSchema">
+                        <span x-text="exploreSchema && exploreSchema.info.engine"></span>
+                        <span x-show="exploreSchema && exploreSchema.info.collation" x-text="' · ' + (exploreSchema && exploreSchema.info.collation)"></span>
+                        <span x-text="' · ~' + Number(exploreSchema ? exploreSchema.info.approxRows || 0 : 0).toLocaleString() + ' rows'"></span>
+                        <span x-text="' · data ' + formatBytes(exploreSchema && exploreSchema.info.dataLength) + ', index ' + formatBytes(exploreSchema && exploreSchema.info.indexLength)"></span>
+                        <span x-show="exploreSchema && exploreSchema.info.comment" x-text="' · “' + (exploreSchema && exploreSchema.info.comment) + '”'"></span>
+                      </div>
+                      <button class="btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openTableEditor('alter')"><i class="bi bi-pencil me-1"></i>Alter table</button>
+                    </div>
                     <div class="table-responsive">
                       <table class="table table-modern mb-0">
                         <thead>
-                          <tr><th>Column</th><th>Type</th><th>Nullable</th><th>Key</th><th>Default</th><th>Extra</th></tr>
+                          <tr><th>Column</th><th>Type</th><th>Null</th><th>Default</th><th>Extra</th><th>Comment</th></tr>
                         </thead>
                         <tbody>
-                          <template x-for="c in exploreColumns" :key="c.name">
+                          <template x-for="c in (exploreSchema ? exploreSchema.columns : [])" :key="c.name">
                             <tr>
-                              <td class="fw-medium" x-text="c.name"></td>
-                              <td x-text="c.type"></td>
+                              <td class="fw-medium text-nowrap">
+                                <i class="bi bi-key-fill me-1" style="color:var(--accent)" x-show="explorePrimaryKey.includes(c.name)" title="Primary key"></i>
+                                <i class="bi bi-link-45deg me-1" style="color:var(--muted)" x-show="fkForColumn(c.name)" :title="fkForColumn(c.name) && ('References ' + fkForColumn(c.name).refTable)"></i>
+                                <span x-text="c.name"></span>
+                              </td>
+                              <td><code x-text="c.type"></code></td>
                               <td x-text="c.nullable ? 'YES' : 'NO'"></td>
-                              <td x-text="c.key"></td>
-                              <td x-text="c.default ?? ''"></td>
-                              <td x-text="c.extra"></td>
+                              <td class="text-muted-sm" x-text="describeDefault(c.default)"></td>
+                              <td class="text-muted-sm" x-text="[c.autoIncrement ? 'AUTO_INCREMENT' : '', c.onUpdate ? 'ON UPDATE CURRENT_TIMESTAMP' : '', c.generated ? c.generated.kind + ' AS (' + c.generated.expression + ')' : ''].filter(Boolean).join(' · ')"></td>
+                              <td class="text-muted-sm" x-text="c.comment"></td>
                             </tr>
                           </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div class="card-surface mb-2" x-show="!exploreIsView()">
+                    <div class="d-flex align-items-center justify-content-between px-3 py-2" style="border-bottom:1px solid var(--border)">
+                      <div class="section-title mb-0"><i class="bi bi-link-45deg me-1"></i>Foreign keys</div>
+                      <button class="btn btn-outline-soft btn-sm" @click="openFkModal()"><i class="bi bi-plus-lg me-1"></i>Add foreign key</button>
+                    </div>
+                    <div class="table-responsive">
+                      <table class="table table-modern mb-0">
+                        <thead><tr><th style="width:5.5rem"></th><th>Name</th><th>Columns</th><th>References</th><th>On delete</th><th>On update</th></tr></thead>
+                        <tbody>
+                          <template x-for="fk in (exploreSchema ? exploreSchema.foreignKeys : [])" :key="fk.name">
+                            <tr>
+                              <td class="text-nowrap">
+                                <button class="btn btn-sm btn-outline-soft" title="Edit foreign key" @click="openFkModal(fk)"><i class="bi bi-pencil"></i></button>
+                                <button class="btn btn-sm btn-ghost-danger" title="Drop foreign key" @click="dropFk(fk)"><i class="bi bi-trash"></i></button>
+                              </td>
+                              <td class="fw-medium" x-text="fk.name"></td>
+                              <td x-text="fk.columns.join(', ')"></td>
+                              <td><a href="#" class="text-decoration-none" @click.prevent="openReferencedTable(fk)"
+                                     x-text="(fk.refDb !== exploreDatabase ? fk.refDb + '.' : '') + fk.refTable + ' (' + fk.refColumns.join(', ') + ')'"></a></td>
+                              <td class="text-muted-sm" x-text="fk.onDelete"></td>
+                              <td class="text-muted-sm" x-text="fk.onUpdate"></td>
+                            </tr>
+                          </template>
+                          <tr x-show="!exploreSchema || exploreSchema.foreignKeys.length === 0">
+                            <td colspan="6" class="text-center text-muted-sm py-3">No foreign keys.</td>
+                          </tr>
                         </tbody>
                       </table>
                     </div>
@@ -1696,6 +1881,296 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
+<!-- ===== Explore: Database Modal (create / alter) ===== -->
+<div class="modal-backdrop-custom" x-show="dbModal.open" x-cloak @click.self="!dbModal.saving && (dbModal.open = false)">
+  <div class="modal-panel">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="dbModal.mode === 'create' ? 'Create database' : 'Alter database ' + exploreDatabase"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="dbModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="dbModal.error" x-text="dbModal.error"></div>
+      <label class="form-label small fw-medium" x-text="dbModal.mode === 'create' ? 'Name' : 'Name (change to rename)'"></label>
+      <input type="text" class="form-control form-control-sm mb-3" x-model="dbModal.name" @input.debounce.300ms="previewDb()">
+      <label class="form-label small fw-medium">Collation</label>
+      <select class="form-select form-select-sm" x-model="dbModal.collation" @change="previewDb()">
+        <option value="" x-text="dbModal.mode === 'create' ? '(server default: ' + (exploreMeta ? exploreMeta.defaultCollation : '') + ')' : '(unchanged)'"></option>
+        <template x-for="c in (exploreMeta ? exploreMeta.collations : [])" :key="c.name">
+          <option :value="c.name" x-text="c.name + (c.isDefault ? '  (default for ' + c.charset + ')' : '')" :selected="dbModal.collation === c.name"></option>
+        </template>
+      </select>
+      <div class="text-muted-sm mt-2" x-show="dbModal.mode === 'alter'">
+        Renaming creates the new database, moves every table into it and drops the old one. Databases with views, routines, triggers or events can't be renamed this way.
+      </div>
+      <div class="mt-3" x-show="dbModal.sql">
+        <div class="text-muted-sm mb-1">SQL that will run:</div>
+        <pre class="definition-block mb-0" style="white-space:pre-wrap" x-text="dbModal.sql"></pre>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" :disabled="dbModal.saving" @click="dbModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveDb" :disabled="dbModal.saving || !dbModal.sql">
+        <span x-show="dbModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        <span x-text="dbModal.mode === 'create' ? 'Create' : 'Save'"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Explore: Table Editor (create / alter table) ===== -->
+<div class="modal-backdrop-custom" x-show="tableEditor.open" x-cloak @click.self="!tableEditor.saving && (tableEditor.open = false)">
+  <div class="modal-panel modal-panel-xl">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="tableEditor.mode === 'create' ? 'Create table in ' + exploreDatabase : 'Alter table ' + tableEditor.origName"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="tableEditor.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom" style="max-height:72vh; overflow-y:auto">
+      <div class="alert alert-danger py-2 small" x-show="tableEditor.error" x-text="tableEditor.error"></div>
+      <div class="row g-2 mb-3">
+        <div class="col-md-3">
+          <label class="form-label small fw-medium">Table name</label>
+          <input type="text" class="form-control form-control-sm" x-model="tableEditor.name" @input.debounce.400ms="previewTable()">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small fw-medium">Engine</label>
+          <select class="form-select form-select-sm" x-model="tableEditor.engine" @change="previewTable()">
+            <option value="">(default)</option>
+            <template x-for="e in (exploreMeta ? exploreMeta.engines : [])" :key="e.name"><option :value="e.name" x-text="e.name" :selected="tableEditor.engine === e.name"></option></template>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small fw-medium">Collation</label>
+          <select class="form-select form-select-sm" x-model="tableEditor.collation" @change="previewTable()">
+            <option value="">(database default)</option>
+            <template x-for="c in (exploreMeta ? exploreMeta.collations : [])" :key="c.name"><option :value="c.name" x-text="c.name" :selected="tableEditor.collation === c.name"></option></template>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small fw-medium">Comment</label>
+          <input type="text" class="form-control form-control-sm" x-model="tableEditor.comment" @input.debounce.400ms="previewTable()">
+        </div>
+        <div class="col-md-1" x-show="tableEditor.mode === 'alter'">
+          <label class="form-label small fw-medium">Auto inc.</label>
+          <input type="number" min="1" class="form-control form-control-sm" x-model="tableEditor.autoIncrement" @input.debounce.400ms="previewTable()">
+        </div>
+      </div>
+
+      <datalist id="column-types">
+        <template x-for="t in columnTypeSuggestions" :key="t"><option :value="t"></option></template>
+      </datalist>
+      <datalist id="default-expressions">
+        <option value="CURRENT_TIMESTAMP"></option><option value="CURRENT_TIMESTAMP(3)"></option><option value="(UUID())"></option><option value="(CURRENT_DATE)"></option>
+      </datalist>
+
+      <div class="table-responsive">
+        <table class="table mb-2 col-editor">
+          <thead>
+            <tr>
+              <th></th><th style="min-width:150px">Column</th><th style="min-width:170px">Type</th><th>Null</th><th title="AUTO_INCREMENT">A_I</th>
+              <th x-show="tableEditor.mode === 'create'" title="Primary key">PK</th>
+              <th style="min-width:230px">Default</th><th title="ON UPDATE CURRENT_TIMESTAMP">On upd.</th><th style="min-width:140px">Comment</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="(c, i) in tableEditor.columns" :key="c.id">
+              <tr :class="!c.orig ? 'col-new' : (columnChanged(c) ? 'col-changed' : '')">
+                <td class="text-nowrap">
+                  <button class="btn btn-sm btn-outline-soft" style="padding:0 .3rem" title="Move up" :disabled="i === 0" @click="moveEditorColumn(i, -1)"><i class="bi bi-arrow-up"></i></button>
+                  <button class="btn btn-sm btn-outline-soft" style="padding:0 .3rem" title="Move down" :disabled="i === tableEditor.columns.length - 1" @click="moveEditorColumn(i, 1)"><i class="bi bi-arrow-down"></i></button>
+                </td>
+                <td><input type="text" class="form-control" x-model="c.name" :disabled="!!c.generated" @input.debounce.400ms="previewTable()"></td>
+                <template x-if="c.generated">
+                  <td colspan="7" class="text-muted-sm" x-text="'Generated (' + c.generated.kind + ') AS ' + c.generated.expression + ' — edit with the Query Runner'"></td>
+                </template>
+                <template x-if="!c.generated">
+                  <td><input type="text" class="form-control" list="column-types" x-model="c.type" @input.debounce.400ms="previewTable()"></td>
+                </template>
+                <template x-if="!c.generated">
+                  <td class="text-center"><input type="checkbox" class="form-check-input" x-model="c.nullable" @change="previewTable()"></td>
+                </template>
+                <template x-if="!c.generated">
+                  <td class="text-center"><input type="checkbox" class="form-check-input" x-model="c.autoIncrement" @change="previewTable()"></td>
+                </template>
+                <template x-if="!c.generated && tableEditor.mode === 'create'">
+                  <td class="text-center"><input type="checkbox" class="form-check-input" x-model="c.primary" @change="previewTable()"></td>
+                </template>
+                <template x-if="!c.generated">
+                  <td>
+                    <div class="d-flex gap-1">
+                      <select class="form-select" style="width:auto" x-model="c.defMode" @change="previewTable()">
+                        <option value="none">None</option><option value="null">NULL</option><option value="value">Value</option><option value="expression">Expression</option>
+                      </select>
+                      <input type="text" class="form-control" x-show="c.defMode === 'value' || c.defMode === 'expression'" x-model="c.defValue"
+                             :list="c.defMode === 'expression' ? 'default-expressions' : null" @input.debounce.400ms="previewTable()">
+                    </div>
+                  </td>
+                </template>
+                <template x-if="!c.generated">
+                  <td class="text-center"><input type="checkbox" class="form-check-input" x-model="c.onUpdate" x-show="/^(timestamp|datetime)/i.test(c.type || '')" @change="previewTable()"></td>
+                </template>
+                <template x-if="!c.generated">
+                  <td><input type="text" class="form-control" x-model="c.comment" @input.debounce.400ms="previewTable()"></td>
+                </template>
+                <td><button class="btn btn-sm btn-ghost-danger" title="Remove column" @click="removeEditorColumn(i)"><i class="bi bi-x-lg"></i></button></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <button class="btn btn-link btn-sm p-0 text-decoration-none" @click="addEditorColumn()"><i class="bi bi-plus-lg me-1"></i>Add column</button>
+      <div class="text-muted-sm mt-1" x-show="tableEditor.dropped.length" x-text="'Will drop: ' + tableEditor.dropped.join(', ')"></div>
+      <div class="text-muted-sm mt-1" x-show="tableEditor.mode === 'alter'">Primary key and other indexes are edited on the Indexes tab.</div>
+
+      <div class="mt-3" x-show="tableEditor.sql">
+        <div class="text-muted-sm mb-1">SQL that will run:</div>
+        <pre class="definition-block mb-0" style="white-space:pre-wrap" x-text="tableEditor.sql"></pre>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" :disabled="tableEditor.saving" @click="tableEditor.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveTable" :disabled="tableEditor.saving || !tableEditor.sql">
+        <span x-show="tableEditor.saving" class="spinner-border spinner-border-sm me-1"></span>
+        <span x-text="tableEditor.mode === 'create' ? 'Create table' : 'Save changes'"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Explore: Foreign Key Modal ===== -->
+<div class="modal-backdrop-custom" x-show="fkModal.open" x-cloak @click.self="!fkModal.saving && (fkModal.open = false)">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="(fkModal.editing ? 'Edit foreign key ' + fkModal.editing.name : 'Add foreign key') + ' on ' + exploreTable"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="fkModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="fkModal.error" x-text="fkModal.error"></div>
+      <div class="row g-2 mb-3">
+        <div class="col-md-4">
+          <label class="form-label small fw-medium">Name <span class="text-muted-sm">(blank = automatic)</span></label>
+          <input type="text" class="form-control form-control-sm" x-model="fkModal.name" @input.debounce.300ms="previewFk()">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small fw-medium">Referenced database</label>
+          <select class="form-select form-select-sm" x-model="fkModal.refDb" @change="fkModal.refTable = ''; loadFkRefTables()">
+            <template x-for="d in exploreDatabases" :key="d"><option :value="d" x-text="d" :selected="fkModal.refDb === d"></option></template>
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small fw-medium">Referenced table</label>
+          <select class="form-select form-select-sm" x-model="fkModal.refTable" @change="loadFkRefColumns()">
+            <option value="">Choose…</option>
+            <template x-for="t in fkModal.refTables" :key="t"><option :value="t" x-text="t" :selected="fkModal.refTable === t"></option></template>
+          </select>
+        </div>
+      </div>
+      <label class="form-label small fw-medium">Columns</label>
+      <template x-for="(p, i) in fkModal.pairs" :key="p.id">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <select class="form-select form-select-sm" x-model="p.column" @change="previewFk()">
+            <option value="">Column…</option>
+            <template x-for="c in (exploreSchema ? exploreSchema.columns : [])" :key="c.name"><option :value="c.name" x-text="c.name + '  —  ' + c.type" :selected="p.column === c.name"></option></template>
+          </select>
+          <i class="bi bi-arrow-right text-muted"></i>
+          <select class="form-select form-select-sm" x-model="p.refColumn" @change="previewFk()">
+            <option value="">Referenced column…</option>
+            <template x-for="c in fkModal.refColumns" :key="c.name"><option :value="c.name" x-text="c.name + '  —  ' + c.type" :selected="p.refColumn === c.name"></option></template>
+          </select>
+          <button class="btn btn-sm btn-ghost-danger" :disabled="fkModal.pairs.length === 1" @click="fkModal.pairs.splice(i, 1); previewFk()"><i class="bi bi-x-lg"></i></button>
+        </div>
+      </template>
+      <button class="btn btn-link btn-sm p-0 text-decoration-none mb-3" @click="fkModal.pairs.push({ id: Math.random(), column: '', refColumn: '' })"><i class="bi bi-plus-lg me-1"></i>Add column</button>
+      <div class="row g-2">
+        <div class="col-6">
+          <label class="form-label small fw-medium">On delete</label>
+          <select class="form-select form-select-sm" x-model="fkModal.onDelete" @change="previewFk()">
+            <template x-for="a in fkActions" :key="a"><option :value="a" x-text="a" :selected="fkModal.onDelete === a"></option></template>
+          </select>
+        </div>
+        <div class="col-6">
+          <label class="form-label small fw-medium">On update</label>
+          <select class="form-select form-select-sm" x-model="fkModal.onUpdate" @change="previewFk()">
+            <template x-for="a in fkActions" :key="a"><option :value="a" x-text="a" :selected="fkModal.onUpdate === a"></option></template>
+          </select>
+        </div>
+      </div>
+      <div class="mt-3" x-show="fkModal.sql">
+        <div class="text-muted-sm mb-1">SQL that will run:</div>
+        <pre class="definition-block mb-0" style="white-space:pre-wrap" x-text="fkModal.sql"></pre>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" :disabled="fkModal.saving" @click="fkModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveFk" :disabled="fkModal.saving || !fkModal.sql">
+        <span x-show="fkModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        <span x-text="fkModal.editing ? 'Save changes' : 'Add foreign key'"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Explore: Table Action Modal (copy / move / truncate / drop / maintenance) ===== -->
+<div class="modal-backdrop-custom" x-show="tableActionModal.open" x-cloak @click.self="!tableActionModal.saving && (tableActionModal.open = false)">
+  <div class="modal-panel">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold text-capitalize" x-text="tableActionModal.action + ' ' + tableActionModal.tables.length + ' table(s)'"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="tableActionModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="tableActionModal.error" x-text="tableActionModal.error"></div>
+      <div class="text-muted-sm mb-2" x-text="tableActionModal.tables.join(', ')"></div>
+      <div class="alert alert-warning py-2 small" x-show="['truncate', 'drop'].includes(tableActionModal.action) && !tableActionModal.done">
+        <i class="bi bi-exclamation-triangle me-1"></i>
+        <span x-text="tableActionModal.action === 'drop' ? 'The tables and all their data will be permanently deleted.' : 'All rows in these tables will be permanently deleted.'"></span>
+      </div>
+      <template x-if="['copy', 'move'].includes(tableActionModal.action) && !tableActionModal.done">
+        <div class="row g-2 mb-2">
+          <div class="col-6">
+            <label class="form-label small fw-medium">To database</label>
+            <select class="form-select form-select-sm" x-model="tableActionModal.target" @change="previewTableAction()">
+              <template x-for="d in exploreDatabases" :key="d"><option :value="d" x-text="d" :selected="tableActionModal.target === d"></option></template>
+            </select>
+          </div>
+          <div class="col-6" x-show="tableActionModal.tables.length === 1">
+            <label class="form-label small fw-medium">New name <span class="text-muted-sm">(optional)</span></label>
+            <input type="text" class="form-control form-control-sm" x-model="tableActionModal.newName" @input.debounce.300ms="previewTableAction()">
+          </div>
+          <div class="col-12" x-show="tableActionModal.action === 'copy'">
+            <div class="form-check">
+              <input type="checkbox" class="form-check-input" id="copyWithData" x-model="tableActionModal.withData" @change="previewTableAction()">
+              <label class="form-check-label small" for="copyWithData">Copy the data too (otherwise structure only)</label>
+            </div>
+          </div>
+        </div>
+      </template>
+      <div x-show="tableActionModal.sql && !tableActionModal.done">
+        <div class="text-muted-sm mb-1">SQL that will run:</div>
+        <pre class="definition-block mb-0" style="white-space:pre-wrap; max-height:200px" x-text="tableActionModal.sql"></pre>
+      </div>
+      <template x-if="tableActionModal.done && tableActionModal.messages.length">
+        <div class="table-responsive">
+          <table class="table table-modern mb-0">
+            <thead><tr><th>Table</th><th>Type</th><th>Message</th></tr></thead>
+            <tbody>
+              <template x-for="(m, i) in tableActionModal.messages" :key="i">
+                <tr><td x-text="m.table"></td><td><span class="badge rounded-pill" :class="/error/i.test(m.type) ? 'badge-soft-danger' : 'badge-soft-success'" x-text="m.type"></span></td><td class="small" x-text="m.text"></td></tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </template>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" :disabled="tableActionModal.saving" @click="tableActionModal.open = false" x-text="tableActionModal.done ? 'Close' : 'Cancel'"></button>
+      <button class="btn text-white" x-show="!tableActionModal.done" :style="{ background: ['truncate', 'drop'].includes(tableActionModal.action) ? 'var(--danger)' : 'var(--accent)' }"
+              @click="runTableAction" :disabled="tableActionModal.saving || !tableActionModal.sql">
+        <span x-show="tableActionModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        <span class="text-capitalize" x-text="tableActionModal.action"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Share Connection Modal ===== -->
 <div class="modal-backdrop-custom" x-show="shareModal.open" x-cloak @click.self="shareModal.open = false">
   <div class="modal-panel">
@@ -1908,6 +2383,20 @@ function app() {
     // ---- Explore ----
     exploreConnKey: '',
     exploreSidebarHidden: false,  // user went "back" to the menu while in Explore
+    exploreMeta: null,            // { collations, engines, defaultCollation } of the connection's server
+    exploreDbInfo: null,          // { collation, charset } of the open database
+    exploreSchema: null,          // { info, columns, foreignKeys } of the open table
+    overviewTab: 'tables',
+    overviewSelected: [],
+    dbSearch: { term: '', running: false, result: null, error: '' },
+    dbModal: { open: false, mode: 'create', name: '', collation: '', sql: '', error: '', saving: false },
+    tableEditor: { open: false, mode: 'create', origName: '', name: '', engine: '', collation: '', comment: '', autoIncrement: '', columns: [], original: [], dropped: [], sql: '', error: '', saving: false },
+    fkModal: { open: false, editing: null, name: '', refDb: '', refTable: '', refTables: [], refColumns: [], pairs: [], onDelete: 'RESTRICT', onUpdate: 'RESTRICT', sql: '', error: '', saving: false },
+    tableActionModal: { open: false, action: '', tables: [], target: '', newName: '', withData: true, sql: '', error: '', saving: false, done: false, messages: [] },
+    fkActions: ['RESTRICT', 'CASCADE', 'SET NULL', 'NO ACTION', 'SET DEFAULT'],
+    columnTypeSuggestions: ['int', 'int unsigned', 'bigint', 'bigint unsigned', 'tinyint(1)', 'smallint', 'mediumint', 'decimal(10,2)', 'double', 'float',
+      'varchar(255)', 'varchar(100)', 'char(36)', 'text', 'mediumtext', 'longtext', 'json', 'date', 'datetime', 'datetime(3)', 'timestamp', 'time', 'year',
+      'blob', 'mediumblob', 'longblob', 'binary(16)', 'varbinary(255)', "enum('a','b')", "set('a','b')", 'bit(1)'],
     exploreDatabases: [],
     exploreDatabase: '',
     exploreTables: [],            // tables AND views (each has .type)
@@ -2338,7 +2827,9 @@ function app() {
       this.exploreDatabase = ''; this.exploreDatabases = [];
       this.resetExploreObjects();
       this.exploreError = '';
+      this.exploreMeta = null;
       if (!key) return;
+      this.loadExploreMeta();
       await this.loadExploreDatabases();
     },
     async loadExploreDatabases() {
@@ -2367,6 +2858,9 @@ function app() {
     async selectExploreDatabase(dbName) {
       this.exploreSidebarHidden = false;
       this.exploreDatabase = dbName;
+      this.overviewTab = 'tables'; this.overviewSelected = []; this.exploreDbInfo = null;
+      this.dbSearch = { term: '', running: false, result: null, error: '' };
+      if (dbName) this.loadDbInfo();
       this.resetExploreObjects();
       this.exploreError = '';
       if (!dbName) return;
@@ -2378,6 +2872,7 @@ function app() {
       this.exploreTable = ''; this.exploreTableType = ''; this.exploreObject = null;
       this.exploreIndexes = []; this.exploreDefinition = '';
       this.exploreRows = []; this.exploreResultColumns = [];
+      this.exploreSchema = null;
     },
     async loadExploreTables() {
       this.exploreLoadingTables = true; this.exploreError = '';
@@ -2418,10 +2913,12 @@ function app() {
       this.exploreIndexes = []; this.exploreDefinition = '';
       this.explorePage = 1; this.exploreSortCol = ''; this.exploreSortDir = 'asc'; this.exploreView = 'data';
       this.exploreSearch = ''; this.exploreFilters = []; this.exploreAppliedFilters = []; this.exploreSelected = [];
+      this.exploreSchema = null;
       await Promise.all([
         this.loadExploreColumns(),
         this.loadExploreRows(),
         this.loadExploreIndexes(),
+        this.loadExploreSchema(),
         this.loadDefinition(this.exploreIsView() ? 'view' : 'table', tableName)
       ]);
     },
@@ -2659,6 +3156,348 @@ function app() {
       this.exploreAppliedFilters = filters;
       this.explorePage = 1;
       this.loadExploreRows();
+    },
+
+    // ---- Schema: helpers ----
+    exploreBase() {
+      return `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}`;
+    },
+    tableBase(table = this.exploreTable) {
+      return `${this.exploreBase()}/${encodeURIComponent(table)}`;
+    },
+    async apiJson(method, url, body) {
+      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+      return data;
+    },
+    formatBytes(n) {
+      n = Number(n);
+      if (!n) return n === 0 ? '0 B' : '';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1);
+      return (n / 1024 ** i).toFixed(i ? 1 : 0).replace(/\.0$/, '') + ' ' + units[i];
+    },
+    describeDefault(d) {
+      if (!d || d.mode === 'none') return '';
+      if (d.mode === 'null') return 'NULL';
+      if (d.mode === 'expression') return d.value;
+      return "'" + d.value + "'";
+    },
+    async loadExploreMeta() {
+      try { this.exploreMeta = await this.apiJson('GET', `/api/explore/${this.exploreConnKey}/meta`); } catch (e) { this.exploreMeta = null; }
+    },
+    async loadDbInfo() {
+      try { this.exploreDbInfo = await this.apiJson('GET', `${this.exploreBase()}/info`); } catch (e) { this.exploreDbInfo = null; }
+    },
+    async loadExploreSchema() {
+      try { this.exploreSchema = await this.apiJson('GET', `${this.tableBase()}/schema`); } catch (e) { this.exploreSchema = null; }
+    },
+    // Reloads everything about the open table after a structure change.
+    async refreshTable(name = this.exploreTable, view = this.exploreView) {
+      await this.loadExploreTables();
+      if (name) {
+        await this.selectExploreTable(name);
+        this.exploreView = view;
+      }
+    },
+
+    // ---- Foreign keys in the data grid ----
+    fkForColumn(col) {
+      const fks = this.exploreSchema ? this.exploreSchema.foreignKeys : [];
+      return fks.find((f) => f.columns.length === 1 && f.columns[0] === col) || null;
+    },
+    async openReferencedTable(fk, filters = []) {
+      if (fk.refDb !== this.exploreDatabase) {
+        this.exploreDatabase = fk.refDb;
+        await this.selectExploreDatabase(fk.refDb);
+      }
+      await this.selectExploreTable(fk.refTable);
+      if (filters.length) {
+        this.exploreFilters = filters.map((f) => ({ id: Math.random(), ...f }));
+        this.applyExploreFilters();
+      }
+    },
+    followFk(fk, value) {
+      return this.openReferencedTable(fk, [{ col: fk.refColumns[0], op: '=', value: String(value) }]);
+    },
+
+    // ---- Databases ----
+    openDbModal(mode) {
+      this.dbModal = { open: true, mode, name: mode === 'alter' ? this.exploreDatabase : '', collation: '', sql: '', error: '', saving: false };
+      if (!this.exploreMeta) this.loadExploreMeta();
+      if (mode === 'alter') this.previewDb();
+    },
+    dbRequest(preview) {
+      const m = this.dbModal;
+      if (m.mode === 'create') return ['POST', `/api/explore/${this.exploreConnKey}/databases`, { name: m.name, collation: m.collation || undefined, preview }];
+      return ['PUT', this.exploreBase(), { rename: m.name, collation: m.collation || undefined, preview }];
+    },
+    async previewDb() {
+      const m = this.dbModal;
+      if (!m.name.trim()) { m.sql = ''; return; }
+      try { m.sql = (await this.apiJson(...this.dbRequest(true))).sql; m.error = ''; } catch (e) { m.sql = ''; m.error = e.message === 'Nothing changed' ? '' : e.message; }
+    },
+    async saveDb() {
+      const m = this.dbModal;
+      m.saving = true; m.error = '';
+      try {
+        const result = await this.apiJson(...this.dbRequest(false));
+        m.open = false;
+        const target = m.mode === 'create' ? m.name.trim() : result.database;
+        await this.loadExploreDatabases();
+        this.exploreDatabase = target;
+        await this.selectExploreDatabase(target);
+        this.showToast(m.mode === 'create' ? 'Database created' : 'Database updated');
+      } catch (e) {
+        m.error = e.message;
+      } finally {
+        m.saving = false;
+      }
+    },
+    async dropDatabase() {
+      const dbName = this.exploreDatabase;
+      const ok = await this.askConfirm(`Drop database ${dbName}?`, `DROP DATABASE \`${dbName}\` — every table and all data in it will be permanently deleted.`, { confirmLabel: 'Drop database', danger: true });
+      if (!ok) return;
+      try {
+        await this.apiJson('DELETE', this.exploreBase(), {});
+        this.showToast('Database dropped');
+        this.exploreDatabase = '';
+        this.resetExploreObjects();
+        await this.loadExploreDatabases();
+      } catch (e) {
+        this.showToast(e.message, 'error');
+      }
+    },
+    async searchDatabase() {
+      const d = this.dbSearch;
+      d.running = true; d.error = ''; d.result = null;
+      try { d.result = await this.apiJson('GET', `${this.exploreBase()}/search?q=${encodeURIComponent(d.term)}`); } catch (e) { d.error = e.message; } finally { d.running = false; }
+    },
+    async openSearchResult(table) {
+      const term = this.dbSearch.result.term;
+      await this.selectExploreTable(table);
+      this.exploreSearch = term;
+      this.applyExploreFilters();
+    },
+
+    // ---- Table editor (create / alter) ----
+    editorColumn(c) {
+      return {
+        id: Math.random(), orig: c ? c.name : null,
+        name: c ? c.name : '', type: c ? c.type : 'varchar(255)', nullable: c ? c.nullable : true,
+        defMode: c ? c.default.mode : 'none', defValue: c && c.default.value !== undefined ? String(c.default.value) : '',
+        autoIncrement: c ? c.autoIncrement : false, onUpdate: c ? c.onUpdate : false, comment: c ? c.comment : '',
+        primary: false, generated: c ? c.generated : null
+      };
+    },
+    async openTableEditor(mode) {
+      if (!this.exploreMeta) this.loadExploreMeta();
+      if (mode === 'alter') {
+        if (!this.exploreSchema) await this.loadExploreSchema();
+        const sc = this.exploreSchema;
+        const cols = sc.columns.map((c) => this.editorColumn(c));
+        this.tableEditor = {
+          open: true, mode, origName: this.exploreTable, name: this.exploreTable,
+          engine: sc.info.engine || '', collation: sc.info.collation || '', comment: sc.info.comment || '', autoIncrement: sc.info.autoIncrement ?? '',
+          columns: cols, original: cols.map((c) => ({ ...c })), dropped: [], sql: '', error: '', saving: false
+        };
+      } else {
+        const id = { ...this.editorColumn(null), name: 'id', type: 'int unsigned', nullable: false, autoIncrement: true, primary: true };
+        this.tableEditor = {
+          open: true, mode, origName: '', name: '', engine: '', collation: '', comment: '', autoIncrement: '',
+          columns: [id, this.editorColumn(null)], original: [], dropped: [], sql: '', error: '', saving: false
+        };
+      }
+      this.previewTable();
+    },
+    addEditorColumn() {
+      this.tableEditor.columns.push(this.editorColumn(null));
+    },
+    removeEditorColumn(i) {
+      const [c] = this.tableEditor.columns.splice(i, 1);
+      if (c.orig) this.tableEditor.dropped.push(c.orig);
+      this.previewTable();
+    },
+    moveEditorColumn(i, delta) {
+      const cols = this.tableEditor.columns;
+      [cols[i + delta], cols[i]] = [cols[i], cols[i + delta]];
+      this.tableEditor.columns = [...cols];
+      this.previewTable();
+    },
+    columnDef(c) {
+      return {
+        name: c.name.trim(), type: c.type.trim(), nullable: c.nullable,
+        default: c.defMode === 'value' || c.defMode === 'expression' ? { mode: c.defMode, value: c.defValue } : { mode: c.defMode },
+        autoIncrement: c.autoIncrement, onUpdate: c.onUpdate && /^(timestamp|datetime)/i.test(c.type), comment: c.comment
+      };
+    },
+    columnChanged(c) {
+      if (!c.orig) return false;
+      const o = this.tableEditor.original.find((x) => x.orig === c.orig);
+      const a = this.columnDef(c), b = this.columnDef(o);
+      return JSON.stringify(a) !== JSON.stringify(b);
+    },
+    // Builds the alter spec: drops, then every added / changed / moved column in final order.
+    alterSpec() {
+      const t = this.tableEditor;
+      const keptNew = t.columns.filter((c) => c.orig).map((c) => c.orig);
+      const keptOrig = t.original.map((o) => o.orig).filter((n) => keptNew.includes(n));
+      const columns = [];
+      t.columns.forEach((c, i) => {
+        const position = i === 0 ? 'FIRST' : { after: t.columns[i - 1].name.trim() };
+        if (!c.orig) {
+          if (c.name.trim()) columns.push({ action: 'add', def: this.columnDef(c), position });
+          return;
+        }
+        const k = keptNew.indexOf(c.orig);
+        const moved = (keptNew[k - 1] ?? null) !== (keptOrig[keptOrig.indexOf(c.orig) - 1] ?? null);
+        if (moved || this.columnChanged(c)) columns.push({ action: 'change', orig: c.orig, def: this.columnDef(c), position: moved ? position : undefined });
+      });
+      return {
+        rename: t.name.trim(), engine: t.engine || undefined, collation: t.collation || undefined, comment: t.comment,
+        autoIncrement: t.autoIncrement === '' ? undefined : t.autoIncrement, drop: t.dropped, columns
+      };
+    },
+    tableRequest(preview) {
+      const t = this.tableEditor;
+      if (t.mode === 'create') {
+        return ['POST', `${this.exploreBase()}/tables`, {
+          name: t.name, engine: t.engine || undefined, collation: t.collation || undefined, comment: t.comment || undefined,
+          columns: t.columns.filter((c) => c.name.trim()).map((c) => ({ ...this.columnDef(c), primary: c.primary })), preview
+        }];
+      }
+      return ['POST', `${this.tableBase(t.origName)}/alter`, { ...this.alterSpec(), preview }];
+    },
+    async previewTable() {
+      const t = this.tableEditor;
+      if (!t.name.trim()) { t.sql = ''; t.error = ''; return; }
+      try { t.sql = (await this.apiJson(...this.tableRequest(true))).sql; t.error = ''; } catch (e) { t.sql = ''; t.error = e.message === 'Nothing changed' ? '' : e.message; }
+    },
+    async saveTable() {
+      const t = this.tableEditor;
+      t.saving = true; t.error = '';
+      try {
+        const result = await this.apiJson(...this.tableRequest(false));
+        t.open = false;
+        this.showToast(t.mode === 'create' ? 'Table created' : 'Table altered');
+        await this.refreshTable(result.table, t.mode === 'create' ? 'structure' : this.exploreView);
+      } catch (e) {
+        t.error = e.message;
+      } finally {
+        t.saving = false;
+      }
+    },
+
+    // ---- Foreign key editor ----
+    async openFkModal(fk) {
+      this.fkModal = {
+        open: true, editing: fk || null, name: fk ? fk.name : '',
+        refDb: fk ? fk.refDb : this.exploreDatabase, refTable: fk ? fk.refTable : '', refTables: [], refColumns: [],
+        pairs: fk ? fk.columns.map((c, i) => ({ id: Math.random(), column: c, refColumn: fk.refColumns[i] })) : [{ id: Math.random(), column: '', refColumn: '' }],
+        onDelete: fk ? fk.onDelete : 'RESTRICT', onUpdate: fk ? fk.onUpdate : 'RESTRICT', sql: '', error: '', saving: false
+      };
+      await this.loadFkRefTables();
+      if (fk) await this.loadFkRefColumns();
+    },
+    async loadFkRefTables() {
+      const m = this.fkModal;
+      try {
+        const tables = await this.apiJson('GET', `/api/explore/${this.exploreConnKey}/${encodeURIComponent(m.refDb)}/tables`);
+        m.refTables = tables.filter((t) => !/VIEW/i.test(t.type)).map((t) => t.name);
+      } catch (e) { m.refTables = []; }
+    },
+    async loadFkRefColumns() {
+      const m = this.fkModal;
+      if (!m.refTable) { m.refColumns = []; m.sql = ''; return; }
+      try {
+        const data = await this.apiJson('GET', `/api/explore/${this.exploreConnKey}/${encodeURIComponent(m.refDb)}/${encodeURIComponent(m.refTable)}/columns`);
+        m.refColumns = data.columns;
+        // Default the referenced column to the primary key, Adminer-style.
+        m.pairs.forEach((p, i) => { if (!p.refColumn && data.primaryKey[i]) p.refColumn = data.primaryKey[i]; });
+      } catch (e) { m.refColumns = []; }
+      this.previewFk();
+    },
+    fkRequest(preview) {
+      const m = this.fkModal;
+      const pairs = m.pairs.filter((p) => p.column || p.refColumn);
+      return ['POST', `${this.tableBase()}/foreign-keys`, {
+        drop: m.editing ? m.editing.name : undefined,
+        add: { name: m.name.trim(), refDb: m.refDb, refTable: m.refTable, columns: pairs.map((p) => p.column), refColumns: pairs.map((p) => p.refColumn), onDelete: m.onDelete, onUpdate: m.onUpdate },
+        preview
+      }];
+    },
+    async previewFk() {
+      const m = this.fkModal;
+      if (!m.refTable || !m.pairs.some((p) => p.column)) { m.sql = ''; return; }
+      try { m.sql = (await this.apiJson(...this.fkRequest(true))).sql; m.error = ''; } catch (e) { m.sql = ''; m.error = e.message; }
+    },
+    async saveFk() {
+      const m = this.fkModal;
+      m.saving = true; m.error = '';
+      try {
+        await this.apiJson(...this.fkRequest(false));
+        m.open = false;
+        this.showToast(m.editing ? 'Foreign key updated' : 'Foreign key added');
+        await Promise.all([this.loadExploreSchema(), this.loadExploreIndexes(), this.loadDefinition('table', this.exploreTable)]);
+      } catch (e) {
+        m.error = e.message;
+      } finally {
+        m.saving = false;
+      }
+    },
+    async dropFk(fk) {
+      let sql = '';
+      try { sql = (await this.apiJson('POST', `${this.tableBase()}/foreign-keys`, { drop: fk.name, preview: true })).sql; } catch (e) { /* still confirm */ }
+      const ok = await this.askConfirm(`Drop foreign key ${fk.name}?`, sql, { confirmLabel: 'Drop', danger: true });
+      if (!ok) return;
+      try {
+        await this.apiJson('POST', `${this.tableBase()}/foreign-keys`, { drop: fk.name });
+        this.showToast('Foreign key dropped');
+        await Promise.all([this.loadExploreSchema(), this.loadDefinition('table', this.exploreTable)]);
+      } catch (e) {
+        this.showToast(e.message, 'error');
+      }
+    },
+
+    // ---- Table actions (copy / move / truncate / drop / maintenance) ----
+    openTableAction(action, tables) {
+      this.tableActionModal = {
+        open: true, action, tables: [...tables], target: this.exploreDatabase, newName: '', withData: true,
+        sql: '', error: '', saving: false, done: false, messages: []
+      };
+      this.previewTableAction();
+    },
+    tableActionBody(preview) {
+      const m = this.tableActionModal;
+      return { action: m.action, tables: m.tables, target: m.target, newName: m.newName.trim() || undefined, withData: m.withData, preview };
+    },
+    async previewTableAction() {
+      const m = this.tableActionModal;
+      try { m.sql = (await this.apiJson('POST', `${this.exploreBase()}/table-actions`, this.tableActionBody(true))).sql; m.error = ''; } catch (e) { m.sql = ''; m.error = e.message; }
+    },
+    async runTableAction() {
+      const m = this.tableActionModal;
+      m.saving = true; m.error = '';
+      try {
+        const result = await this.apiJson('POST', `${this.exploreBase()}/table-actions`, this.tableActionBody(false));
+        m.done = true;
+        m.messages = result.messages || [];
+        this.overviewSelected = [];
+        this.showToast(`${m.action[0].toUpperCase() + m.action.slice(1)} done`);
+        if (!m.messages.length) m.open = false;
+        const current = this.exploreTable;
+        await this.loadExploreTables();
+        if (current && ['drop', 'move'].includes(m.action) && m.tables.includes(current)) {
+          this.exploreTable = ''; this.exploreObject = null;
+        } else if (current && m.tables.includes(current)) {
+          await this.refreshTable(current);
+        }
+      } catch (e) {
+        m.error = e.message;
+      } finally {
+        m.saving = false;
+      }
     },
 
     // ---- Indexes ----

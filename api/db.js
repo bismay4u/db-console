@@ -343,7 +343,9 @@ async function listDatabases(key) {
 async function listTables(key, database) {
   const pool = getPool(key);
   const [rows] = await pool.query(
-    `SELECT TABLE_NAME AS name, TABLE_ROWS AS approxRows, ENGINE AS engine, TABLE_TYPE AS type
+    `SELECT TABLE_NAME AS name, TABLE_ROWS AS approxRows, ENGINE AS engine, TABLE_TYPE AS type,
+            DATA_LENGTH AS dataLength, INDEX_LENGTH AS indexLength, AUTO_INCREMENT AS autoIncrement,
+            TABLE_COLLATION AS collation, TABLE_COMMENT AS comment, UPDATE_TIME AS updateTime
      FROM information_schema.TABLES
      WHERE TABLE_SCHEMA = ?
      ORDER BY TABLE_NAME`,
