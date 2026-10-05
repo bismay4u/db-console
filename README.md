@@ -51,28 +51,43 @@ Browse Database servers through a structured interface.
 
 When a database is open, the left menu slides away and is replaced by a full-height, compact list of its tables & views (plus routines, triggers and events), so the data grid gets the full width. **← Menu** brings the menu back; **Tables** shows the list again.
 
-* Browse all databases on a connection
-* Browse tables and views
-* View table data (**Data** tab)
-* Pagination
-* Column sorting
-* Search across all columns
-* Adminer-style filters: column (or any column) + operator (`=`, `≠`, `<`, `>`, contains, starts/ends with, `LIKE`, `REGEXP`, `IN`, `IS NULL`...) + value, combined with AND; applied on the server, and used by CSV export too
-* View table structure (**Structure** tab): columns, types, keys and the table DDL
-* View `SHOW CREATE` definitions
-* **Indexes** tab: list, create, edit and drop indexes (PRIMARY, UNIQUE, INDEX, FULLTEXT, SPATIAL; multiple columns, optional prefix lengths). The exact `ALTER TABLE` is shown before it runs; editing an index is a single `DROP` + `ADD` statement, so it either fully applies or not at all
-* Add rows
-* Edit and delete rows from the row's left-hand actions; delete always asks for confirmation
-* Select rows and delete them in bulk
-* Primary-key aware editing
-* Read-only handling for tables without a primary key
-* View definitions
-* Stored procedure definitions
-* Function definitions
-* Trigger definitions
-* Event definitions
+**Databases**
 
-Views are identified separately and treated as read-only objects.
+* Browse all databases on a connection
+* Create, alter (collation, rename) and drop databases — renaming moves every table and is refused when the database has views, routines, triggers or events
+* Overview of every table: engine, approximate rows, data and index size, auto-increment, collation and comment
+* Bulk table actions: optimize, analyze, check, repair, truncate, drop, copy and move to another database
+* Search a value across every table of a database
+* **Diagram** tab: every table with its columns, primary and foreign keys, joined by a line per foreign key. Drag tables to arrange them, zoom, or auto-layout; the layout is remembered per connection and database. Double-click a table to open it
+
+**Tables**
+
+* **Data** tab: pagination, multi-column sorting (Shift+click a header to add a sort), search across all columns, and Adminer-style filters: column (or any column) + operator (`=`, `≠`, `<`, `>`, contains, starts/ends with, `LIKE`, `REGEXP`, `IN`, `IS NULL`...) + value, combined with AND; applied on the server, and used by CSV export too
+* Choose which columns to show (remembered per table)
+* Foreign-key values are links to the referenced row
+* Double-click a cell to edit it in place; long, JSON and binary values open a cell viewer, and binary values can be downloaded
+* Add, edit, clone and delete rows from the row's left-hand actions; delete always asks for confirmation. The row form knows each column's type, can set `NULL`, and can use a function (`NOW()`, `UUID()`, `MD5()`…) instead of a value
+* Select rows and delete them in bulk
+* Primary-key aware editing; tables without a primary key are read-only
+* **Structure** tab: columns, foreign keys and the table DDL
+* Create and alter tables: add, change, rename, reorder and drop columns, defaults (value, `NULL`, expression), auto-increment, engine, collation, comment and auto-increment value
+* Add, edit and drop foreign keys (with `ON DELETE` / `ON UPDATE`)
+* **Indexes** tab: list, create, edit and drop indexes (PRIMARY, UNIQUE, INDEX, FULLTEXT, SPATIAL; multiple columns, optional prefix lengths)
+
+**Views, routines, triggers and events**
+
+* View their definitions
+* Create, edit and drop views, procedures, functions, triggers and events in a SQL editor that starts from a template. Editing runs `DROP` + `CREATE`; if the new definition fails, the original is put back. `DEFINER` clauses are left out, so objects are created as the connection's user
+
+Every change to the schema shows the exact SQL before it runs, and is written to the query log.
+
+**Server** (owner or admin of the connection)
+
+* Process list, with kill query / kill connection
+* Server variables and status
+* Database accounts: create, drop, change password, grant and revoke privileges (server-wide, per database or per table)
+
+Views are identified separately; their rows are read-only.
 
 ---
 
@@ -96,12 +111,16 @@ Execute
 
 Features include:
 
+* SQL editor with syntax highlighting and autocomplete for keywords, tables and columns (Ctrl+Space); Ctrl+Enter runs the selection or everything
 * Execute SQL against multiple connections
 * Parallel execution
 * Per-database results
 * Result rows
 * Affected-row counts
-* Error reporting
+* Error reporting, and the server's warnings for a statement that produced any
+* **Explain** shows the execution plan of SELECT / UPDATE / DELETE / INSERT statements
+* Results are paged in the browser; at most 10,000 rows are returned per statement
+* `CALL` shows the procedure's first result set
 * Saved SQL queries
 * Load saved queries directly into Query Runner
 * `USE database_name` switches a connection's current database; it is shown in the connection list and kept for your next runs (per user, in your browser) until you run `USE` again or click the reset button next to it
@@ -125,6 +144,7 @@ Manage Database connections directly from the web interface.
 * Every connection has an owner
 * Share a connection with specific users, or with everyone
 * Shared users can use a connection but cannot see its password, edit, delete or re-share it
+* Share **read-only**: those users can browse, search, view the diagram, run `SELECT` / `SHOW` / `DESCRIBE` / `EXPLAIN` / `USE` and export, but cannot change data or structure, import or restore. Their queries run in a `READ ONLY` transaction, so even a stored function that writes fails
 
 Example:
 
@@ -172,54 +192,25 @@ On import, `\N` becomes `NULL`. An empty value also becomes `NULL` for nullable 
 
 ---
 
-### 💾 Backup & Restore
+### 💾 Export, Backup & Restore
 
-Create database backups without requiring the Database command-line tools.
+Export a database without the MySQL command-line tools. **Export** lets you choose:
 
-DB Console can generate a:
+* Format: SQL, gzipped SQL, CSV or TSV (several tables as CSV/TSV come as a `.tar.gz` with one file per table)
+* Which tables
+* Structure: `DROP` + `CREATE`, `CREATE` only, or none
+* Data on or off
+* Views, procedures and functions, triggers and events
 
-```text
-database-backup.tar.gz
-```
+SQL dumps are written like `mysqldump`: routines, triggers and events in `DELIMITER ;;` blocks, triggers after the data, `DEFINER` clauses removed, generated columns left out of the `INSERT`s. Everything is streamed from the database straight to the download.
 
-containing database structure and data.
-
-The backup process uses:
-
-* `SHOW CREATE TABLE`
-* Batched `INSERT` statements
-* Temporary files
-* Streaming
-* Node.js built-in `zlib`
-* Native Node.js implementation of the required TAR handling
-
-No dependency on:
-
-```text
-Databasedump
-Database
-tar
-```
-
-is required.
+The older **backup** endpoint still produces a `database-backup.tar.gz` (tables, data and views), using only Node.js built-ins (`zlib` and a small TAR writer).
 
 ### Restore
 
-Restore either:
+Restore `.sql`, `.sql.gz` or `.tar.gz` files — including dumps made by `mysqldump`.
 
-```text
-.sql
-```
-
-or:
-
-```text
-.tar.gz
-```
-
-files.
-
-Restore processing is streamed and executed statement-by-statement, with live progress and error reporting.
+Restore processing is streamed and executed statement-by-statement, with live progress and error reporting. The SQL splitter understands `DELIMITER`, comments, quoted strings and escapes, so procedures, functions, triggers and events restore too.
 
 Large database dumps therefore do not need to be loaded completely into memory.
 
@@ -594,7 +585,7 @@ DELETE /api/connections/:key
 POST /api/connections/:key/test
 POST /api/connections/test
 
-PUT  /api/connections/:key/sharing    # { "sharedWith": ["alice"] } or ["*"]
+PUT  /api/connections/:key/sharing    # { "sharedWith": ["alice"] } or ["*"], optional "readOnly": true
 ```
 
 Only the owner or an admin can edit, delete or share a connection.
@@ -637,6 +628,7 @@ Get rows:
 
 ```http
 GET /api/explore/:key/:database/:table/rows
+GET /api/explore/:key/:database/:table/cell     # one full value (long text, binary download)
 ```
 
 Supported parameters:
@@ -644,10 +636,11 @@ Supported parameters:
 ```text
 page
 pageSize
-sortCol
-sortDir
+sort      JSON array of { "col": "...", "dir": "asc|desc" } (or sortCol / sortDir)
 filters   JSON array of { "col": "<column or *>", "op": "<operator>", "value": "..." }
 ```
+
+Binary values come back as `{ "__hex": "..." }` (up to 64 bytes) or `{ "__blob": true, "size": n }`. When writing, a value may be `{ "__hex": "..." }`, `{ "__base64": "..." }` or `{ "__fn": "NOW", "arg": ... }` for one of the allowed functions.
 
 Modify rows:
 
@@ -665,6 +658,43 @@ POST /api/explore/:key/:database/:table/indexes
 ```
 
 `POST` body: `{ "drop": "<index name>", "add": { "kind": "INDEX|UNIQUE|PRIMARY|FULLTEXT|SPATIAL", "name": "...", "columns": [{ "column": "...", "length": 10 }] }, "preview": true }` — `drop` and `add` together edit an index; `preview` returns the SQL without running it.
+
+Schema (every `POST` / `PUT` / `DELETE` here accepts `"preview": true`):
+
+```http
+GET    /api/explore/:key/meta                         # collations and engines
+POST   /api/explore/:key/databases                    # { name, collation }
+GET    /api/explore/:key/:database/info
+PUT    /api/explore/:key/:database                    # { collation, rename }
+DELETE /api/explore/:key/:database
+GET    /api/explore/:key/:database/search?q=...
+GET    /api/explore/:key/:database/diagram            # tables, columns and foreign keys
+GET    /api/explore/:key/:database/foreign-keys
+GET    /api/explore/:key/:database/autocomplete       # { table: [columns] }
+POST   /api/explore/:key/:database/tables             # create table
+POST   /api/explore/:key/:database/table-actions      # { action: truncate|drop|optimize|analyze|check|repair|copy|move, tables, target }
+GET    /api/explore/:key/:database/:table/schema
+POST   /api/explore/:key/:database/:table/alter
+POST   /api/explore/:key/:database/:table/foreign-keys  # { drop, add }
+POST   /api/explore/:key/:database/objects/save       # { kind, name (when editing), sql }
+POST   /api/explore/:key/:database/objects/drop       # { kind, name }
+```
+
+Server tools (owner or admin only):
+
+```http
+GET    /api/server/:key/processes
+POST   /api/server/:key/processes/:id/kill   # { queryOnly }
+GET    /api/server/:key/variables
+GET    /api/server/:key/status
+GET    /api/server/:key/accounts
+POST   /api/server/:key/accounts             # { user, host, password }
+PUT    /api/server/:key/accounts/password    # { user, host, password }
+DELETE /api/server/:key/accounts             # { user, host }
+POST   /api/server/:key/grants               # { action: grant|revoke, user, host, privileges, db, table }
+```
+
+When a connection is shared read-only, every non-`GET` request under `/api/explore/:key` returns `403` for the people it is shared with.
 
 ---
 
@@ -684,11 +714,14 @@ POST /api/explore/:key/:database/:table/import
 
 ---
 
-## Backup
+## Export & Backup
 
 ```http
+GET /api/explore/:key/:database/export?options={"format":"sql","tables":[],"structure":"drop-create","data":true,"views":true,"routines":true,"triggers":true,"events":true}
 GET /api/explore/:key/:database/backup.tar.gz
 ```
+
+`format` is `sql`, `sql.gz`, `csv` or `tsv`; `structure` is `drop-create`, `create` or `none`; an empty `tables` means all tables.
 
 ---
 
@@ -702,6 +735,7 @@ or:
 
 ```http
 POST /api/explore/:key/:database/restore?format=targz
+POST /api/explore/:key/:database/restore?format=sqlgz
 ```
 
 Restore responses are delivered as newline-delimited JSON progress events.
@@ -722,11 +756,13 @@ Example request:
         "production",
         "uat"
     ],
-    "sql": "SELECT COUNT(*) FROM customers"
+    "sql": "SELECT COUNT(*) FROM customers",
+    "databases": { "production": "shop" },
+    "explain": false
 }
 ```
 
-The query is executed against the selected connections in parallel.
+The query is executed against the selected connections in parallel. `databases` sets the database each connection starts in (after an earlier `USE`); `explain: true` returns the execution plan instead of running the statements.
 
 ---
 
@@ -898,25 +934,12 @@ openssl rand -hex 32
 
 # Backup Limitations
 
-The current backup implementation includes:
+SQL exports include tables, data, views, procedures, functions, triggers and events, and restore handles all of them.
 
-* Tables
-* Table structures
-* Table data
-* Views
-
-It does **not currently restore**:
-
-* Stored procedures
-* Functions
-* Triggers
-* Events
-
-The reason is that these objects can contain complex SQL bodies containing semicolons and require `DELIMITER`-aware parsing.
-
-Views are generated using `SHOW CREATE VIEW`.
-
-When restoring a database under a different schema/database name, view definitions containing explicit schema references may need to be adjusted.
+* `DEFINER` clauses are removed, so restored views and routines belong to the restoring user.
+* Views are written using `SHOW CREATE VIEW` without the database name, so a dump can be restored into a database with a different name; a view that explicitly refers to *another* database still does.
+* Users, grants and server settings are not part of a database export.
+* Restore runs statements one after another, so a very large dump takes a while; if a statement fails the restore stops there and reports it (nothing is rolled back).
 
 ---
 
@@ -995,7 +1018,9 @@ db-console/
 ├── package.json
 │
 ├── api/
-│   ├── db.js             # MySQL pools, queries, explore, CSV, backup/restore
+│   ├── db.js             # MySQL pools, queries, explore, CSV, export/restore
+│   ├── schema.js         # databases, tables, columns, foreign keys, objects, diagram
+│   ├── serveradmin.js    # process list, variables, accounts and privileges
 │   ├── store.js          # users, connections, saved queries
 │   ├── datadir.js        # data directory, atomic writes, cross-process lock
 │   ├── sessionstore.js   # file-based session store (shared by cluster workers)
@@ -1076,30 +1101,32 @@ The project is intentionally small, but potential future improvements include:
 * [ ] SQLite support
 * [ ] Additional database engines
 * [ ] Database health information
-* [ ] Process list
-* [ ] Active query monitoring
+* [x] Process list
+* [x] Active query monitoring
 * [ ] Index recommendations
 * [ ] Query execution statistics
-* [ ] Table size information
+* [x] Table size information
+* [x] Schema diagram
+* [x] User and privilege management
 * [ ] Database size reporting
 
 ### Querying
 
-* [ ] SQL editor improvements
-* [ ] Syntax highlighting
-* [ ] SQL autocomplete
+* [x] SQL editor improvements
+* [x] Syntax highlighting
+* [x] SQL autocomplete
 * [x] Query history
-* [ ] Query execution plan
+* [x] Query execution plan
 * [ ] Explain visualisation
 * [ ] Query cancellation
 * [ ] Query templates
 
 ### Backup
 
-* [ ] Routine backup support
-* [ ] Trigger backup support
-* [ ] Event backup support
-* [ ] Procedure/function backup support
+* [x] Routine backup support
+* [x] Trigger backup support
+* [x] Event backup support
+* [x] Procedure/function backup support
 * [ ] Incremental backup options
 * [ ] Scheduled backups
 
@@ -1108,7 +1135,7 @@ The project is intentionally small, but potential future improvements include:
 * [ ] Docker image
 * [ ] Docker Compose deployment
 * [ ] Health-check endpoint
-* [ ] Read-only mode
+* [x] Read-only sharing
 * [ ] Environment-based configuration
 * [ ] Kubernetes deployment
 * [ ] Single-binary/package distribution
