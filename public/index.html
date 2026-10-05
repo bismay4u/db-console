@@ -7,6 +7,13 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- SQL editor (syntax highlighting + autocomplete); the plain textarea is used if it fails to load -->
+<link href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/sql/sql.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/sql-hint.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <style>
@@ -236,6 +243,15 @@
     font-size:.87rem; border-radius:12px; border:1px solid var(--border);
     background:#fbfbfc;
   }
+  .CodeMirror{
+    height:auto; min-height:150px; border:1px solid var(--border); border-radius:12px; background:#fbfbfc;
+    font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size:.87rem;
+  }
+  .CodeMirror-scroll{ min-height:150px; max-height:420px; }
+  .CodeMirror-focused{ border-color:var(--accent); box-shadow:0 0 0 .2rem rgba(74,93,249,.12); background:#fff; }
+  .CodeMirror-gutters{ background:transparent; border-right:1px solid var(--border); border-radius:12px 0 0 12px; }
+  .CodeMirror-placeholder{ color:var(--muted)!important; }
+  .CodeMirror-hints{ z-index:1100; font-family:'SFMono-Regular',Consolas,monospace; font-size:.8rem; }
   textarea.sql-editor:focus{ border-color:var(--accent); box-shadow:0 0 0 .2rem rgba(74,93,249,.12); background:#fff; }
 
   .badge-soft-success{ background:#e7f8f1; color:var(--success); font-weight:600; }
@@ -580,12 +596,17 @@
                       placeholder="SELECT * FROM users LIMIT 10;
 Separate multiple statements with ; — highlight text to run just that part."
                       @select="updateSelection" @keyup="updateSelection" @mouseup="updateSelection" @input="updateSelection"
-                      @keydown.ctrl.enter.prevent="runQuery" @keydown.meta.enter.prevent="runQuery"></textarea>
+                      @keydown.ctrl.enter.prevent="runQuery" @keydown.meta.enter.prevent="runQuery"
+                      x-init="$nextTick(() => initSqlEditor($el))"></textarea>
             <div class="d-flex align-items-center mt-2 flex-wrap gap-2">
               <button class="btn btn-accent btn-sm" @click="runQuery" :disabled="running || selectedKeys.length === 0 || !activeSql().trim()">
                 <span x-show="running" class="spinner-border spinner-border-sm me-1"></span>
                 <i class="bi bi-play-fill me-1" x-show="!running"></i>
                 Run on <span x-text="selectedKeys.length"></span> database(s)
+              </button>
+              <button class="btn btn-outline-soft btn-sm" @click="runQuery({ explain: true })" :disabled="running || selectedKeys.length === 0 || !activeSql().trim()"
+                      title="Show the execution plan (EXPLAIN) without running the statements">
+                <i class="bi bi-diagram-3 me-1"></i>Explain
               </button>
               <span class="selection-badge" x-show="hasSelection()">
                 <i class="bi bi-cursor-text"></i> Running selection
@@ -628,13 +649,29 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <div class="text-muted-sm">
                         Affected rows: <strong x-text="s.affectedRows"></strong>
                         <span x-show="s.insertId"> &middot; Insert ID: <strong x-text="s.insertId"></strong></span>
+                        <span x-show="s.warningStatus"> &middot; <span class="text-warning-emphasis" x-text="s.warningStatus + ' warning(s)'"></span></span>
+                      </div>
+                    </template>
+                    <template x-if="s.warnings && s.warnings.length">
+                      <div class="alert alert-warning py-1 px-2 small mt-1 mb-0">
+                        <template x-for="(w, wi) in s.warnings" :key="wi">
+                          <div><strong x-text="w.level + ' ' + w.code + ':'"></strong> <span x-text="w.message"></span></div>
+                        </template>
                       </div>
                     </template>
 
                     <template x-if="s.ok && s.type === 'rows'">
                       <div>
-                        <div class="d-flex justify-content-between align-items-center mb-1">
-                          <div class="text-muted-sm" x-text="s.rowCount + ' row(s)'"></div>
+                        <div class="d-flex justify-content-between align-items-center mb-1 gap-2">
+                          <div class="text-muted-sm">
+                            <span x-text="s.rowCount.toLocaleString() + ' row(s)'"></span>
+                            <span class="text-warning-emphasis" x-show="s.truncated" x-text="' · only the first ' + s.rows.length.toLocaleString() + ' were sent — add a LIMIT or export the table'"></span>
+                          </div>
+                          <div class="d-flex align-items-center gap-1 ms-auto" x-show="s.rows.length > resultPageSize">
+                            <button class="btn btn-outline-soft btn-sm" style="padding:.05rem .4rem" :disabled="(s.page || 1) <= 1" @click="s.page = (s.page || 1) - 1"><i class="bi bi-chevron-left"></i></button>
+                            <span class="text-muted-sm" x-text="'Page ' + (s.page || 1) + ' / ' + Math.ceil(s.rows.length / resultPageSize)"></span>
+                            <button class="btn btn-outline-soft btn-sm" style="padding:.05rem .4rem" :disabled="(s.page || 1) >= Math.ceil(s.rows.length / resultPageSize)" @click="s.page = (s.page || 1) + 1"><i class="bi bi-chevron-right"></i></button>
+                          </div>
                           <button class="btn btn-outline-soft btn-sm" style="padding:.1rem .5rem; font-size:.72rem" @click="exportStatementCsv(s)">
                             <i class="bi bi-download me-1"></i>Export CSV
                           </button>
@@ -647,10 +684,11 @@ Separate multiple statements with ; — highlight text to run just that part."
                               </tr>
                             </thead>
                             <tbody>
-                              <template x-for="(row, ridx) in s.rows" :key="ridx">
+                              <template x-for="(row, ridx) in pageRows(s)" :key="ridx">
                                 <tr>
                                   <template x-for="col in s.columns" :key="col">
-                                    <td x-text="formatCell(row[col])"></td>
+                                    <td :class="row[col] === null && 'cell-null'" x-text="displayCell(row[col])"
+                                        :title="isLongValue(row[col]) ? 'Click to see the full value' : ''" @click="isLongValue(row[col]) && openCellViewer(col, row[col])"></td>
                                   </template>
                                 </tr>
                               </template>
@@ -2415,6 +2453,10 @@ Separate multiple statements with ; — highlight text to run just that part."
 </div>
 
 <script>
+// The CodeMirror instance lives outside Alpine's reactive state (Alpine
+// would wrap it in a proxy, which CodeMirror doesn't survive).
+let sqlCm = null;
+
 function app() {
   return {
     activeTab: 'runner',
@@ -2431,6 +2473,11 @@ function app() {
     selectedKeys: [],
     sql: '',
     selection: { start: 0, end: 0 },
+    cmSelection: '',
+    editorReady: false,
+    sqlHintTables: null,
+    sqlHintKey: '',
+    resultPageSize: 100,
     running: false,
     results: [],
     topError: '',
@@ -2561,6 +2608,10 @@ function app() {
         this.currentDbs = {};
       }
       await Promise.all([this.loadConnections(), this.loadQueries(), this.loadDirectory()]);
+      // Text set from elsewhere (saved query, history, log) goes into the editor.
+      this.$watch('sql', (v) => { if (sqlCm && sqlCm.getValue() !== v) sqlCm.setValue(v); });
+      this.$watch('selectedKeys', () => this.loadHintTables());
+      this.$watch('currentDbs', () => this.loadHintTables());
     },
 
     isAdmin() {
@@ -2710,14 +2761,65 @@ function app() {
     // ---- Text selection in the SQL editor ----
     updateSelection() {
       const ta = this.$refs.sqlEditor;
-      if (!ta) return;
+      if (!ta || sqlCm) return;
       this.selection = { start: ta.selectionStart, end: ta.selectionEnd };
     },
+    // Both read editorReady/cmSelection every time so Alpine re-evaluates them
+    // once the editor exists (sqlCm itself isn't reactive).
     hasSelection() {
-      return this.selection.end > this.selection.start;
+      const cmSel = this.cmSelection;
+      return this.editorReady && sqlCm ? cmSel.length > 0 : this.selection.end > this.selection.start;
     },
     activeSql() {
+      const cmSel = this.cmSelection;
+      if (this.editorReady && sqlCm) return cmSel || this.sql;
       return this.hasSelection() ? this.sql.substring(this.selection.start, this.selection.end) : this.sql;
+    },
+
+    // ---- SQL editor (CodeMirror) ----
+    // Replaces the textarea with a highlighting editor. The runner template is
+    // re-created whenever the tab is opened, so this runs each time.
+    initSqlEditor(textarea) {
+      if (!window.CodeMirror || !textarea || !textarea.isConnected) { sqlCm = null; this.editorReady = false; return; }
+      const run = () => { this.runQuery(); };
+      sqlCm = window.CodeMirror.fromTextArea(textarea, {
+        mode: 'text/x-mariadb', lineNumbers: true, lineWrapping: true, indentWithTabs: false, tabSize: 2,
+        placeholder: textarea.getAttribute('placeholder'),
+        extraKeys: { 'Ctrl-Enter': run, 'Cmd-Enter': run, 'Ctrl-Space': 'autocomplete', Tab: (cm) => cm.replaceSelection('  ') },
+        hintOptions: { tables: this.hintTables(), completeSingle: false }
+      });
+      sqlCm.setValue(this.sql);
+      this.cmSelection = '';
+      sqlCm.on('change', (cm) => { if (this.sql !== cm.getValue()) this.sql = cm.getValue(); });
+      sqlCm.on('cursorActivity', (cm) => { this.cmSelection = cm.getSelection(); });
+      // Suggest as you type (letters, digits, _ and .), not on every keystroke.
+      sqlCm.on('inputRead', (cm, change) => {
+        if (change.origin === '+input' && /^[\w.]$/.test(change.text[0]) && !cm.state.completionActive) {
+          cm.showHint({ completeSingle: false });
+        }
+      });
+      this.editorReady = true;
+      this.loadHintTables();
+    },
+    hintTables() {
+      return this.sqlHintTables ? JSON.parse(JSON.stringify(this.sqlHintTables)) : {};
+    },
+    // Tables & columns of the first selected connection's current database.
+    async loadHintTables() {
+      const conn = this.selectedConnections()[0];
+      if (!conn) return;
+      const key = `${conn.key}:${this.currentDb(conn)}`;
+      if (this.sqlHintKey === key) return;
+      this.sqlHintKey = key;
+      try {
+        const data = await this.apiJson('GET', `/api/explore/${conn.key}/${encodeURIComponent(this.currentDb(conn))}/autocomplete`);
+        this.sqlHintTables = data.tables;
+        if (sqlCm) sqlCm.setOption('hintOptions', { tables: this.hintTables(), completeSingle: false });
+      } catch (e) { /* autocomplete is a nicety */ }
+    },
+    pageRows(s) {
+      const page = s.page || 1;
+      return s.rows.slice((page - 1) * this.resultPageSize, page * this.resultPageSize);
     },
 
     totalDuration(r) {
@@ -2770,11 +2872,12 @@ function app() {
       return null;
     },
 
-    async runQuery() {
+    async runQuery(opts = {}) {
+      const explain = Boolean(opts && opts.explain);
       const sqlToRun = this.activeSql();
       if (!sqlToRun.trim() || this.selectedKeys.length === 0) return;
 
-      const warning = this.getQueryWarning(sqlToRun);
+      const warning = explain ? null : this.getQueryWarning(sqlToRun);
       if (warning) {
         const isDelete = /^delete\b/i.test(sqlToRun.trim());
         const ok = await this.askConfirm('Confirm before running', warning, {
@@ -2790,7 +2893,7 @@ function app() {
       try {
         const res = await fetch('/api/query', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dbKeys: this.selectedKeys, sql: sqlToRun, databases: startDbs })
+          body: JSON.stringify({ dbKeys: this.selectedKeys, sql: sqlToRun, databases: startDbs, explain })
         });
         const data = await res.json();
         if (!res.ok) {

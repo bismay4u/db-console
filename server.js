@@ -540,6 +540,17 @@ app.put('/api/explore/:key/:database', requireAuth, schemaRoute((req, b) => sche
 app.delete('/api/explore/:key/:database', requireAuth, schemaRoute((req, b) => schema.dropDatabase(req.params.key, req.params.database, b)));
 app.get('/api/explore/:key/:database/search', requireAuth, schemaRoute((req) => schema.searchDatabase(req.params.key, req.params.database, req.query.q), { logged: false }));
 app.get('/api/explore/:key/:database/foreign-keys', requireAuth, schemaRoute((req) => schema.getDatabaseForeignKeys(req.params.key, req.params.database), { logged: false }));
+// Table and column names of a database, for SQL autocomplete: { table: [columns] }.
+app.get('/api/explore/:key/:database/autocomplete', requireAuth, schemaRoute(async (req) => {
+  const [rows] = await db.getPool(req.params.key).query(
+    `SELECT TABLE_NAME AS t, COLUMN_NAME AS c FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 20000`,
+    [req.params.database]
+  );
+  const tables = {};
+  for (const r of rows) (tables[r.t] = tables[r.t] || []).push(r.c);
+  return { tables };
+}, { logged: false }));
 app.post('/api/explore/:key/:database/tables', requireAuth, schemaRoute((req, b) => schema.createTable(req.params.key, req.params.database, b)));
 app.post('/api/explore/:key/:database/table-actions', requireAuth, schemaRoute((req, b) => schema.tableAction(req.params.key, req.params.database, b)));
 app.get('/api/explore/:key/:database/:table/schema', requireAuth, schemaRoute(async (req) => {
@@ -777,7 +788,7 @@ app.post('/api/explore/:key/:database/restore', requireAuth, async (req, res) =>
 app.post('/api/query', requireAuth, async (req, res) => {
   // databases: { [connKey]: dbName } — where each connection currently is
   // in the Query Runner (after an earlier USE); defaults to its database.
-  const { dbKeys, sql, databases } = req.body || {};
+  const { dbKeys, sql, databases, explain } = req.body || {};
 
   if (!Array.isArray(dbKeys) || dbKeys.length === 0) {
     return res.status(400).json({ error: 'dbKeys must be a non-empty array' });
@@ -801,7 +812,7 @@ app.post('/api/query', requireAuth, async (req, res) => {
     dbKeys.map(async (key, i) => {
       let result;
       try {
-        const { ok, statements, currentDatabase } = await db.runQuery(key, sql, { database: startDb(key, i) });
+        const { ok, statements, currentDatabase } = await db.runQuery(key, sql, { database: startDb(key, i), explain: Boolean(explain) });
         result = { key, ok, statements, currentDatabase };
       } catch (err) {
         result = { key, ok: false, statements: [{ sql, ok: false, error: err.message }] };

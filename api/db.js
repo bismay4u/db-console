@@ -207,10 +207,21 @@ function splitStatements(sqlText) {
 // carries over to the next run. The pooled connection itself is always put
 // back on its configured default database, so nothing leaks to the next
 // user of the pool.
-async function runQuery(key, sqlText, { database } = {}) {
-  const statements = splitStatements(sqlText);
+// Most rows a single statement returns to the browser; the rest are
+// counted but not sent (the Query Runner shows "first N of M").
+const MAX_RESULT_ROWS = 10000;
+const EXPLAINABLE_RE = /^(select|with|update|delete|insert|replace|table)\b/i;
+
+async function runQuery(key, sqlText, { database, explain = false } = {}) {
+  let statements = splitStatements(sqlText);
   if (statements.length === 0) {
     throw new Error('No SQL statement to execute');
+  }
+  // EXPLAIN mode runs EXPLAIN for each statement that can be explained and
+  // never executes the others (so a USE or SET in the selection is skipped).
+  if (explain) {
+    statements = statements.filter((st) => EXPLAINABLE_RE.test(stripLeadingComments(st))).map((st) => `EXPLAIN ${st}`);
+    if (!statements.length) throw new Error('Nothing to explain — EXPLAIN works on SELECT, UPDATE, DELETE, INSERT and REPLACE');
   }
 
   const pool = getPool(key);
@@ -236,21 +247,29 @@ async function runQuery(key, sqlText, { database } = {}) {
     for (const stmt of ok ? statements : []) {
       const start = Date.now();
       try {
-        const [rows, fields] = await conn.query(stmt);
+        let [rows, fields] = await conn.query(stmt);
         const durationMs = Date.now() - start;
+        // CALL returns several result sets; show the first one.
+        if (Array.isArray(rows) && Array.isArray(rows[0])) {
+          rows = rows[0];
+          fields = Array.isArray(fields) ? fields[0] : fields;
+        }
 
+        let entry;
         if (Array.isArray(rows)) {
-          results.push({
+          const total = rows.length;
+          entry = {
             sql: stmt,
             ok: true,
             type: 'rows',
             columns: fields ? fields.map((f) => f.name) : [],
-            rows: encodeRows(rows),
-            rowCount: rows.length,
+            rows: encodeRows(total > MAX_RESULT_ROWS ? rows.slice(0, MAX_RESULT_ROWS) : rows),
+            rowCount: total,
+            truncated: total > MAX_RESULT_ROWS,
             durationMs
-          });
+          };
         } else {
-          results.push({
+          entry = {
             sql: stmt,
             ok: true,
             type: 'result',
@@ -259,8 +278,13 @@ async function runQuery(key, sqlText, { database } = {}) {
             changedRows: rows.changedRows,
             warningStatus: rows.warningStatus,
             durationMs
-          });
+          };
+          if (rows.warningStatus > 0) {
+            const [warnings] = await conn.query('SHOW WARNINGS LIMIT 20');
+            entry.warnings = warnings.map((w) => ({ level: w.Level, code: w.Code, message: w.Message }));
+          }
         }
+        results.push(entry);
       } catch (err) {
         results.push({ sql: stmt, ok: false, error: err.message, durationMs: Date.now() - start });
         ok = false;
