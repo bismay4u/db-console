@@ -310,6 +310,8 @@
 
   /* ---- Confirm dialog (reuses modal-backdrop-custom) ---- */
   .confirm-panel{ background:#fff; border-radius:14px; width:100%; max-width:360px; box-shadow:0 20px 60px rgba(20,20,43,.25); padding:1.25rem; }
+  /* Read-only share: hide everything that would change the database */
+  .explore-ro .rw-only{ display:none!important; }
   /* Schema diagram */
   .diagram-wrap{ overflow:auto; height:calc(100vh - 210px); min-height:360px; background:
       radial-gradient(circle, var(--border) 1px, transparent 1px) 0 0/20px 20px; }
@@ -729,7 +731,7 @@ Separate multiple statements with ; — highlight text to run just that part."
 
     <!-- ================= EXPLORE ================= -->
     <template x-if="activeTab === 'explore'">
-      <div>
+      <div :class="!exploreCanWrite() && 'explore-ro'">
         <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-center gap-3">
           <div class="d-flex align-items-center gap-2">
             <label class="text-muted-sm mb-0">Connection</label>
@@ -748,7 +750,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <option :value="d" x-text="d"></option>
               </template>
             </select>
-            <button class="btn btn-outline-soft btn-sm" title="Create a database" @click="openDbModal('create')"><i class="bi bi-plus-lg"></i></button>
+            <button class="rw-only btn btn-outline-soft btn-sm" title="Create a database" @click="openDbModal('create')"><i class="bi bi-plus-lg"></i></button>
           </div>
           <span class="text-muted-sm" x-show="exploreLoadingDatabases">
             <span class="spinner-border spinner-border-sm me-1"></span>Loading databases…
@@ -768,7 +770,7 @@ Separate multiple statements with ; — highlight text to run just that part."
             <button class="btn btn-outline-soft btn-sm" @click="openExportModal()">
               <i class="bi bi-cloud-arrow-down me-1"></i>Export
             </button>
-            <button class="btn btn-outline-soft btn-sm" @click="openRestoreModal">
+            <button class="rw-only btn btn-outline-soft btn-sm" @click="openRestoreModal">
               <i class="bi bi-cloud-arrow-up me-1"></i>Restore
             </button>
           </div>
@@ -885,8 +887,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                     </div>
                   </div>
                   <div class="d-flex align-items-center gap-2">
-                    <button class="btn btn-accent btn-sm" @click="openTableEditor('create')"><i class="bi bi-plus-lg me-1"></i>Create table</button>
-                    <div class="dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
+                    <button class="rw-only btn btn-accent btn-sm" @click="openTableEditor('create')"><i class="bi bi-plus-lg me-1"></i>Create table</button>
+                    <div class="rw-only dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
                       <button class="btn btn-outline-soft btn-sm" @click="open = !open"><i class="bi bi-plus-lg me-1"></i>New <i class="bi bi-chevron-down ms-1" style="font-size:.7rem"></i></button>
                       <div class="dropdown-lite-menu" x-show="open" x-cloak @click="open = false">
                         <a @click="openObjectEditor('view')"><i class="bi bi-eye"></i> View</a>
@@ -896,8 +898,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                         <a @click="openObjectEditor('event')"><i class="bi bi-calendar-event"></i> Event</a>
                       </div>
                     </div>
-                    <button class="btn btn-outline-soft btn-sm" @click="openDbModal('alter')"><i class="bi bi-pencil me-1"></i>Alter database</button>
-                    <button class="btn btn-sm btn-outline-danger" @click="dropDatabase()"><i class="bi bi-trash me-1"></i>Drop</button>
+                    <button class="rw-only btn btn-outline-soft btn-sm" @click="openDbModal('alter')"><i class="bi bi-pencil me-1"></i>Alter database</button>
+                    <button class="rw-only btn btn-sm btn-outline-danger" @click="dropDatabase()"><i class="bi bi-trash me-1"></i>Drop</button>
                   </div>
                 </div>
 
@@ -905,9 +907,10 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <template x-if="overviewTab === 'tables'">
                   <div class="card-surface">
                     <div class="d-flex flex-wrap align-items-center gap-2 px-2 py-2" style="border-bottom:1px solid var(--border)">
-                      <span class="text-muted-sm" x-text="overviewSelected.length ? overviewSelected.length + ' selected' : 'Select tables for bulk actions'"></span>
+                      <span class="rw-only text-muted-sm" x-text="overviewSelected.length ? overviewSelected.length + ' selected' : 'Select tables for bulk actions'"></span>
+                      <span class="text-muted-sm" x-show="!exploreCanWrite()"><i class="bi bi-lock me-1"></i>This connection is shared with you read-only</span>
                       <template x-if="overviewSelected.length">
-                        <div class="d-flex flex-wrap gap-1">
+                        <div class="rw-only d-flex flex-wrap gap-1">
                           <template x-for="a in ['optimize', 'analyze', 'check', 'repair']" :key="a">
                             <button class="btn btn-outline-soft btn-sm text-capitalize" @click="openTableAction(a, overviewSelected)" x-text="a"></button>
                           </template>
@@ -922,7 +925,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <table class="table table-modern mb-0">
                         <thead>
                           <tr>
-                            <th style="width:1%"><input type="checkbox" class="form-check-input" :checked="exploreTables.length && overviewSelected.length === exploreTables.length"
+                            <th class="rw-only" style="width:1%"><input type="checkbox" class="form-check-input" :checked="exploreTables.length && overviewSelected.length === exploreTables.length"
                                      @change="overviewSelected = $event.target.checked ? exploreTables.map(t => t.name) : []"></th>
                             <th>Table</th><th>Engine</th><th class="text-end">Rows</th><th class="text-end">Data</th><th class="text-end">Index</th>
                             <th class="text-end">Auto inc.</th><th>Collation</th><th>Comment</th>
@@ -931,7 +934,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                         <tbody>
                           <template x-for="t in exploreTables" :key="t.name">
                             <tr :class="overviewSelected.includes(t.name) && 'row-selected'">
-                              <td><input type="checkbox" class="form-check-input" :value="t.name" x-model="overviewSelected"></td>
+                              <td class="rw-only"><input type="checkbox" class="form-check-input" :value="t.name" x-model="overviewSelected"></td>
                               <td><a href="#" class="fw-medium text-decoration-none" @click.prevent="selectExploreTable(t.name)" x-text="t.name"></a></td>
                               <td class="text-muted-sm" x-text="/VIEW/i.test(t.type) ? 'view' : (t.engine || '')"></td>
                               <td class="text-end" x-text="/VIEW/i.test(t.type) ? '' : '~' + Number(t.approxRows || 0).toLocaleString()"></td>
@@ -948,7 +951,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                         </tbody>
                         <tfoot x-show="exploreTables.length">
                           <tr class="text-muted-sm">
-                            <td></td><td x-text="exploreTables.length + ' table(s)'"></td><td></td>
+                            <td class="rw-only"></td><td x-text="exploreTables.length + ' table(s)'"></td><td></td>
                             <td class="text-end" x-text="'~' + exploreTables.reduce((a, t) => a + Number(t.approxRows || 0), 0).toLocaleString()"></td>
                             <td class="text-end" x-text="formatBytes(exploreTables.reduce((a, t) => a + Number(t.dataLength || 0), 0))"></td>
                             <td class="text-end" x-text="formatBytes(exploreTables.reduce((a, t) => a + Number(t.indexLength || 0), 0))"></td>
@@ -1039,7 +1042,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <i class="bi" :class="exploreIsView() ? 'bi-eye' : 'bi-table'" style="color:var(--accent)"></i>
                     <strong style="font-size:.9rem" x-text="exploreTable"></strong>
                     <span class="use-db-chip" x-show="exploreIsView()">VIEW</span>
-                    <div class="dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
+                    <div class="rw-only dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
                       <button class="btn btn-sm btn-outline-soft" style="padding:.05rem .4rem" title="Table actions" @click="open = !open"><i class="bi bi-three-dots"></i></button>
                       <div class="dropdown-lite-menu" x-show="open" x-cloak @click="open = false">
                         <a x-show="!exploreIsView()" @click="openTableEditor('alter')"><i class="bi bi-pencil"></i> Alter table…</a>
@@ -1060,13 +1063,13 @@ Separate multiple statements with ; — highlight text to run just that part."
                   </div>
                 </div>
                 <div class="d-flex align-items-center gap-2" x-show="exploreView==='indexes'">
-                  <button class="btn btn-accent btn-sm" @click="openIndexModal()"><i class="bi bi-plus-lg me-1"></i>Add index</button>
+                  <button class="rw-only btn btn-accent btn-sm" @click="openIndexModal()"><i class="bi bi-plus-lg me-1"></i>Add index</button>
                 </div>
                 <div class="d-flex align-items-center gap-2" x-show="exploreView==='data'">
                   <button class="btn btn-outline-soft btn-sm" @click="loadExploreRows" title="Reload"><i class="bi bi-arrow-clockwise"></i></button>
                   <a class="btn btn-outline-soft btn-sm" :href="tableExportUrl()" target="_blank" :title="exploreFiltersActive() ? 'Exports the rows matching the current search/filters' : 'Exports the whole table'"><i class="bi bi-download me-1"></i>Export CSV</a>
-                  <button class="btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal"><i class="bi bi-upload me-1"></i>Import CSV</button>
-                  <button class="btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow()"><i class="bi bi-plus-lg me-1"></i>Add row</button>
+                  <button class="rw-only btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal"><i class="bi bi-upload me-1"></i>Import CSV</button>
+                  <button class="rw-only btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow()"><i class="bi bi-plus-lg me-1"></i>Add row</button>
                 </div>
               </div>
 
@@ -1216,7 +1219,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                         <span x-text="' · data ' + formatBytes(exploreSchema && exploreSchema.info.dataLength) + ', index ' + formatBytes(exploreSchema && exploreSchema.info.indexLength)"></span>
                         <span x-show="exploreSchema && exploreSchema.info.comment" x-text="' · “' + (exploreSchema && exploreSchema.info.comment) + '”'"></span>
                       </div>
-                      <button class="btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openTableEditor('alter')"><i class="bi bi-pencil me-1"></i>Alter table</button>
+                      <button class="rw-only btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openTableEditor('alter')"><i class="bi bi-pencil me-1"></i>Alter table</button>
                     </div>
                     <div class="table-responsive">
                       <table class="table table-modern mb-0">
@@ -1246,7 +1249,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <div class="card-surface mb-2" x-show="!exploreIsView()">
                     <div class="d-flex align-items-center justify-content-between px-3 py-2" style="border-bottom:1px solid var(--border)">
                       <div class="section-title mb-0"><i class="bi bi-link-45deg me-1"></i>Foreign keys</div>
-                      <button class="btn btn-outline-soft btn-sm" @click="openFkModal()"><i class="bi bi-plus-lg me-1"></i>Add foreign key</button>
+                      <button class="rw-only btn btn-outline-soft btn-sm" @click="openFkModal()"><i class="bi bi-plus-lg me-1"></i>Add foreign key</button>
                     </div>
                     <div class="table-responsive">
                       <table class="table table-modern mb-0">
@@ -1255,8 +1258,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                           <template x-for="fk in (exploreSchema ? exploreSchema.foreignKeys : [])" :key="fk.name">
                             <tr>
                               <td class="text-nowrap">
-                                <button class="btn btn-sm btn-outline-soft" title="Edit foreign key" @click="openFkModal(fk)"><i class="bi bi-pencil"></i></button>
-                                <button class="btn btn-sm btn-ghost-danger" title="Drop foreign key" @click="dropFk(fk)"><i class="bi bi-trash"></i></button>
+                                <button class="rw-only btn btn-sm btn-outline-soft" title="Edit foreign key" @click="openFkModal(fk)"><i class="bi bi-pencil"></i></button>
+                                <button class="rw-only btn btn-sm btn-ghost-danger" title="Drop foreign key" @click="dropFk(fk)"><i class="bi bi-trash"></i></button>
                               </td>
                               <td class="fw-medium" x-text="fk.name"></td>
                               <td x-text="fk.columns.join(', ')"></td>
@@ -1297,8 +1300,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <template x-for="ix in exploreIndexes" :key="ix.name">
                         <tr>
                           <td class="text-nowrap">
-                            <button class="btn btn-sm btn-outline-soft" title="Edit index" @click="openIndexModal(ix)"><i class="bi bi-pencil"></i></button>
-                            <button class="btn btn-sm btn-ghost-danger" title="Drop index" @click="dropIndex(ix)"><i class="bi bi-trash"></i></button>
+                            <button class="rw-only btn btn-sm btn-outline-soft" title="Edit index" @click="openIndexModal(ix)"><i class="bi bi-pencil"></i></button>
+                            <button class="rw-only btn btn-sm btn-ghost-danger" title="Drop index" @click="dropIndex(ix)"><i class="bi bi-trash"></i></button>
                           </td>
                           <td class="fw-medium" x-text="ix.name"></td>
                           <td><span class="index-kind" :class="'kind-' + ix.kind.toLowerCase()" x-text="ix.kind"></span></td>
@@ -1334,10 +1337,10 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <button class="btn btn-outline-soft btn-sm" @click="copyDefinition" :disabled="!exploreDefinition">
                       <i class="bi bi-clipboard me-1"></i>Copy
                     </button>
-                    <button class="btn btn-accent btn-sm" @click="openObjectEditor(exploreObject.kind, exploreObject.name)" :disabled="!exploreDefinition">
+                    <button class="rw-only btn btn-accent btn-sm" @click="openObjectEditor(exploreObject.kind, exploreObject.name)" :disabled="!exploreDefinition">
                       <i class="bi bi-pencil me-1"></i>Edit
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" @click="dropObject(exploreObject.kind, exploreObject.name)"><i class="bi bi-trash me-1"></i>Drop</button>
+                    <button class="rw-only btn btn-sm btn-outline-danger" @click="dropObject(exploreObject.kind, exploreObject.name)"><i class="bi bi-trash me-1"></i>Drop</button>
                   </div>
                 </div>
                 <div class="p-2">
@@ -2641,6 +2644,11 @@ Separate multiple statements with ; — highlight text to run just that part."
         People you share with can run queries, browse, export, back up and restore with this connection.
         They can't see its password, edit it, delete it or share it further.
       </p>
+      <div class="form-check form-switch mb-3" x-show="shareModal.kind !== 'query'">
+        <input class="form-check-input" type="checkbox" id="shareReadOnly" x-model="shareModal.readOnly">
+        <label class="form-check-label fw-medium small" for="shareReadOnly">Read-only</label>
+        <div class="text-muted-sm">They can browse, run SELECT/SHOW queries and export, but can't change data or structure, import or restore.</div>
+      </div>
       <p class="text-muted-sm" x-show="shareModal.kind === 'query'">
         People you share with see this query under Saved Queries and can load it into the Query Runner or save their own copy.
         They can't edit, delete or share it further, and they still need access to a connection to run it.
@@ -2812,7 +2820,7 @@ function app() {
     currentDbs: {},               // { [connKey]: db } after USE, if not the connection's default
 
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
-    shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], saving: false, error: '' },
+    shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], readOnly: false, saving: false, error: '' },
     userModal: { open: false, editing: false, form: {}, saving: false, error: '' },
     passwordModal: { open: false, current: '', next: '', confirm: '', saving: false, error: '' },
 
@@ -3004,7 +3012,7 @@ function app() {
       return u ? u.displayName : username;
     },
     accessLabel(c) {
-      if (c.sharedWithMe) return 'Shared with you';
+      if (c.sharedWithMe) return c.canWrite === false ? 'Shared with you · read-only' : 'Shared with you';
       if (!c.sharedWith || c.sharedWith.length === 0) return 'Private';
       if (c.sharedWith.includes('*')) return 'Everyone';
       return 'Shared · ' + c.sharedWith.length;
@@ -3773,8 +3781,12 @@ function app() {
       this.explorePage = 1;
       this.loadExploreRows();
     },
+    exploreCanWrite() {
+      const c = this.connections.find((x) => x.key === this.exploreConnKey);
+      return !c || c.canWrite !== false;
+    },
     canEditRows() {
-      return !this.exploreIsView() && Array.isArray(this.explorePrimaryKey) && this.explorePrimaryKey.length > 0;
+      return this.exploreCanWrite() && !this.exploreIsView() && Array.isArray(this.explorePrimaryKey) && this.explorePrimaryKey.length > 0;
     },
     // ---- Row form (edit / insert) ----
     functionTakesArg(fn) {
@@ -4811,6 +4823,7 @@ function app() {
         label: kind === 'query' ? item.name : item.label,
         owner: item.owner,
         all: shared.includes('*'), users: shared.filter(u => u !== '*'),
+        readOnly: Boolean(item.readOnlyShare),
         saving: false, error: ''
       };
       this.loadDirectory();
@@ -4823,7 +4836,10 @@ function app() {
           : `/api/connections/${this.shareModal.key}/sharing`;
         const res = await fetch(url, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sharedWith: this.shareModal.all ? ['*'] : this.shareModal.users })
+          body: JSON.stringify({
+            sharedWith: this.shareModal.all ? ['*'] : this.shareModal.users,
+            ...(this.shareModal.kind === 'query' ? {} : { readOnly: this.shareModal.readOnly })
+          })
         });
         const data = await res.json();
         if (!res.ok) { this.shareModal.error = data.error || 'Failed to save'; return; }

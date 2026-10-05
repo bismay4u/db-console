@@ -240,7 +240,21 @@ function splitStatements(sqlText) {
 const MAX_RESULT_ROWS = 10000;
 const EXPLAINABLE_RE = /^(select|with|update|delete|insert|replace|table)\b/i;
 
-async function runQuery(key, sqlText, { database, explain = false } = {}) {
+// What a read-only user may run. Anything else is refused before it reaches
+// the server, and what is allowed runs inside a READ ONLY transaction on a
+// connection that is thrown away afterwards, so a stored function that
+// writes, or a WITH … DELETE, still fails.
+const READ_ONLY_RE = /^(select|with|show|describe|desc|explain|use|table|values|help)\b/i;
+const WRITES_FILE_RE = /\binto\s+(outfile|dumpfile)\b/i;
+
+function readOnlyViolation(stmt) {
+  const s = stripLeadingComments(stmt);
+  if (!READ_ONLY_RE.test(s)) return `Read-only access: only SELECT, SHOW, DESCRIBE, EXPLAIN and USE are allowed (refused: ${s.split(/\s+/)[0].toUpperCase()})`;
+  if (WRITES_FILE_RE.test(s)) return 'Read-only access: SELECT … INTO OUTFILE/DUMPFILE is not allowed';
+  return null;
+}
+
+async function runQuery(key, sqlText, { database, explain = false, readOnly = false } = {}) {
   let statements = splitStatements(sqlText);
   if (statements.length === 0) {
     throw new Error('No SQL statement to execute');
@@ -252,15 +266,21 @@ async function runQuery(key, sqlText, { database, explain = false } = {}) {
     if (!statements.length) throw new Error('Nothing to explain — EXPLAIN works on SELECT, UPDATE, DELETE, INSERT and REPLACE');
   }
 
+  if (readOnly) {
+    const refused = statements.map((st) => ({ st, error: readOnlyViolation(st) })).find((x) => x.error);
+    if (refused) return { ok: false, statements: [{ sql: refused.st, ok: false, error: refused.error, durationMs: 0 }], currentDatabase: null };
+  }
+
   const pool = getPool(key);
   const defaultDb = store.getConnection(key).database;
   const conn = await pool.getConnection();
   const results = [];
   let ok = true;
-  let discard = statements.some(leavesSessionState);
+  let discard = readOnly || statements.some(leavesSessionState);
   let currentDatabase = null;
 
   try {
+    if (readOnly) await conn.query('START TRANSACTION READ ONLY');
     if (database && database !== defaultDb) {
       try {
         await conn.query(`USE ${esc(database)}`);

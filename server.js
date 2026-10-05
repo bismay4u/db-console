@@ -92,9 +92,14 @@ function publicUser(u) {
 
 // --- Connection access ---
 // Owner and admins manage a connection (edit, delete, share). Anyone it is
-// shared with may use it (run queries, explore, export, back up, restore).
+// shared with may use it (run queries, explore, export, back up, restore),
+// or, when it is shared read-only, only read through it.
 function canManage(user, conn) {
   return isAdmin(user) || conn.owner === user.username;
+}
+
+function canWrite(user, conn) {
+  return canManage(user, conn) || !conn.readOnlyShare;
 }
 
 function canUse(user, conn) {
@@ -111,6 +116,8 @@ function connView(conn, user) {
     hasPassword: Boolean(password),
     canManage: manage,
     sharedWith: manage ? shared : undefined,
+    readOnlyShare: Boolean(conn.readOnlyShare),
+    canWrite: canWrite(user, conn),
     isShared: shared.length > 0,
     sharedWithMe: conn.owner !== user.username && (shared.includes('*') || shared.includes(user.username))
   };
@@ -138,6 +145,17 @@ app.param('key', (req, res, next, key) => {
   const conn = store.getConnection(key);
   if (!conn || !canUse(req.user, conn)) return res.status(404).json({ error: 'Connection not found' });
   req.conn = conn;
+  return next();
+});
+
+// Every Explore request that is not a GET changes something (rows, schema,
+// objects, imports, restores), so a read-only share stops them all here.
+app.use('/api/explore/:key', (req, res, next) => {
+  if (req.method === 'GET' || !req.user) return next();
+  const conn = store.getConnection(req.params.key);
+  if (conn && canUse(req.user, conn) && !canWrite(req.user, conn)) {
+    return res.status(403).json({ error: 'This connection is shared with you read-only' });
+  }
   return next();
 });
 
@@ -382,9 +400,9 @@ app.put('/api/connections/:key', requireAuth, requireManage, (req, res) => {
 // Replace who a connection is shared with: { sharedWith: ['alice', 'bob'] }
 // or { sharedWith: ['*'] } for every user.
 app.put('/api/connections/:key/sharing', requireAuth, requireManage, (req, res) => {
-  const { sharedWith } = req.body || {};
+  const { sharedWith, readOnly } = req.body || {};
   if (!Array.isArray(sharedWith)) return res.status(400).json({ error: 'sharedWith must be an array' });
-  const updated = store.setConnectionSharing(req.params.key, sharedWith);
+  const updated = store.setConnectionSharing(req.params.key, sharedWith, readOnly === undefined ? undefined : Boolean(readOnly));
   if (!updated) return res.status(404).json({ error: 'Connection not found' });
   res.json(connView(updated, req.user));
 });
@@ -872,7 +890,9 @@ app.post('/api/query', requireAuth, async (req, res) => {
     dbKeys.map(async (key, i) => {
       let result;
       try {
-        const { ok, statements, currentDatabase } = await db.runQuery(key, sql, { database: startDb(key, i), explain: Boolean(explain) });
+        const { ok, statements, currentDatabase } = await db.runQuery(key, sql, {
+          database: startDb(key, i), explain: Boolean(explain), readOnly: !canWrite(req.user, conns[i])
+        });
         result = { key, ok, statements, currentDatabase };
       } catch (err) {
         result = { key, ok: false, statements: [{ sql, ok: false, error: err.message }] };

@@ -168,13 +168,18 @@ function updateConnection(key, data) {
   return updated;
 }
 
-// sharedWith: array of usernames, or ['*'] for every user.
-function setConnectionSharing(key, sharedWith) {
+// sharedWith: array of usernames, or ['*'] for every user. readOnly: the
+// people it is shared with may only read (undefined keeps the current setting).
+function setConnectionSharing(key, sharedWith, readOnly) {
   const conns = listConnections();
   const idx = conns.findIndex((c) => c.key === key);
   if (idx === -1) return null;
 
-  conns[idx] = { ...conns[idx], sharedWith: normalizeSharedWith(sharedWith, conns[idx].owner) };
+  conns[idx] = {
+    ...conns[idx],
+    sharedWith: normalizeSharedWith(sharedWith, conns[idx].owner),
+    readOnlyShare: readOnly === undefined ? Boolean(conns[idx].readOnlyShare) : Boolean(readOnly)
+  };
   writeJson(CONNECTIONS_FILE, conns);
   return conns[idx];
 }
