@@ -740,9 +740,9 @@ Separate multiple statements with ; — highlight text to run just that part."
             <button class="btn btn-outline-soft btn-sm" x-show="exploreSidebarHidden" @click="exploreSidebarHidden = false" title="Show the tables & views list">
               <i class="bi bi-layout-sidebar me-1"></i>Tables
             </button>
-            <a class="btn btn-outline-soft btn-sm" :href="backupUrl()" target="_blank">
-              <i class="bi bi-cloud-arrow-down me-1"></i>Backup
-            </a>
+            <button class="btn btn-outline-soft btn-sm" @click="openExportModal()">
+              <i class="bi bi-cloud-arrow-down me-1"></i>Export
+            </button>
             <button class="btn btn-outline-soft btn-sm" @click="openRestoreModal">
               <i class="bi bi-cloud-arrow-up me-1"></i>Restore
             </button>
@@ -1894,6 +1894,71 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
+<!-- ===== Explore: Export Modal ===== -->
+<div class="modal-backdrop-custom" x-show="exportModal.open" x-cloak @click.self="exportModal.open = false">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold">Export <span x-text="exploreDatabase"></span></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="exportModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="row g-3">
+        <div class="col-md-5">
+          <label class="form-label small fw-medium">Format</label>
+          <template x-for="f in [['sql.gz', 'SQL, gzipped (.sql.gz)'], ['sql', 'SQL (.sql)'], ['csv', 'CSV (one file per table)'], ['tsv', 'TSV (one file per table)']]" :key="f[0]">
+            <div class="form-check">
+              <input class="form-check-input" type="radio" :id="'fmt-' + f[0]" :value="f[0]" x-model="exportModal.format">
+              <label class="form-check-label small" :for="'fmt-' + f[0]" x-text="f[1]"></label>
+            </div>
+          </template>
+          <template x-if="exportModal.format.startsWith('sql')">
+            <div class="mt-3">
+              <label class="form-label small fw-medium">Table structure</label>
+              <select class="form-select form-select-sm mb-2" x-model="exportModal.structure">
+                <option value="drop-create">DROP + CREATE</option>
+                <option value="create">CREATE only</option>
+                <option value="none">None (data only)</option>
+              </select>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-data" x-model="exportModal.data"><label class="form-check-label small" for="exp-data">Data (INSERT statements)</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-views" x-model="exportModal.views"><label class="form-check-label small" for="exp-views">Views</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-routines" x-model="exportModal.routines"><label class="form-check-label small" for="exp-routines">Procedures &amp; functions</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-triggers" x-model="exportModal.triggers"><label class="form-check-label small" for="exp-triggers">Triggers</label></div>
+              <div class="form-check"><input class="form-check-input" type="checkbox" id="exp-events" x-model="exportModal.events"><label class="form-check-label small" for="exp-events">Events</label></div>
+            </div>
+          </template>
+          <div class="text-muted-sm mt-3" x-show="!exportModal.format.startsWith('sql')">
+            One table downloads as a single file; several are packed into a .tar.gz. NULL is written as <code>\N</code>.
+          </div>
+        </div>
+        <div class="col-md-7">
+          <div class="d-flex align-items-center justify-content-between mb-1">
+            <label class="form-label small fw-medium mb-0">Tables <span class="text-muted-sm" x-text="'(' + exportModal.tables.length + ' of ' + exploreTables.length + ')'"></span></label>
+            <div>
+              <button class="btn btn-link btn-sm p-0 me-2 text-decoration-none" @click="exportModal.tables = exploreTables.map(t => t.name)">All</button>
+              <button class="btn btn-link btn-sm p-0 text-decoration-none" @click="exportModal.tables = []">None</button>
+            </div>
+          </div>
+          <div style="max-height:320px; overflow-y:auto; border:1px solid var(--border); border-radius:9px; padding:.25rem">
+            <template x-for="t in exploreTables" :key="t.name">
+              <label class="obj-row" style="cursor:pointer">
+                <input type="checkbox" class="form-check-input m-0" :value="t.name" x-model="exportModal.tables">
+                <span class="obj-name" x-text="t.name"></span>
+                <span class="obj-meta" x-text="/VIEW/i.test(t.type) ? 'view' : formatBytes(t.dataLength)"></span>
+              </label>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="exportModal.open = false">Cancel</button>
+      <a class="btn btn-accent" :class="!exportModal.tables.length && 'disabled'" :href="exportUrl()" @click="exportModal.open = false; showToast('Export started — the download will begin shortly')">
+        <i class="bi bi-download me-1"></i>Export
+      </a>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Explore: Restore Modal ===== -->
 <div class="modal-backdrop-custom" x-show="restoreModal.open" x-cloak @click.self="!restoreModal.running && (restoreModal.open = false)">
   <div class="modal-panel">
@@ -1912,7 +1977,7 @@ Separate multiple statements with ; — highlight text to run just that part."
         <div>
           <label class="form-label small fw-medium">.sql backup file</label>
           <input type="file" accept=".sql,.tar.gz,.gz,text/plain,application/gzip,application/x-gzip" class="form-control form-control-sm" @change="onRestoreFileSelected($event)">
-          <div class="text-muted-sm mt-2">Accepts a plain .sql file or a .tar.gz backup made by the Backup button.</div>
+          <div class="text-muted-sm mt-2">Accepts a .sql or .sql.gz file (including mysqldump output with DELIMITER blocks) or a .tar.gz backup.</div>
         </div>
       </template>
 
@@ -2586,6 +2651,7 @@ function app() {
     ],
     indexModal: { open: false, editing: null, kind: 'INDEX', name: '', parts: [], sql: '', saving: false, error: '' },
     importModal: { open: false, step: 'pick', file: null, previewFields: [], previewRows: [], mapping: {}, truncate: false, imported: 0, failedBatches: 0, running: false, error: '' },
+    exportModal: { open: false, format: 'sql.gz', structure: 'drop-create', data: true, views: true, routines: true, triggers: true, events: true, tables: [] },
     restoreModal: { open: false, file: null, running: false, done: false, progress: { executed: 0, failed: 0 }, errors: [], error: '' },
 
     async init() {
@@ -4080,6 +4146,23 @@ function app() {
     },
 
     // ---- Explore: Backup / Restore ----
+    openExportModal() {
+      this.exportModal = {
+        open: true, format: 'sql.gz', structure: 'drop-create', data: true,
+        views: true, routines: true, triggers: true, events: true,
+        tables: this.exploreTables.map((t) => t.name)
+      };
+    },
+    exportUrl() {
+      const m = this.exportModal;
+      const all = m.tables.length === this.exploreTables.length;
+      const options = {
+        format: m.format, structure: m.structure, data: m.data,
+        views: m.views, routines: m.routines, triggers: m.triggers, events: m.events,
+        tables: all ? undefined : m.tables
+      };
+      return `${this.exploreBase()}/export?options=${encodeURIComponent(JSON.stringify(options))}`;
+    },
     backupUrl() {
       if (!this.exploreConnKey || !this.exploreDatabase) return '#';
       return `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/backup.tar.gz`;
@@ -4092,10 +4175,12 @@ function app() {
     },
     async startRestore() {
       if (!this.restoreModal.file) return;
-      const isTarGz = /\.(tar\.gz|tgz|gz)$/i.test(this.restoreModal.file.name);
+      const name = this.restoreModal.file.name;
+      // .tar.gz / .tgz = Backup archive; other .gz = gzipped .sql (Export → SQL gzip)
+      const format = /\.(tar\.gz|tgz)$/i.test(name) ? 'targz' : (/\.gz$/i.test(name) ? 'sqlgz' : 'sql');
       const ok = await this.askConfirm(
         'Restore this backup?',
-        `This runs the uploaded ${isTarGz ? '.tar.gz' : '.sql'} file against "${this.exploreDatabase}". Existing tables with matching names will be dropped and recreated. This cannot be undone.`,
+        `This runs the uploaded ${{ targz: '.tar.gz', sqlgz: '.sql.gz', sql: '.sql' }[format]} file against "${this.exploreDatabase}". Existing tables with matching names will be dropped and recreated. This cannot be undone.`,
         { confirmLabel: 'Restore', danger: true }
       );
       if (!ok) return;
@@ -4106,7 +4191,6 @@ function app() {
       this.restoreModal.done = false;
 
       try {
-        const format = isTarGz ? 'targz' : 'sql';
         const url = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/restore?format=${format}`;
         const res = await fetch(url, {
           method: 'POST',

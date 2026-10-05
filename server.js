@@ -752,6 +752,30 @@ app.get('/api/explore/:key/:database/backup.tar.gz', requireAuth, async (req, re
   }
 });
 
+// --- Export: SQL (.sql / .sql.gz) or CSV / TSV with options (see exportDatabase) ---
+app.get('/api/explore/:key/:database/export', requireAuth, async (req, res) => {
+  let options;
+  try {
+    options = JSON.parse(req.query.options || '{}');
+  } catch (err) {
+    return res.status(400).json({ error: 'options must be valid JSON' });
+  }
+  const start = Date.now();
+  const entry = { source: 'backup', sql: `EXPORT ${qualified(req)} ${req.query.options || ''}`.trim(), type: 'OTHER' };
+  try {
+    await db.exportDatabase(req.params.key, req.params.database, res, options, (filename, contentType) => {
+      res.setHeader('Content-Type', contentType);
+      attachment(res, filename);
+    });
+    if (!res.writableEnded) res.end();
+    logAction(req, { ...entry, ok: true, durationMs: Date.now() - start });
+  } catch (err) {
+    logAction(req, { ...entry, ok: false, error: err.message, durationMs: Date.now() - start });
+    if (!res.headersSent) res.status(400).json({ error: err.message });
+    else res.end();
+  }
+});
+
 // --- Restore: execute an uploaded dump against a database ---
 // Accepts either a plain .sql file or a .tar.gz (as produced by the Backup
 // button above) via ?format=sql|targz. The request body is the raw file
@@ -760,9 +784,9 @@ app.get('/api/explore/:key/:database/backup.tar.gz', requireAuth, async (req, re
 // the UI can show live progress.
 app.post('/api/explore/:key/:database/restore', requireAuth, async (req, res) => {
   const { key, database } = req.params;
-  const format = req.query.format === 'targz' ? 'targz' : 'sql';
+  const format = ['targz', 'sqlgz'].includes(req.query.format) ? req.query.format : 'sql';
   const start = Date.now();
-  const entry = { source: 'restore', sql: `RESTORE ${qualified(req)} FROM .${format === 'targz' ? 'tar.gz' : 'sql'} file`, type: 'OTHER' };
+  const entry = { source: 'restore', sql: `RESTORE ${qualified(req)} FROM .${{ targz: 'tar.gz', sqlgz: 'sql.gz', sql: 'sql' }[format]} file`, type: 'OTHER' };
   res.setHeader('Content-Type', 'application/x-ndjson');
   try {
     const result = await db.restoreDump(key, database, req, format, (progress) => {

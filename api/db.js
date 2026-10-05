@@ -130,10 +130,14 @@ class SqlStatementStream {
     this.inBacktick = false;
     this.inLineComment = false;
     this.inBlockComment = false;
+    // Changed by a mysql-client style "DELIMITER ;;" line, as written by
+    // mysqldump (and our own backups) around procedures, triggers and
+    // events, whose bodies contain ';'.
+    this.delimiter = ';';
   }
 
   // Feed more text; returns an array of complete statements found so far.
-  feed(chunk) {
+  feed(chunk, final = false) {
     this.buffer += chunk;
     const statements = [];
     let stmtStart = 0;
@@ -142,6 +146,9 @@ class SqlStatementStream {
     while (i < this.buffer.length) {
       const ch = this.buffer[i];
       const next = this.buffer[i + 1];
+      // These characters need to see the next one (--, /*, */, '', "", \x);
+      // if it hasn't arrived yet, wait for the next chunk.
+      if (next === undefined && !final && (ch === '-' || ch === '/' || ch === '*' || ch === '\\' || ch === "'" || ch === '"')) break;
 
       if (this.inLineComment) {
         if (ch === '\n') this.inLineComment = false;
@@ -151,11 +158,25 @@ class SqlStatementStream {
         if (ch === '*' && next === '/') { i += 2; this.inBlockComment = false; continue; }
         i++; continue;
       }
-      if (!this.inSingle && !this.inDouble && !this.inBacktick && ch === '-' && next === '-') {
+      const inQuote = this.inSingle || this.inDouble || this.inBacktick;
+      if (!inQuote && ch === '-' && next === '-') {
         this.inLineComment = true; i += 2; continue;
       }
-      if (!this.inSingle && !this.inDouble && !this.inBacktick && ch === '/' && next === '*') {
+      if (!inQuote && ch === '/' && next === '*') {
         this.inBlockComment = true; i += 2; continue;
+      }
+      // DELIMITER <x> on its own line, at the start of a statement.
+      if (!inQuote && (ch === 'D' || ch === 'd') && /^\s*$/.test(stripLeadingComments(this.buffer.substring(stmtStart, i)))) {
+        const nl = this.buffer.indexOf('\n', i);
+        if (nl === -1 && !final) break; // wait for the rest of the line
+        const line = this.buffer.substring(i, nl === -1 ? this.buffer.length : nl);
+        const m = /^DELIMITER\s+(\S+)\s*$/i.exec(line.trimEnd());
+        if (m) {
+          this.delimiter = m[1];
+          i = nl === -1 ? this.buffer.length : nl + 1;
+          stmtStart = i;
+          continue;
+        }
       }
       if ((this.inSingle || this.inDouble) && ch === '\\') { i += 2; continue; }
       if (ch === "'" && !this.inDouble && !this.inBacktick) {
@@ -169,11 +190,16 @@ class SqlStatementStream {
       if (ch === '`' && !this.inSingle && !this.inDouble) {
         this.inBacktick = !this.inBacktick; i++; continue;
       }
-      if (ch === ';' && !this.inSingle && !this.inDouble && !this.inBacktick) {
-        const stmt = this.buffer.substring(stmtStart, i).trim();
-        if (stmt) statements.push(stmt);
-        stmtStart = i + 1;
-        i++; continue;
+      if (!inQuote && ch === this.delimiter[0]) {
+        // A multi-character delimiter may be split across chunks.
+        if (!final && i + this.delimiter.length > this.buffer.length && this.delimiter.startsWith(this.buffer.substring(i))) break;
+        if (this.buffer.startsWith(this.delimiter, i)) {
+          const stmt = this.buffer.substring(stmtStart, i).trim();
+          if (stmt) statements.push(stmt);
+          i += this.delimiter.length;
+          stmtStart = i;
+          continue;
+        }
       }
       i++;
     }
@@ -184,13 +210,15 @@ class SqlStatementStream {
     return statements;
   }
 
-  // Call once the input is exhausted; returns any trailing statement that
-  // wasn't terminated by a final ';'.
+  // Call once the input is exhausted; returns the remaining statements,
+  // including a trailing one that wasn't terminated by a delimiter.
   flush() {
+    const statements = this.feed('', true);
     const stmt = this.buffer.trim();
     this.buffer = '';
     this.pos = 0;
-    return stmt ? [stmt] : [];
+    if (stmt && !/^\s*$/.test(stripLeadingComments(stmt))) statements.push(stmt);
+    return statements;
   }
 }
 
@@ -329,6 +357,7 @@ module.exports = {
   dropPool,
   closeAllPools,
   splitStatements,
+  SqlStatementStream,
   runQuery,
   testConnection,
   listDatabases,
@@ -348,6 +377,7 @@ module.exports = {
   truncateTable,
   streamDatabaseBackup,
   streamDatabaseBackupTarGz,
+  exportDatabase,
   restoreDump
 };
 
@@ -847,6 +877,16 @@ function sqlLiteral(value) {
   return mysqlUtil.escape(isJsonValue(value) ? JSON.stringify(value) : value);
 }
 
+// TSV: tab-separated, one row per line; tab/newline/backslash escaped,
+// NULL as \N (the MySQL LOAD DATA convention).
+function tsvField(value) {
+  if (value === null || value === undefined) return '\\N';
+  if (value instanceof Date) value = value.toISOString();
+  else if (Buffer.isBuffer(value)) value = value.toString('base64');
+  else if (isJsonValue(value)) value = JSON.stringify(value);
+  return String(value).replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+}
+
 function csvField(value) {
   if (value === null || value === undefined) return CSV_NULL;
   if (value instanceof Date) value = value.toISOString();
@@ -858,7 +898,10 @@ function csvField(value) {
 
 // Streams a table's full contents (no LIMIT) to `res` as CSV, one row at a
 // time, so exporting a very large table doesn't buffer it all in memory.
-async function streamTableCsv(key, database, table, res, { sortCol, sortDir, sort, filters } = {}) {
+async function streamTableCsv(key, database, table, res, { sortCol, sortDir, sort, filters, format = 'csv' } = {}) {
+  const field = format === 'tsv' ? tsvField : csvField;
+  const sep = format === 'tsv' ? '\t' : ',';
+  const eol = format === 'tsv' ? '\n' : '\r\n';
   const conn = store.getConnection(key);
   if (!conn) throw new Error(`Unknown connection: ${key}`);
 
@@ -873,7 +916,7 @@ async function streamTableCsv(key, database, table, res, { sortCol, sortDir, sor
 
   await new Promise((resolve, reject) => {
     if (res.destroyed) return reject(new Error('Download cancelled by the client'));
-    res.write(columnNames.map(csvField).join(',') + '\r\n');
+    res.write(columnNames.map(field).join(sep) + eol);
 
     const queryStream = rawConn.query(sql, params).stream({ highWaterMark: 200 });
     // If the browser cancels the download, 'drain' never comes; stop the
@@ -883,7 +926,7 @@ async function streamTableCsv(key, database, table, res, { sortCol, sortDir, sor
     };
     res.on('close', onClose);
     queryStream.on('data', (row) => {
-      const line = columnNames.map((c) => csvField(row[c])).join(',') + '\r\n';
+      const line = columnNames.map((c) => field(row[c])).join(sep) + eol;
       const ok = res.write(line);
       if (!ok) {
         queryStream.pause();
@@ -1021,31 +1064,64 @@ class TarExtractor {
 // database can be dumped without holding it all in memory. `dest` just
 // needs a `.write()` method — it's used for both the HTTP response and, for
 // the tar.gz path below, a temp file.
-async function streamDatabaseBackup(key, database, dest) {
+// Removes DEFINER=`user`@`host` so a dump can be restored by a user who
+// isn't (or can't impersonate) the original definer.
+function stripDefiner(sql) {
+  return String(sql).replace(/\s*DEFINER\s*=\s*(`[^`]*`|'[^']*'|\S+)@(`[^`]*`|'[^']*'|\S+)/i, '');
+}
+
+function writeWithDelimiter(dest, sql) {
+  dest.write(`DELIMITER ;;\n${sql};;\nDELIMITER ;\n\n`);
+}
+
+// Writes an SQL dump of `database` to `dest` (anything with .write()).
+// Options (all optional; the defaults make a full backup):
+//   tables:    names to include (default: all tables and views)
+//   structure: 'drop-create' | 'create' | 'none'
+//   data:      include INSERTs for tables (default true)
+//   views, routines, triggers, events: include those objects (default true)
+// Procedures, functions, triggers and events are written between DELIMITER
+// lines (like mysqldump), which the restore splitter understands.
+async function streamDatabaseBackup(key, database, dest, opts = {}) {
   const conn = store.getConnection(key);
   if (!conn) throw new Error(`Unknown connection: ${key}`);
+  const o = { structure: 'drop-create', data: true, views: true, routines: true, triggers: true, events: true, ...opts };
 
   const pool = getPool(key);
+  // Definitions are read with the dumped database selected: SHOW CREATE VIEW
+  // otherwise names every table with its database (`src`.`t`), and the dump
+  // couldn't be restored into a different database. This connection's
+  // default database changes, so it's discarded at the end.
+  const meta = await pool.getConnection();
+  try {
+  await meta.query(`USE ${esc(database)}`);
   const objects = await listTables(key, database);
-  const tables = objects.filter((t) => !/VIEW/i.test(t.type || ''));
-  const views = objects.filter((t) => /VIEW/i.test(t.type || ''));
+  const wanted = Array.isArray(o.tables) && o.tables.length ? new Set(o.tables) : null;
+  const included = objects.filter((t) => !wanted || wanted.has(t.name));
+  const tables = included.filter((t) => !/VIEW/i.test(t.type || ''));
+  const views = o.views ? included.filter((t) => /VIEW/i.test(t.type || '')) : [];
   const BATCH_SIZE = 200;
+  const section = (title) => dest.write(`-- --------------------------------------------------\n-- ${title}\n-- --------------------------------------------------\n\n`);
 
-  dest.write(`-- DB Console backup of \`${database}\`\n-- Generated ${new Date().toISOString()}\n\n`);
-  dest.write('SET FOREIGN_KEY_CHECKS=0;\n\n');
+  dest.write(`-- DB Console dump of \`${database}\`\n-- Generated ${new Date().toISOString()}\n\n`);
+  dest.write('SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\n\n');
 
   for (const t of tables) {
     const table = t.name;
-    dest.write(`-- --------------------------------------------------\n`);
-    dest.write(`-- Table: \`${table}\`\n-- --------------------------------------------------\n\n`);
+    section(`Table: \`${table}\``);
 
-    const [createRows] = await pool.query(`SHOW CREATE TABLE ${esc(database)}.${esc(table)}`);
-    const createSql = createRows[0]['Create Table'];
-    dest.write(`DROP TABLE IF EXISTS ${esc(table)};\n${createSql};\n\n`);
+    if (o.structure !== 'none') {
+      const [createRows] = await meta.query(`SHOW CREATE TABLE ${esc(table)}`);
+      if (o.structure === 'drop-create') dest.write(`DROP TABLE IF EXISTS ${esc(table)};\n`);
+      dest.write(`${createRows[0]['Create Table']};\n\n`);
+    }
+    if (!o.data) continue;
 
+    // Generated (computed) columns can't be inserted into; leave them out.
     const { columns } = await getTableColumns(key, database, table);
-    const columnNames = columns.map((c) => c.name);
+    const columnNames = columns.filter((c) => !/\b(VIRTUAL|STORED|PERSISTENT)\b/i.test(c.extra || '')).map((c) => c.name);
     const colClause = columnNames.map(esc).join(', ');
+    const selectCols = columnNames.map(esc).join(', ');
 
     const rawConn = createStreamingConnection(conn);
     await new Promise((resolve, reject) => {
@@ -1053,11 +1129,14 @@ async function streamDatabaseBackup(key, database, dest) {
       let wroteAnyRow = false;
 
       const queryStream = rawConn
-        .query(`SELECT * FROM ${esc(database)}.${esc(table)}`)
+        .query(`SELECT ${selectCols} FROM ${esc(database)}.${esc(table)}`)
         .stream({ highWaterMark: BATCH_SIZE });
+      // A cancelled download never drains; stop instead of waiting forever.
+      const onClose = () => reject(new Error('Download cancelled by the client'));
+      if (dest.once && !dest.path) dest.once('close', onClose);
 
-      // Respects backpressure: if the destination (temp file) can't keep
-      // up, pause the query instead of buffering the table in memory.
+      // Respects backpressure: if the destination can't keep up, pause the
+      // query instead of buffering the table in memory.
       const flush = () => {
         if (batch.length === 0) return;
         const valuesSql = batch
@@ -1081,6 +1160,7 @@ async function streamDatabaseBackup(key, database, dest) {
       queryStream.on('end', () => {
         flush();
         if (wroteAnyRow) dest.write('\n');
+        if (dest.off) dest.off('close', onClose);
         resolve();
       });
       queryStream.on('error', reject);
@@ -1090,17 +1170,135 @@ async function streamDatabaseBackup(key, database, dest) {
     );
   }
 
-  // Views go last since they depend on the tables above. Note: routines,
-  // triggers and events are intentionally not included — their bodies
-  // contain ';' and need DELIMITER handling, which the restore parser
-  // doesn't do.
-  for (const v of views) {
-    const [rows] = await pool.query(`SHOW CREATE VIEW ${esc(database)}.${esc(v.name)}`);
-    dest.write(`-- View: \`${v.name}\`\n`);
-    dest.write(`DROP VIEW IF EXISTS ${esc(v.name)};\n${rows[0]['Create View']};\n\n`);
+  // Views after the tables they read from.
+  if (o.structure !== 'none') {
+    for (const v of views) {
+      const [rows] = await meta.query(`SHOW CREATE VIEW ${esc(v.name)}`);
+      section(`View: \`${v.name}\``);
+      if (o.structure === 'drop-create') dest.write(`DROP VIEW IF EXISTS ${esc(v.name)};\n`);
+      dest.write(`${stripDefiner(rows[0]['Create View'])};\n\n`);
+    }
+  }
+
+  if (o.routines) {
+    for (const r of await listRoutines(key, database)) {
+      const kind = r.type === 'FUNCTION' ? 'FUNCTION' : 'PROCEDURE';
+      const [rows] = await meta.query(`SHOW CREATE ${kind} ${esc(r.name)}`);
+      const create = rows[0] && rows[0][kind === 'FUNCTION' ? 'Create Function' : 'Create Procedure'];
+      if (!create) continue; // no privilege to read the body
+      section(`${kind === 'FUNCTION' ? 'Function' : 'Procedure'}: \`${r.name}\``);
+      dest.write(`DROP ${kind} IF EXISTS ${esc(r.name)};\n`);
+      writeWithDelimiter(dest, stripDefiner(create));
+    }
+  }
+
+  // Triggers after the data, so restoring rows doesn't fire them.
+  if (o.triggers) {
+    const tableNames = new Set(tables.map((t) => t.name));
+    for (const t of await listTriggers(key, database)) {
+      if (wanted && !tableNames.has(t.tableName)) continue;
+      const [rows] = await meta.query(`SHOW CREATE TRIGGER ${esc(t.name)}`);
+      const create = rows[0] && rows[0]['SQL Original Statement'];
+      if (!create) continue;
+      section(`Trigger: \`${t.name}\``);
+      dest.write(`DROP TRIGGER IF EXISTS ${esc(t.name)};\n`);
+      writeWithDelimiter(dest, stripDefiner(create));
+    }
+  }
+
+  if (o.events) {
+    for (const e of await listEvents(key, database)) {
+      const [rows] = await meta.query(`SHOW CREATE EVENT ${esc(e.name)}`);
+      const create = rows[0] && rows[0]['Create Event'];
+      if (!create) continue;
+      section(`Event: \`${e.name}\``);
+      dest.write(`DROP EVENT IF EXISTS ${esc(e.name)};\n`);
+      writeWithDelimiter(dest, stripDefiner(create));
+    }
   }
 
   dest.write('SET FOREIGN_KEY_CHECKS=1;\n');
+  } finally {
+    meta.destroy();
+  }
+}
+
+// Streams files as one gzipped tar archive (sizes are known up front).
+async function streamFilesAsTarGz(files, res) {
+  const gzip = zlib.createGzip();
+  gzip.pipe(res);
+  await new Promise((resolve, reject) => {
+    res.on('finish', resolve);
+    res.on('error', reject);
+    gzip.on('error', reject);
+    res.on('close', () => { if (!res.writableFinished) { gzip.destroy(); reject(new Error('Download cancelled by the client')); } });
+    (async () => {
+      for (const f of files) {
+        const { size } = await fs.promises.stat(f.path);
+        gzip.write(buildTarHeader(f.name, size));
+        await new Promise((ok, fail) => {
+          const rs = fs.createReadStream(f.path);
+          rs.on('error', fail);
+          rs.on('end', ok);
+          rs.pipe(gzip, { end: false });
+        });
+        const pad = (512 - (size % 512)) % 512;
+        if (pad) gzip.write(Buffer.alloc(pad));
+      }
+      gzip.write(Buffer.alloc(1024));
+      gzip.end();
+    })().catch(reject);
+  });
+}
+
+// Export dialog. options: { format: 'sql' | 'sql.gz' | 'csv' | 'tsv', tables,
+// structure, data, views, routines, triggers, events }. Returns the file name
+// via onStart(filename, contentType) before writing.
+async function exportDatabase(key, database, res, options, onStart) {
+  const format = ['sql', 'sql.gz', 'csv', 'tsv'].includes(options.format) ? options.format : 'sql';
+  if (format === 'sql' || format === 'sql.gz') {
+    onStart(`${database}.${format}`, format === 'sql' ? 'application/sql; charset=utf-8' : 'application/gzip');
+    if (format === 'sql') {
+      await streamDatabaseBackup(key, database, res, options);
+      return;
+    }
+    const gzip = zlib.createGzip();
+    gzip.pipe(res);
+    res.on('close', () => { if (!res.writableFinished) gzip.destroy(); });
+    await streamDatabaseBackup(key, database, gzip, options);
+    await new Promise((resolve, reject) => {
+      gzip.on('error', reject);
+      res.on('finish', resolve);
+      gzip.end();
+    });
+    return;
+  }
+
+  // CSV / TSV: one file per table — a single table is sent as-is, several as .tar.gz.
+  const all = await listTables(key, database);
+  const wanted = Array.isArray(options.tables) && options.tables.length ? new Set(options.tables) : null;
+  const tables = all.filter((t) => !wanted || wanted.has(t.name)).map((t) => t.name);
+  if (!tables.length) throw new Error('Choose at least one table');
+  if (tables.length === 1) {
+    onStart(`${tables[0]}.${format}`, format === 'csv' ? 'text/csv; charset=utf-8' : 'text/tab-separated-values; charset=utf-8');
+    await streamTableCsv(key, database, tables[0], res, { format });
+    return;
+  }
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'dbconsole-export-'));
+  try {
+    const files = [];
+    for (const t of tables) {
+      const file = path.join(dir, `${files.length}.${format}`);
+      const ws = fs.createWriteStream(file);
+      await streamTableCsv(key, database, t, ws, { format });
+      await new Promise((resolve, reject) => { ws.on('finish', resolve); ws.on('error', reject); ws.end(); });
+      files.push({ name: `${t}.${format}`, path: file });
+    }
+    onStart(`${database}-${format}.tar.gz`, 'application/gzip');
+    await streamFilesAsTarGz(files, res);
+  } finally {
+    fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 // Generates the SQL dump into a temp file first (so its exact byte size is
@@ -1182,7 +1380,8 @@ async function restoreDump(key, database, readableStream, format, onProgress) {
     }
   };
 
-  const sourceStream = tarExtractor ? readableStream.pipe(zlib.createGunzip()) : readableStream;
+  // targz: gzip + tar (Backup button); sqlgz: a gzipped .sql file; sql: plain.
+  const sourceStream = tarExtractor || format === 'sqlgz' ? readableStream.pipe(zlib.createGunzip()) : readableStream;
 
   try {
     await dbConn.query(`USE ${esc(database)}`);
