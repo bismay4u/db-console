@@ -310,6 +310,27 @@
 
   /* ---- Confirm dialog (reuses modal-backdrop-custom) ---- */
   .confirm-panel{ background:#fff; border-radius:14px; width:100%; max-width:360px; box-shadow:0 20px 60px rgba(20,20,43,.25); padding:1.25rem; }
+  /* Schema diagram */
+  .diagram-wrap{ overflow:auto; height:calc(100vh - 210px); min-height:360px; background:
+      radial-gradient(circle, var(--border) 1px, transparent 1px) 0 0/20px 20px; }
+  .diagram-canvas{ position:relative; }
+  .diagram-lines{ position:absolute; left:0; top:0; pointer-events:none; overflow:visible; }
+  .diagram-lines path{ fill:none; stroke:var(--muted); stroke-width:1.4; opacity:.7; }
+  .diagram-lines circle{ fill:var(--muted); }
+  .diagram-lines g.hl path{ stroke:var(--accent); stroke-width:2.2; opacity:1; }
+  .diagram-lines g.hl circle{ fill:var(--accent); }
+  .diagram-table{ position:absolute; width:220px; background:var(--card); border:1px solid var(--border); border-radius:8px;
+      box-shadow:0 1px 3px rgba(0,0,0,.06); cursor:grab; user-select:none; touch-action:none; font-size:.75rem; overflow:hidden; }
+  .diagram-table:active{ cursor:grabbing; }
+  .diagram-table.hl{ border-color:var(--accent); box-shadow:0 2px 10px rgba(74,93,249,.18); }
+  .diagram-head{ height:28px; line-height:28px; padding:0 8px; font-weight:600; background:var(--accent-soft); color:var(--accent);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border-bottom:1px solid var(--border); }
+  .diagram-table.is-view .diagram-head{ background:var(--bg); color:var(--muted); }
+  .diagram-col{ height:20px; display:flex; align-items:center; gap:4px; padding:0 8px; }
+  .diagram-col .bi{ width:12px; flex:none; color:var(--muted); font-size:.7rem; }
+  .diagram-col.pk{ font-weight:600; }
+  .diagram-col.pk .bi{ color:#d4a017; }
+  .diagram-type{ margin-left:auto; color:var(--muted); font-size:.68rem; white-space:nowrap; max-width:90px; overflow:hidden; text-overflow:ellipsis; }
 </style>
 </head>
 <body x-data="app()" x-init="init()" x-cloak :class="exploreSidebarActive() && 'explore-mode'">
@@ -860,6 +881,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                         Tables <span class="tab-count" x-text="exploreTables.length"></span>
                       </button>
                       <button class="tab-btn" :class="overviewTab==='search' && 'active'" @click="overviewTab='search'">Search</button>
+                      <button class="tab-btn" :class="overviewTab==='diagram' && 'active'" @click="openDiagram()">Diagram</button>
                     </div>
                   </div>
                   <div class="d-flex align-items-center gap-2">
@@ -934,6 +956,48 @@ Separate multiple statements with ; — highlight text to run just that part."
                           </tr>
                         </tfoot>
                       </table>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Schema diagram: draggable tables with foreign-key lines -->
+                <template x-if="overviewTab === 'diagram'">
+                  <div class="card-surface">
+                    <div class="d-flex flex-wrap align-items-center gap-2 px-2 py-2" style="border-bottom:1px solid var(--border)">
+                      <span class="text-muted-sm" x-text="diagram.loading ? 'Loading…' : diagram.tables.length + ' table(s), ' + diagram.foreignKeys.length + ' foreign key(s) · drag tables to arrange'"></span>
+                      <div class="ms-auto d-flex gap-1">
+                        <button class="btn btn-outline-soft btn-sm" title="Zoom out" @click="diagramZoom(-0.1)"><i class="bi bi-zoom-out"></i></button>
+                        <span class="text-muted-sm align-self-center" style="min-width:3em;text-align:center" x-text="Math.round(diagram.scale * 100) + '%'"></span>
+                        <button class="btn btn-outline-soft btn-sm" title="Zoom in" @click="diagramZoom(0.1)"><i class="bi bi-zoom-in"></i></button>
+                        <button class="btn btn-outline-soft btn-sm" @click="diagramAutoLayout()"><i class="bi bi-grid-3x3-gap me-1"></i>Auto layout</button>
+                        <button class="btn btn-outline-soft btn-sm" @click="loadDiagram()"><i class="bi bi-arrow-clockwise"></i></button>
+                      </div>
+                    </div>
+                    <div class="alert alert-danger py-2 small m-2" x-show="diagram.error" x-text="diagram.error"></div>
+                    <div class="diagram-wrap" x-ref="diagramWrap">
+                      <div class="diagram-canvas" :style="`width:${diagramSize().w * diagram.scale}px;height:${diagramSize().h * diagram.scale}px`">
+                        <div :style="`transform:scale(${diagram.scale});transform-origin:0 0;position:absolute;inset:0`">
+                          <!-- x-for does not work inside <svg> (no HTML <template> there), so the lines are rendered as markup -->
+                          <svg class="diagram-lines" :width="diagramSize().w" :height="diagramSize().h" x-html="diagramLinesSvg()"></svg>
+                          <template x-for="t in diagram.tables" :key="t.name">
+                            <div class="diagram-table" :class="[t.view && 'is-view', diagram.hover === t.name && 'hl']"
+                                 :style="`left:${(diagram.pos[t.name] || {}).x || 0}px;top:${(diagram.pos[t.name] || {}).y || 0}px`"
+                                 @pointerdown="diagramDragStart($event, t.name)" @mouseenter="diagram.hover = t.name" @mouseleave="diagram.hover = ''">
+                              <div class="diagram-head" @dblclick="selectExploreTable(t.name)" title="Double-click to open">
+                                <i class="bi" :class="t.view ? 'bi-eye' : 'bi-table'"></i> <span x-text="t.name"></span>
+                              </div>
+                              <template x-for="c in t.columns" :key="c.name">
+                                <div class="diagram-col" :class="c.pk && 'pk'">
+                                  <i class="bi" :class="c.pk ? 'bi-key-fill' : (diagramFkCols()[t.name + '.' + c.name] ? 'bi-link-45deg' : '')"></i>
+                                  <span class="text-truncate" x-text="c.name"></span>
+                                  <span class="diagram-type" x-text="c.type"></span>
+                                </div>
+                              </template>
+                            </div>
+                          </template>
+                        </div>
+                      </div>
+                      <div class="text-center text-muted-sm py-4" x-show="!diagram.loading && !diagram.tables.length && !diagram.error">This database has no tables yet.</div>
                     </div>
                   </div>
                 </template>
@@ -2791,6 +2855,7 @@ function app() {
     overviewTab: 'tables',
     overviewSelected: [],
     dbSearch: { term: '', running: false, result: null, error: '' },
+    diagram: { loading: false, error: '', tables: [], foreignKeys: [], pos: {}, scale: 1, hover: '' },
     dbModal: { open: false, mode: 'create', name: '', collation: '', sql: '', error: '', saving: false },
     tableEditor: { open: false, mode: 'create', origName: '', name: '', engine: '', collation: '', comment: '', autoIncrement: '', columns: [], original: [], dropped: [], sql: '', error: '', saving: false },
     fkModal: { open: false, editing: null, name: '', refDb: '', refTable: '', refTables: [], refColumns: [], pairs: [], onDelete: 'RESTRICT', onUpdate: 'RESTRICT', sql: '', error: '', saving: false },
@@ -3342,11 +3407,155 @@ function app() {
       this.exploreDatabase = dbName;
       this.overviewTab = 'tables'; this.overviewSelected = []; this.exploreDbInfo = null;
       this.dbSearch = { term: '', running: false, result: null, error: '' };
+      this.diagram = { loading: false, error: '', tables: [], foreignKeys: [], pos: {}, scale: 1, hover: '' };
       if (dbName) this.loadDbInfo();
       this.resetExploreObjects();
       this.exploreError = '';
       if (!dbName) return;
       await this.loadExploreTables();
+    },
+    // ---- Schema diagram ----
+    diagramStorageKey() {
+      return `dbc.diagram.${this.exploreConnKey}.${this.exploreDatabase}`;
+    },
+    openDiagram() {
+      this.overviewTab = 'diagram';
+      if (!this.diagram.tables.length || this.diagram.db !== this.exploreDatabase) this.loadDiagram();
+    },
+    async loadDiagram() {
+      const db = this.exploreDatabase;
+      this.diagram = { ...this.diagram, db, loading: true, error: '', hover: '' };
+      try {
+        const res = await fetch(`/api/explore/${this.exploreConnKey}/${encodeURIComponent(db)}/diagram`);
+        const data = await res.json();
+        if (db !== this.exploreDatabase) return;
+        if (!res.ok) { this.diagram.error = data.error || 'Failed to load the diagram'; return; }
+        let saved = {};
+        try { saved = JSON.parse(localStorage.getItem(this.diagramStorageKey()) || '{}') || {}; } catch (e) { saved = {}; }
+        this.diagram.tables = data.tables;
+        this.diagram.foreignKeys = data.foreignKeys;
+        this.diagram.scale = Number(saved.__scale) || 1;
+        const pos = {};
+        data.tables.forEach((t) => { if (saved[t.name]) pos[t.name] = saved[t.name]; });
+        this.diagram.pos = pos;
+        if (data.tables.some((t) => !pos[t.name])) this.diagramAutoLayout(true);
+      } catch (e) {
+        this.diagram.error = 'Network error, please try again';
+      } finally {
+        this.diagram.loading = false;
+      }
+    },
+    DIAGRAM: { width: 220, head: 28, row: 20, gap: 70 },
+    diagramHeight(t) {
+      return this.DIAGRAM.head + t.columns.length * this.DIAGRAM.row + 4;
+    },
+    // Place tables (only the unplaced ones, unless all) in the shortest of N columns,
+    // linked tables first so related tables tend to sit near each other.
+    diagramAutoLayout(onlyMissing = false) {
+      const { width, gap } = this.DIAGRAM;
+      const wrapWidth = (this.$refs.diagramWrap && this.$refs.diagramWrap.clientWidth) || 1100;
+      const cols = Math.max(1, Math.floor((wrapWidth / this.diagram.scale - gap) / (width + gap)));
+      const heights = new Array(cols).fill(gap / 2);
+      const pos = onlyMissing ? { ...this.diagram.pos } : {};
+      if (onlyMissing) {
+        Object.entries(pos).forEach(([name, p]) => {
+          const t = this.diagram.tables.find((x) => x.name === name);
+          const c = Math.min(cols - 1, Math.max(0, Math.round((p.x - gap / 2) / (width + gap))));
+          if (t) heights[c] = Math.max(heights[c], p.y + this.diagramHeight(t) + gap);
+        });
+      }
+      const degree = {};
+      this.diagram.foreignKeys.forEach((f) => { degree[f.table] = (degree[f.table] || 0) + 1; degree[f.refTable] = (degree[f.refTable] || 0) + 1; });
+      const order = [...this.diagram.tables].sort((a, b) => (degree[b.name] || 0) - (degree[a.name] || 0) || a.name.localeCompare(b.name));
+      for (const t of order) {
+        if (pos[t.name]) continue;
+        const c = heights.indexOf(Math.min(...heights));
+        pos[t.name] = { x: gap / 2 + c * (width + gap), y: heights[c] };
+        heights[c] += this.diagramHeight(t) + gap;
+      }
+      this.diagram.pos = pos;
+      this.saveDiagramLayout();
+    },
+    saveDiagramLayout() {
+      try { localStorage.setItem(this.diagramStorageKey(), JSON.stringify({ ...this.diagram.pos, __scale: this.diagram.scale })); } catch (e) { /* storage unavailable */ }
+    },
+    diagramZoom(delta) {
+      this.diagram.scale = Math.min(2, Math.max(0.3, Math.round((this.diagram.scale + delta) * 10) / 10));
+      this.saveDiagramLayout();
+    },
+    diagramSize() {
+      let w = 400, h = 200;
+      for (const t of this.diagram.tables) {
+        const p = this.diagram.pos[t.name];
+        if (!p) continue;
+        w = Math.max(w, p.x + this.DIAGRAM.width + this.DIAGRAM.gap);
+        h = Math.max(h, p.y + this.diagramHeight(t) + this.DIAGRAM.gap);
+      }
+      return { w, h };
+    },
+    diagramDragStart(ev, name) {
+      if (ev.button !== 0) return;
+      const start = { ...(this.diagram.pos[name] || { x: 0, y: 0 }) };
+      const sx = ev.clientX, sy = ev.clientY;
+      let moved = false;
+      const move = (e) => {
+        const dx = (e.clientX - sx) / this.diagram.scale, dy = (e.clientY - sy) / this.diagram.scale;
+        if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+        moved = true;
+        this.diagram.pos[name] = { x: Math.max(0, Math.round(start.x + dx)), y: Math.max(0, Math.round(start.y + dy)) };
+      };
+      const up = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        if (moved) this.saveDiagramLayout();
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+      ev.preventDefault();
+    },
+    diagramFkCols() {
+      const set = {};
+      this.diagram.foreignKeys.forEach((f) => f.columns.forEach((c) => { set[f.table + '.' + c] = true; }));
+      return set;
+    },
+    // One curve per foreign key, from the first FK column to the first referenced column.
+    diagramLines() {
+      const { width, head, row } = this.DIAGRAM;
+      const byName = Object.fromEntries(this.diagram.tables.map((t) => [t.name, t]));
+      const colY = (t, col) => {
+        const i = Math.max(0, t.columns.findIndex((c) => c.name === col));
+        return this.diagram.pos[t.name].y + head + i * row + row / 2;
+      };
+      const lines = [];
+      for (const f of this.diagram.foreignKeys) {
+        const from = byName[f.table], to = f.refDb === this.exploreDatabase ? byName[f.refTable] : null;
+        if (!from || !to || !this.diagram.pos[from.name] || !this.diagram.pos[to.name]) continue;
+        const a = this.diagram.pos[from.name], b = this.diagram.pos[to.name];
+        const y1 = colY(from, f.columns[0]), y2 = colY(to, f.refColumns[0]);
+        let x1, x2, c1, c2;
+        if (from === to) {
+          x1 = a.x + width; x2 = a.x + width; c1 = x1 + 40; c2 = x2 + 40;
+        } else if (b.x > a.x + width) {
+          x1 = a.x + width; x2 = b.x; const m = Math.max(30, (x2 - x1) / 2); c1 = x1 + m; c2 = x2 - m;
+        } else if (b.x + width < a.x) {
+          x1 = a.x; x2 = b.x + width; const m = Math.max(30, (x1 - x2) / 2); c1 = x1 - m; c2 = x2 + m;
+        } else {
+          x1 = a.x + width; x2 = b.x + width; const r = Math.max(x1, x2) + 40; c1 = r; c2 = r;
+        }
+        lines.push({
+          id: f.table + '\u0000' + f.name, from: f.table, to: f.refTable, x2, y2,
+          d: `M${x1},${y1} C${c1},${y1} ${c2},${y2} ${x2},${y2}`,
+          title: `${f.table} (${f.columns.join(', ')}) → ${f.refTable} (${f.refColumns.join(', ')})`
+        });
+      }
+      return lines;
+    },
+    diagramLinesSvg() {
+      const e = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const hover = this.diagram.hover;
+      return this.diagramLines().map((l) =>
+        `<g${hover && (hover === l.from || hover === l.to) ? ' class="hl"' : ''}><title>${e(l.title)}</title><path d="${l.d}"></path><circle cx="${l.x2}" cy="${l.y2}" r="3"></circle></g>`
+      ).join('');
     },
     resetExploreObjects() {
       this.exploreTables = []; this.exploreRoutines = []; this.exploreTriggers = []; this.exploreEvents = [];

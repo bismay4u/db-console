@@ -604,7 +604,26 @@ async function dropObject(key, database, { kind, name, preview } = {}) {
   return { sql };
 }
 
+// Tables, columns (with primary-key flag) and foreign keys of a database,
+// for the schema diagram.
+async function getDiagram(key, database) {
+  const [cols] = await getPool(key).query(
+    `SELECT c.TABLE_NAME AS t, c.COLUMN_NAME AS name, c.COLUMN_TYPE AS type, c.COLUMN_KEY = 'PRI' AS pk, t.TABLE_TYPE AS tableType
+     FROM information_schema.COLUMNS c
+     JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME
+     WHERE c.TABLE_SCHEMA = ? ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION`,
+    [database]
+  );
+  const tables = new Map();
+  for (const c of cols) {
+    if (!tables.has(c.t)) tables.set(c.t, { name: c.t, view: c.tableType === 'VIEW', columns: [] });
+    tables.get(c.t).columns.push({ name: c.name, type: c.type, pk: Boolean(c.pk) });
+  }
+  return { tables: [...tables.values()], foreignKeys: await getDatabaseForeignKeys(key, database) };
+}
+
 module.exports = {
+  getDiagram,
   saveObject,
   dropObject,
   isMariaDb,

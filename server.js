@@ -540,6 +540,7 @@ app.get('/api/explore/:key/:database/info', requireAuth, schemaRoute((req) => sc
 app.put('/api/explore/:key/:database', requireAuth, schemaRoute((req, b) => schema.alterDatabase(req.params.key, req.params.database, b)));
 app.delete('/api/explore/:key/:database', requireAuth, schemaRoute((req, b) => schema.dropDatabase(req.params.key, req.params.database, b)));
 app.get('/api/explore/:key/:database/search', requireAuth, schemaRoute((req) => schema.searchDatabase(req.params.key, req.params.database, req.query.q), { logged: false }));
+app.get('/api/explore/:key/:database/diagram', requireAuth, schemaRoute((req) => schema.getDiagram(req.params.key, req.params.database), { logged: false }));
 app.get('/api/explore/:key/:database/foreign-keys', requireAuth, schemaRoute((req) => schema.getDatabaseForeignKeys(req.params.key, req.params.database), { logged: false }));
 // Table and column names of a database, for SQL autocomplete: { table: [columns] }.
 app.get('/api/explore/:key/:database/autocomplete', requireAuth, schemaRoute(async (req) => {
