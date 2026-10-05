@@ -66,8 +66,13 @@ async function runAll(key, statements) {
   const results = [];
   try {
     for (const sql of statements) {
-      const [rows] = await conn.query(sql);
-      results.push(Array.isArray(rows) ? rows : { affectedRows: rows.affectedRows });
+      try {
+        const [rows] = await conn.query(sql);
+        results.push(Array.isArray(rows) ? rows : { affectedRows: rows.affectedRows });
+      } catch (err) {
+        err.sql = statements.join(';\n'); // for the query log
+        throw err;
+      }
     }
   } finally {
     conn.release();

@@ -9,6 +9,7 @@ const db = require('./api/db');
 const querylog = require('./api/querylog');
 const system = require('./api/system');
 const schema = require('./api/schema');
+const serverAdmin = require('./api/serveradmin');
 const FileSessionStore = require('./api/sessionstore');
 const { DATA_DIR, readJson, writeJson, withLock } = require('./api/datadir');
 
@@ -564,6 +565,38 @@ app.get('/api/explore/:key/:database/:table/schema', requireAuth, schemaRoute(as
 }, { logged: false }));
 app.post('/api/explore/:key/:database/:table/alter', requireAuth, schemaRoute((req, b) => schema.alterTable(req.params.key, req.params.database, req.params.table, b)));
 app.post('/api/explore/:key/:database/:table/foreign-keys', requireAuth, schemaRoute((req, b) => schema.alterForeignKey(req.params.key, req.params.database, req.params.table, b)));
+
+// ---- Server tools (process list, variables, status, MySQL accounts) ----
+// Only the connection's owner or an admin. Changes are written to the query
+// log (passwords masked).
+function serverRoute(handler, { logged = true } = {}) {
+  return [requireAuth, requireManage, async (req, res) => {
+    const start = Date.now();
+    const body = req.body || {};
+    try {
+      const result = await handler(req, body);
+      if (logged && !body.preview && result && result.sql) {
+        logAction(req, { source: 'server', sql: result.sql, type: 'OTHER', ok: true, durationMs: Date.now() - start });
+      }
+      res.json(result);
+    } catch (err) {
+      if (logged && !body.preview) {
+        logAction(req, { source: 'server', sql: err.sql || `(${req.method} ${req.path})`, type: 'OTHER', ok: false, error: err.message, durationMs: Date.now() - start });
+      }
+      res.status(400).json({ error: err.message });
+    }
+  }];
+}
+
+app.get('/api/server/:key/processes', ...serverRoute((req) => serverAdmin.processList(req.params.key), { logged: false }));
+app.post('/api/server/:key/processes/:id/kill', ...serverRoute((req, b) => serverAdmin.killProcess(req.params.key, req.params.id, b)));
+app.get('/api/server/:key/variables', ...serverRoute((req) => serverAdmin.variables(req.params.key, 'variables'), { logged: false }));
+app.get('/api/server/:key/status', ...serverRoute((req) => serverAdmin.variables(req.params.key, 'status'), { logged: false }));
+app.get('/api/server/:key/accounts', ...serverRoute(async (req) => ({ privileges: serverAdmin.PRIVILEGES, accounts: await serverAdmin.listAccounts(req.params.key) }), { logged: false }));
+app.post('/api/server/:key/accounts', ...serverRoute((req, b) => serverAdmin.createUser(req.params.key, b)));
+app.put('/api/server/:key/accounts/password', ...serverRoute((req, b) => serverAdmin.setPassword(req.params.key, b)));
+app.delete('/api/server/:key/accounts', ...serverRoute((req, b) => serverAdmin.dropUser(req.params.key, b)));
+app.post('/api/server/:key/grants', ...serverRoute((req, b) => serverAdmin.changeGrants(req.params.key, b)));
 
 // Create / alter / drop an index: { drop?: name, add?: { kind, name, columns: [{ column, length }] }, preview? }.
 // With preview: true, only returns the ALTER TABLE statement.

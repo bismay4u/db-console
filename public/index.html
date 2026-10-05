@@ -735,6 +735,10 @@ Separate multiple statements with ; — highlight text to run just that part."
           <span class="text-muted-sm" x-show="!exploreConnKey">
             <i class="bi bi-info-circle me-1"></i>Pick a connection to browse its databases.
           </span>
+          <button class="btn btn-sm" :class="exploreServer ? 'btn-accent' : 'btn-outline-soft'" x-show="exploreConnKey && exploreConnCanManage()"
+                  @click="openServerView()" title="Process list, variables, status, users & privileges">
+            <i class="bi bi-hdd-rack me-1"></i>Server
+          </button>
 
           <div class="d-flex align-items-center gap-2 ms-auto" x-show="exploreDatabase">
             <button class="btn btn-outline-soft btn-sm" x-show="exploreSidebarHidden" @click="exploreSidebarHidden = false" title="Show the tables & views list">
@@ -751,7 +755,95 @@ Separate multiple statements with ; — highlight text to run just that part."
 
         <div class="alert alert-danger py-2 small" x-show="exploreError" x-text="exploreError"></div>
 
-        <div class="row g-2" x-show="exploreDatabase">
+        <!-- SERVER TOOLS -->
+        <template x-if="exploreServer">
+          <div class="card-surface">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 px-3 py-2" style="border-bottom:1px solid var(--border)">
+              <div class="d-flex align-items-center gap-3">
+                <div class="d-flex align-items-center gap-2">
+                  <i class="bi bi-hdd-rack" style="color:var(--accent)"></i>
+                  <strong style="font-size:.9rem" x-text="labelFor(exploreConnKey)"></strong>
+                  <span class="use-db-chip" x-show="exploreMeta" x-text="exploreMeta && exploreMeta.version"></span>
+                </div>
+                <div class="tab-switch" style="width:auto">
+                  <template x-for="t in [['processes', 'Processes'], ['variables', 'Variables'], ['status', 'Status'], ['accounts', 'Users & privileges']]" :key="t[0]">
+                    <button class="tab-btn px-3 text-nowrap" :class="serverTab === t[0] && 'active'" @click="switchServerTab(t[0])" x-text="t[1]"></button>
+                  </template>
+                </div>
+              </div>
+              <div class="d-flex align-items-center gap-2">
+                <label class="form-check-label small" x-show="serverTab === 'processes'">
+                  <input type="checkbox" class="form-check-input" x-model="serverAutoRefresh" @change="scheduleProcessRefresh()"> Auto-refresh
+                </label>
+                <input type="search" class="form-control form-control-sm" style="width:220px" placeholder="Filter…" x-model="serverFilter" x-show="serverTab === 'variables' || serverTab === 'status'">
+                <button class="btn btn-accent btn-sm" x-show="serverTab === 'accounts'" @click="openAccountModal('create')"><i class="bi bi-person-plus me-1"></i>New user</button>
+                <button class="btn btn-outline-soft btn-sm" @click="loadServerTab()" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
+                <button class="btn btn-outline-soft btn-sm" @click="exploreServer = false" title="Close"><i class="bi bi-x-lg"></i></button>
+              </div>
+            </div>
+            <div class="alert alert-danger py-2 small m-2" x-show="serverError" x-text="serverError"></div>
+
+            <template x-if="serverTab === 'processes'">
+              <div class="table-responsive">
+                <table class="table table-modern mb-0">
+                  <thead><tr><th style="width:1%"></th><th>Id</th><th>User</th><th>Host</th><th>DB</th><th>Command</th><th class="text-end">Time</th><th>State</th><th style="width:35%">Info</th></tr></thead>
+                  <tbody>
+                    <template x-for="p in serverProcesses" :key="p.id">
+                      <tr>
+                        <td class="text-nowrap">
+                          <button class="btn btn-sm btn-outline-soft" title="Kill the running query (KILL QUERY)" :disabled="!p.info" @click="killProcess(p, true)"><i class="bi bi-stop-circle"></i></button>
+                          <button class="btn btn-sm btn-ghost-danger" title="Kill the connection (KILL)" @click="killProcess(p, false)"><i class="bi bi-x-octagon"></i></button>
+                        </td>
+                        <td x-text="p.id"></td><td x-text="p.user"></td><td class="text-muted-sm" x-text="p.host"></td><td x-text="p.db || ''"></td>
+                        <td x-text="p.command"></td><td class="text-end" x-text="p.time + 's'"></td><td class="text-muted-sm" x-text="p.state || ''"></td>
+                        <td><div class="log-sql" x-text="p.info || ''"></div></td>
+                      </tr>
+                    </template>
+                    <tr x-show="!serverProcesses.length"><td colspan="9" class="text-center text-muted-sm py-3">No other connections.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+
+            <template x-if="serverTab === 'variables' || serverTab === 'status'">
+              <div class="table-responsive" style="max-height:600px">
+                <table class="table table-modern mb-0">
+                  <thead><tr><th style="width:40%">Name</th><th>Value</th></tr></thead>
+                  <tbody>
+                    <template x-for="v in filteredServerVars()" :key="v.name">
+                      <tr><td class="fw-medium" x-text="v.name"></td><td><code style="white-space:pre-wrap; word-break:break-all" x-text="v.value"></code></td></tr>
+                    </template>
+                  </tbody>
+                </table>
+                <div class="text-muted-sm px-3 py-2" x-text="filteredServerVars().length + ' of ' + serverVars.length"></div>
+              </div>
+            </template>
+
+            <template x-if="serverTab === 'accounts'">
+              <div class="table-responsive">
+                <table class="table table-modern mb-0">
+                  <thead><tr><th style="width:1%"></th><th>Account</th><th>Grants</th></tr></thead>
+                  <tbody>
+                    <template x-for="a in serverAccounts" :key="a.user + '@' + a.host">
+                      <tr>
+                        <td class="text-nowrap">
+                          <button class="btn btn-sm btn-outline-soft" title="Grant privileges" @click="openAccountModal('grant', a)"><i class="bi bi-plus-circle"></i></button>
+                          <button class="btn btn-sm btn-outline-soft" title="Revoke privileges" @click="openAccountModal('revoke', a)"><i class="bi bi-dash-circle"></i></button>
+                          <button class="btn btn-sm btn-outline-soft" title="Change password" @click="openAccountModal('password', a)"><i class="bi bi-key"></i></button>
+                          <button class="btn btn-sm btn-ghost-danger" title="Drop user" @click="openAccountModal('drop', a)"><i class="bi bi-trash"></i></button>
+                        </td>
+                        <td class="fw-medium text-nowrap" x-text="(a.user || '(anonymous)') + '@' + a.host"></td>
+                        <td><template x-for="(g, gi) in a.grants" :key="gi"><div class="log-sql" style="max-height:none" x-text="g"></div></template></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <div class="row g-2" x-show="exploreDatabase && !exploreServer">
           <div class="col-12">
             <!-- DATABASE OVERVIEW (no table selected) -->
             <template x-if="!exploreTable && !exploreObject">
@@ -1894,6 +1986,66 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
+<!-- ===== Server: Account Modal (create / password / grant / revoke / drop) ===== -->
+<div class="modal-backdrop-custom" x-show="accountModal.open" x-cloak @click.self="!accountModal.saving && (accountModal.open = false)">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="{ create: 'New MySQL user', password: 'Change password', grant: 'Grant privileges', revoke: 'Revoke privileges', drop: 'Drop user' }[accountModal.mode] + (accountModal.mode !== 'create' ? ' — ' + accountModal.user + '@' + accountModal.host : '')"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="accountModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="accountModal.error" x-text="accountModal.error"></div>
+      <div class="row g-2 mb-2" x-show="accountModal.mode === 'create'">
+        <div class="col-6"><label class="form-label small fw-medium">User</label><input type="text" class="form-control form-control-sm" x-model="accountModal.user" @input.debounce.300ms="previewAccount()"></div>
+        <div class="col-6"><label class="form-label small fw-medium">Host <span class="text-muted-sm">(% = any)</span></label><input type="text" class="form-control form-control-sm" x-model="accountModal.host" @input.debounce.300ms="previewAccount()"></div>
+      </div>
+      <div class="mb-2" x-show="accountModal.mode === 'create' || accountModal.mode === 'password'">
+        <label class="form-label small fw-medium">Password</label>
+        <input type="password" class="form-control form-control-sm" autocomplete="new-password" x-model="accountModal.password" @input.debounce.300ms="previewAccount()">
+      </div>
+      <template x-if="accountModal.mode === 'grant' || accountModal.mode === 'revoke'">
+        <div>
+          <div class="row g-2 mb-2">
+            <div class="col-6">
+              <label class="form-label small fw-medium">Database</label>
+              <select class="form-select form-select-sm" x-model="accountModal.db" @change="previewAccount()">
+                <option value="*">* (all databases — server-wide)</option>
+                <template x-for="d in exploreDatabases" :key="d"><option :value="d" x-text="d" :selected="accountModal.db === d"></option></template>
+              </select>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-medium">Table <span class="text-muted-sm">(* = all tables)</span></label>
+              <input type="text" class="form-control form-control-sm" x-model="accountModal.table" :disabled="accountModal.db === '*'" @input.debounce.300ms="previewAccount()">
+            </div>
+          </div>
+          <label class="form-label small fw-medium">Privileges</label>
+          <div class="d-flex flex-wrap gap-1">
+            <template x-for="p in serverPrivileges" :key="p">
+              <label class="share-chip" style="cursor:pointer; font-size:.74rem" :class="accountModal.privileges.includes(p) && 'mine'">
+                <input type="checkbox" class="form-check-input me-1" style="font-size:.7rem" :value="p" x-model="accountModal.privileges" @change="previewAccount()"><span x-text="p"></span>
+              </label>
+            </template>
+          </div>
+        </div>
+      </template>
+      <div class="alert alert-warning py-2 small" x-show="accountModal.mode === 'drop'">
+        <i class="bi bi-exclamation-triangle me-1"></i>The account and all its privileges will be removed. Applications using it will no longer be able to connect.
+      </div>
+      <div class="mt-3" x-show="accountModal.sql">
+        <div class="text-muted-sm mb-1">SQL that will run:</div>
+        <pre class="definition-block mb-0" style="white-space:pre-wrap" x-text="accountModal.sql"></pre>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" :disabled="accountModal.saving" @click="accountModal.open = false">Cancel</button>
+      <button class="btn text-white" :style="{ background: ['drop', 'revoke'].includes(accountModal.mode) ? 'var(--danger)' : 'var(--accent)' }" @click="saveAccount" :disabled="accountModal.saving || !accountModal.sql">
+        <span x-show="accountModal.saving" class="spinner-border spinner-border-sm me-1"></span>
+        <span x-text="{ create: 'Create user', password: 'Change password', grant: 'Grant', revoke: 'Revoke', drop: 'Drop user' }[accountModal.mode]"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Explore: Export Modal ===== -->
 <div class="modal-backdrop-custom" x-show="exportModal.open" x-cloak @click.self="exportModal.open = false">
   <div class="modal-panel modal-panel-lg">
@@ -2562,7 +2714,7 @@ function app() {
     logPageSize: 100,
     logsLoading: false,
     logFilters: { user: '', conn: '', source: '', type: '', status: '', from: '', to: '', q: '' },
-    logSources: ['runner', 'explore', 'import', 'export', 'backup', 'restore', 'system'],
+    logSources: ['runner', 'explore', 'import', 'export', 'backup', 'restore', 'server', 'system'],
     logTypes: ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'DDL', 'SHOW', 'MULTI', 'OTHER'],
     analytics: null,
     analyticsDays: 30,
@@ -2651,6 +2803,17 @@ function app() {
     ],
     indexModal: { open: false, editing: null, kind: 'INDEX', name: '', parts: [], sql: '', saving: false, error: '' },
     importModal: { open: false, step: 'pick', file: null, previewFields: [], previewRows: [], mapping: {}, truncate: false, imported: 0, failedBatches: 0, running: false, error: '' },
+    exploreServer: false,
+    serverTab: 'processes',
+    serverProcesses: [],
+    serverVars: [],
+    serverAccounts: [],
+    serverPrivileges: [],
+    serverFilter: '',
+    serverError: '',
+    serverAutoRefresh: false,
+    serverTimer: null,
+    accountModal: { open: false, mode: 'create', user: '', host: '%', password: '', db: '*', table: '*', privileges: [], sql: '', error: '', saving: false },
     exportModal: { open: false, format: 'sql.gz', structure: 'drop-create', data: true, views: true, routines: true, triggers: true, events: true, tables: [] },
     restoreModal: { open: false, file: null, running: false, done: false, progress: { executed: 0, failed: 0 }, errors: [], error: '' },
 
@@ -3099,6 +3262,7 @@ function app() {
       this.resetExploreObjects();
       this.exploreError = '';
       this.exploreMeta = null;
+      this.exploreServer = false;
       if (!key) return;
       this.loadExploreMeta();
       await this.loadExploreDatabases();
@@ -3128,6 +3292,7 @@ function app() {
     },
     async selectExploreDatabase(dbName) {
       this.exploreSidebarHidden = false;
+      this.exploreServer = false;
       this.exploreDatabase = dbName;
       this.overviewTab = 'tables'; this.overviewSelected = []; this.exploreDbInfo = null;
       this.dbSearch = { term: '', running: false, result: null, error: '' };
@@ -4146,6 +4311,98 @@ function app() {
     },
 
     // ---- Explore: Backup / Restore ----
+    // ---- Server tools ----
+    exploreConnCanManage() {
+      const c = this.connections.find((x) => x.key === this.exploreConnKey);
+      return Boolean(c && c.canManage);
+    },
+    serverBase() {
+      return `/api/server/${this.exploreConnKey}`;
+    },
+    openServerView() {
+      this.exploreServer = true;
+      if (!this.exploreMeta) this.loadExploreMeta();
+      this.switchServerTab(this.serverTab);
+    },
+    switchServerTab(tab) {
+      this.serverTab = tab; this.serverFilter = ''; this.serverError = '';
+      this.loadServerTab();
+      this.scheduleProcessRefresh();
+    },
+    async loadServerTab() {
+      this.serverError = '';
+      try {
+        if (this.serverTab === 'processes') this.serverProcesses = await this.apiJson('GET', `${this.serverBase()}/processes`);
+        else if (this.serverTab === 'variables' || this.serverTab === 'status') this.serverVars = await this.apiJson('GET', `${this.serverBase()}/${this.serverTab}`);
+        else {
+          const data = await this.apiJson('GET', `${this.serverBase()}/accounts`);
+          this.serverAccounts = data.accounts; this.serverPrivileges = data.privileges;
+        }
+      } catch (e) {
+        this.serverError = e.message;
+      }
+    },
+    scheduleProcessRefresh() {
+      clearTimeout(this.serverTimer);
+      if (!this.serverAutoRefresh || this.serverTab !== 'processes') return;
+      this.serverTimer = setTimeout(async () => {
+        if (!this.exploreServer || this.activeTab !== 'explore') return;
+        await this.loadServerTab();
+        this.scheduleProcessRefresh();
+      }, 3000);
+    },
+    filteredServerVars() {
+      const q = this.serverFilter.trim().toLowerCase();
+      return q ? this.serverVars.filter((v) => v.name.toLowerCase().includes(q) || String(v.value).toLowerCase().includes(q)) : this.serverVars;
+    },
+    async killProcess(p, queryOnly) {
+      const ok = await this.askConfirm(queryOnly ? `Kill the query of process ${p.id}?` : `Kill connection ${p.id}?`,
+        `${queryOnly ? 'KILL QUERY' : 'KILL'} ${p.id} — ${p.user}@${p.host}${p.info ? ': ' + p.info.slice(0, 120) : ''}`, { confirmLabel: 'Kill', danger: true });
+      if (!ok) return;
+      try {
+        await this.apiJson('POST', `${this.serverBase()}/processes/${p.id}/kill`, { queryOnly });
+        this.showToast(queryOnly ? 'Query killed' : 'Connection killed');
+      } catch (e) {
+        this.showToast(e.message, 'error');
+      }
+      await this.loadServerTab();
+    },
+    openAccountModal(mode, a) {
+      if (!this.serverPrivileges.length) this.loadServerTab();
+      this.accountModal = {
+        open: true, mode, user: a ? a.user : '', host: a ? a.host : '%', password: '',
+        db: this.exploreDatabase || '*', table: '*', privileges: mode === 'grant' ? ['SELECT'] : [], sql: '', error: '', saving: false
+      };
+      this.previewAccount();
+    },
+    accountRequest(preview) {
+      const m = this.accountModal;
+      const base = this.serverBase();
+      const who = { user: m.user, host: m.host, preview };
+      if (m.mode === 'create') return ['POST', `${base}/accounts`, { ...who, password: m.password }];
+      if (m.mode === 'password') return ['PUT', `${base}/accounts/password`, { ...who, password: m.password }];
+      if (m.mode === 'drop') return ['DELETE', `${base}/accounts`, who];
+      return ['POST', `${base}/grants`, { ...who, action: m.mode, privileges: m.privileges, db: m.db, table: m.db === '*' ? '*' : (m.table || '*') }];
+    },
+    async previewAccount() {
+      const m = this.accountModal;
+      try { m.sql = (await this.apiJson(...this.accountRequest(true))).sql; m.error = ''; } catch (e) { m.sql = ''; m.error = m.mode === 'create' && !m.user ? '' : e.message; }
+    },
+    async saveAccount() {
+      const m = this.accountModal;
+      m.saving = true; m.error = '';
+      try {
+        await this.apiJson(...this.accountRequest(false));
+        m.open = false;
+        this.showToast({ create: 'User created', password: 'Password changed', grant: 'Privileges granted', revoke: 'Privileges revoked', drop: 'User dropped' }[m.mode]);
+        await this.loadServerTab();
+      } catch (e) {
+        m.error = e.message;
+      } finally {
+        m.saving = false;
+      }
+    },
+
     openExportModal() {
       this.exportModal = {
         open: true, format: 'sql.gz', structure: 'drop-create', data: true,
