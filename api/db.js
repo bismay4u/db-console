@@ -373,6 +373,7 @@ async function testConnection(conn) {
 }
 
 module.exports = {
+  bulkUpdate,
   getPool,
   dropPool,
   closeAllPools,
@@ -839,6 +840,93 @@ async function updateRow(key, database, table, where, changes) {
     params
   );
   return { affectedRows: result.affectedRows };
+}
+
+// ---- Bulk edit ----
+// changes: { column: { mode, value, fn, arg, find, replace } }, where mode is
+//   value    set to value (same encodings as a row edit: __hex, __base64, JSON)
+//   null     set to NULL
+//   default  set to the column's DEFAULT
+//   fn       one of VALUE_FUNCTIONS (fn, arg)
+//   add      add a number (negative to subtract)
+//   replace  replace text find → replace inside the value
+//   prepend / append  add text before / after the value
+// Target either the selected rows (rows: [primary-key objects], at most
+// BULK_MAX_ROWS) or every row matching the filters (all: true, filters).
+const BULK_MAX_ROWS = 1000;
+
+function bulkSet(column, change, params) {
+  const c = esc(column);
+  const mode = change && change.mode;
+  switch (mode) {
+    case 'value': { const x = valueSql(change.value); params.push(...x.params); return `${c} = ${x.sql}`; }
+    case 'null': return `${c} = NULL`;
+    case 'default': return `${c} = DEFAULT`;
+    case 'fn': { const x = valueSql({ __fn: change.fn, arg: change.arg }); params.push(...x.params); return `${c} = ${x.sql}`; }
+    case 'add': {
+      const n = Number(change.value);
+      if (change.value === '' || change.value === null || !Number.isFinite(n)) throw new Error(`Enter a number to add to ${column}`);
+      params.push(n); return `${c} = ${c} + ?`;
+    }
+    case 'replace':
+      if (!change.find) throw new Error(`Enter the text to find in ${column}`);
+      params.push(String(change.find), String(change.replace ?? '')); return `${c} = REPLACE(${c}, ?, ?)`;
+    case 'prepend': params.push(String(change.value ?? '')); return `${c} = CONCAT(?, ${c})`;
+    case 'append': params.push(String(change.value ?? '')); return `${c} = CONCAT(${c}, ?)`;
+    default: throw new Error(`Unknown change for ${column}: ${mode}`);
+  }
+}
+
+async function bulkUpdate(key, database, table, { rows, all, filters, changes, preview } = {}) {
+  const { columns, primaryKey } = await getTableColumns(key, database, table);
+  const names = columns.map((c) => c.name);
+  const entries = Object.entries(changes || {});
+  if (!entries.length) throw new Error('Choose at least one column to change');
+  entries.forEach(([col]) => { if (!names.includes(col)) throw new Error(`Unknown column: ${col}`); });
+
+  const setParams = [];
+  const nullable = await blankToNullColumns(key, database, table);
+  const setClause = entries.map(([col, ch]) => {
+    const change = ch && ch.mode === 'value' && ch.value === '' && nullable.has(col) ? { mode: 'null' } : ch;
+    return bulkSet(col, change, setParams);
+  }).join(', ');
+
+  let where; let whereParams = [];
+  if (all) {
+    ({ where, params: whereParams } = buildWhere(filters, names));
+  } else {
+    if (!Array.isArray(rows) || !rows.length) throw new Error('Select at least one row');
+    if (rows.length > BULK_MAX_ROWS) throw new Error(`Select at most ${BULK_MAX_ROWS} rows, or edit all rows matching the filters`);
+    if (!primaryKey.length) throw new Error('This table has no primary key, so rows cannot be picked one by one');
+    const conds = rows.map((r) => {
+      if (!r || primaryKey.some((k) => r[k] === undefined || r[k] === null)) throw new Error('Missing row identifier (no primary key values supplied)');
+      const pk = Object.fromEntries(primaryKey.map((k) => [k, r[k]]));
+      return `(${assignments(pk, whereParams, ' AND ')})`;
+    });
+    where = `WHERE ${conds.join(' OR ')}`;
+  }
+
+  const target = `${esc(database)}.${esc(table)}`;
+  const [[{ cnt }]] = await getPool(key).query(`SELECT COUNT(*) AS cnt FROM ${target} ${where}`, whereParams);
+  const sqlText = `UPDATE ${target} SET ${setClause} ${where}`.trim();
+  const params = [...setParams, ...whereParams];
+  const shown = mysqlUtil.format(sqlText, params);
+  const sql = shown.length > 4000 ? `${shown.slice(0, 4000)} …` : shown;
+  if (preview) return { sql, matched: Number(cnt) };
+
+  const conn = await getPool(key).getConnection();
+  try {
+    await conn.beginTransaction();
+    const [result] = await conn.query(sqlText, params);
+    await conn.commit();
+    return { sql, matched: Number(cnt), affectedRows: result.affectedRows, changedRows: result.changedRows };
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    err.sql = sql;
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 async function deleteRow(key, database, table, where) {

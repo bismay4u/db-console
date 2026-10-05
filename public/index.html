@@ -1100,7 +1100,11 @@ Separate multiple statements with ; — highlight text to run just that part."
                         </div>
                       </div>
                       <button class="btn btn-link btn-sm text-decoration-none" x-show="exploreFilters.length || exploreSearch" @click="clearExploreFilters()">Clear all</button>
-                      <button class="btn btn-sm btn-outline-danger ms-auto" x-show="exploreSelected.length" @click="deleteSelectedRows()">
+                      <button class="rw-only btn btn-sm btn-outline-soft ms-auto" x-show="!exploreIsView() && exploreRows.length" @click="openBulkEdit()"
+                              :title="exploreSelected.length ? 'Change a column in the selected rows' : 'Change a column in every row matching the filters'">
+                        <i class="bi bi-pencil-square me-1"></i><span x-text="exploreSelected.length ? 'Edit selected (' + exploreSelected.length + ')' : 'Bulk edit…'"></span>
+                      </button>
+                      <button class="btn btn-sm btn-outline-danger" x-show="exploreSelected.length" @click="deleteSelectedRows()">
                         <i class="bi bi-trash me-1"></i>Delete selected (<span x-text="exploreSelected.length"></span>)
                       </button>
                     </div>
@@ -2570,6 +2574,74 @@ Separate multiple statements with ; — highlight text to run just that part."
 </div>
 
 <!-- ===== Explore: Table Action Modal (copy / move / truncate / drop / maintenance) ===== -->
+<!-- Bulk edit rows -->
+<div class="modal-backdrop-custom" x-show="bulkEdit.open" x-cloak @click.self="!bulkEdit.saving && (bulkEdit.open = false)">
+  <div class="modal-panel modal-panel-xl">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold">Bulk edit <span x-text="exploreTable"></span></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="bulkEdit.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom" @input.debounce.400ms="bulkPreview()" @change="bulkPreview()">
+      <div class="alert alert-danger py-2 small" x-show="bulkEdit.error" x-text="bulkEdit.error"></div>
+      <div class="section-title mb-1">Rows</div>
+      <div class="d-flex flex-column gap-1 mb-3">
+        <div class="form-check" x-show="bulkEdit.selectedCount">
+          <input class="form-check-input" type="radio" id="bulkScopeSel" value="selected" x-model="bulkEdit.scope">
+          <label class="form-check-label small" for="bulkScopeSel" x-text="'The ' + bulkEdit.selectedCount + ' selected row(s)'"></label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input" type="radio" id="bulkScopeAll" value="all" x-model="bulkEdit.scope">
+          <label class="form-check-label small" for="bulkScopeAll"
+                 x-text="exploreAppliedFilters.length ? 'All ' + Number(exploreTotal).toLocaleString() + ' row(s) matching the current search and filters' : 'All ' + Number(exploreTotal).toLocaleString() + ' row(s) in the table (no filter applied)'"></label>
+        </div>
+      </div>
+      <div class="section-title mb-1">Changes</div>
+      <template x-for="(ch, i) in bulkEdit.changes" :key="ch.id">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+          <select class="form-select form-select-sm" style="width:auto; min-width:160px" x-model="ch.col" @change="ch.mode = bulkModes(ch.col)[0].value">
+            <template x-for="c in exploreColumns" :key="c.name"><option :value="c.name" x-text="c.name + ' · ' + c.type" :selected="ch.col === c.name"></option></template>
+          </select>
+          <select class="form-select form-select-sm" style="width:auto" x-model="ch.mode">
+            <template x-for="m in bulkModes(ch.col)" :key="m.value"><option :value="m.value" x-text="m.label" :selected="ch.mode === m.value"></option></template>
+          </select>
+          <input type="text" class="form-control form-control-sm" style="max-width:240px" x-show="['value', 'add', 'prepend', 'append'].includes(ch.mode)"
+                 x-model="ch.value" :placeholder="ch.mode === 'add' ? 'e.g. 10 or -2.5' : 'value'">
+          <template x-if="ch.mode === 'fn'">
+            <div class="d-flex gap-2">
+              <select class="form-select form-select-sm" style="width:auto" x-model="ch.fn">
+                <template x-for="fn in valueFunctions" :key="fn"><option :value="fn" x-text="fn + (functionTakesArg(fn) ? '(value)' : '()')" :selected="ch.fn === fn"></option></template>
+              </select>
+              <input type="text" class="form-control form-control-sm" style="max-width:180px" x-show="functionTakesArg(ch.fn)" x-model="ch.arg" placeholder="value">
+            </div>
+          </template>
+          <template x-if="ch.mode === 'replace'">
+            <div class="d-flex gap-2 align-items-center">
+              <input type="text" class="form-control form-control-sm" style="max-width:160px" x-model="ch.find" placeholder="find">
+              <i class="bi bi-arrow-right text-muted"></i>
+              <input type="text" class="form-control form-control-sm" style="max-width:160px" x-model="ch.replace" placeholder="replace with">
+            </div>
+          </template>
+          <button class="btn btn-sm btn-ghost-danger" title="Remove" x-show="bulkEdit.changes.length > 1" @click="bulkEdit.changes.splice(i, 1); bulkPreview()"><i class="bi bi-x-lg"></i></button>
+        </div>
+      </template>
+      <button class="btn btn-link btn-sm text-decoration-none px-0" @click="addBulkChange(); bulkPreview()"><i class="bi bi-plus-lg me-1"></i>Change another column</button>
+      <div class="mt-3" x-show="bulkEdit.sql">
+        <div class="text-muted-sm mb-1">
+          SQL that will run · <strong x-text="Number(bulkEdit.matched).toLocaleString() + ' row(s) match'"></strong>, in one transaction:
+        </div>
+        <pre class="definition-block mb-0" style="white-space:pre-wrap; max-height:180px" x-text="bulkEdit.sql"></pre>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="bulkEdit.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="applyBulkEdit()" :disabled="!!(bulkEdit.saving || !bulkEdit.sql || !bulkEdit.matched)">
+        <span x-show="bulkEdit.saving" class="spinner-border spinner-border-sm me-1"></span>
+        <span x-text="'Update ' + Number(bulkEdit.matched || 0).toLocaleString() + ' row(s)'"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop-custom" x-show="tableActionModal.open" x-cloak @click.self="!tableActionModal.saving && (tableActionModal.open = false)">
   <div class="modal-panel">
     <div class="modal-header-custom">
@@ -2905,6 +2977,7 @@ function app() {
     exploreHiddenCols: [],        // columns hidden with the Columns menu (remembered per table)
     inlineEdit: null,             // { ridx, col, row, value, saving } while a cell is edited in place
     cellViewer: { open: false, col: '', value: '' },
+    bulkEdit: { open: false, scope: 'selected', selectedCount: 0, changes: [], sql: '', matched: 0, error: '', saving: false, seq: 0 },
     valueFunctions: ['NOW', 'CURDATE', 'CURTIME', 'UTC_TIMESTAMP', 'UNIX_TIMESTAMP', 'UUID', 'MD5', 'SHA1', 'SHA2', 'UPPER', 'LOWER', 'TRIM'],
     exploreSearch: '',            // free-text search across all columns
     exploreFilters: [],           // [{ id, col, op, value }]
@@ -3946,6 +4019,78 @@ function app() {
     },
     toggleSelectAllRows(checked) {
       this.exploreSelected = checked ? this.exploreRows.map((r) => this.rowKey(r)) : [];
+    },
+    // ---- Bulk edit ----
+    bulkModes(col) {
+      const c = this.exploreColumns.find((x) => x.name === col) || {};
+      const t = String(c.type || '').toLowerCase();
+      const numeric = /int|decimal|numeric|float|double|real|bit|year/.test(t);
+      const text = /char|text|enum|set/.test(t) && !/binary|blob/.test(t);
+      const modes = [{ value: 'value', label: 'Set to' }];
+      if (c.nullable) modes.push({ value: 'null', label: 'Set to NULL' });
+      if (numeric) modes.push({ value: 'add', label: 'Add (+/−)' });
+      if (text) modes.push({ value: 'replace', label: 'Find & replace' }, { value: 'prepend', label: 'Prepend text' }, { value: 'append', label: 'Append text' });
+      modes.push({ value: 'fn', label: 'Function' }, { value: 'default', label: 'Set to DEFAULT' });
+      return modes;
+    },
+    addBulkChange() {
+      const used = this.bulkEdit.changes.map((c) => c.col);
+      const pk = this.explorePrimaryKey || [];
+      const col = (this.exploreColumns.find((c) => !used.includes(c.name) && !pk.includes(c.name)) || this.exploreColumns[0] || {}).name;
+      this.bulkEdit.changes.push({ id: Date.now() + Math.random(), col, mode: 'value', value: '', fn: 'NOW', arg: '', find: '', replace: '' });
+    },
+    openBulkEdit() {
+      const selected = this.exploreRows.filter((r) => this.isRowSelected(r)).length;
+      this.bulkEdit = { open: true, scope: selected ? 'selected' : 'all', selectedCount: selected, changes: [], sql: '', matched: 0, error: '', saving: false, seq: 0 };
+      this.addBulkChange();
+      this.bulkPreview();
+    },
+    bulkBody(preview) {
+      const changes = {};
+      for (const ch of this.bulkEdit.changes) {
+        if (!ch.col) continue;
+        changes[ch.col] = { mode: ch.mode, value: ch.value, fn: ch.fn, arg: ch.arg, find: ch.find, replace: ch.replace };
+      }
+      const body = { changes, preview };
+      if (this.bulkEdit.scope === 'all') { body.all = true; body.filters = this.exploreAppliedFilters; }
+      else body.rows = this.exploreRows.filter((r) => this.isRowSelected(r)).map((r) => this.rowWhere(r));
+      return body;
+    },
+    async bulkPreview() {
+      if (!this.bulkEdit.open) return;
+      const seq = ++this.bulkEdit.seq;
+      try {
+        const res = await fetch(`${this.tableBase()}/bulk-update`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.bulkBody(true)) });
+        const data = await res.json();
+        if (seq !== this.bulkEdit.seq) return;
+        if (!res.ok) { this.bulkEdit.error = data.error || 'Invalid change'; this.bulkEdit.sql = ''; this.bulkEdit.matched = 0; return; }
+        this.bulkEdit.error = ''; this.bulkEdit.sql = data.sql; this.bulkEdit.matched = data.matched;
+      } catch (e) {
+        if (seq === this.bulkEdit.seq) this.bulkEdit.error = 'Network error, please try again';
+      }
+    },
+    async applyBulkEdit() {
+      const b = this.bulkEdit;
+      if (b.scope === 'all') {
+        const ok = await this.askConfirm(`Update ${Number(b.matched).toLocaleString()} row(s)?`,
+          this.exploreAppliedFilters.length ? 'Every row matching the current search and filters will be changed.' : 'No filter is applied: every row in the table will be changed.',
+          { confirmLabel: 'Update', danger: true });
+        if (!ok) return;
+      }
+      b.saving = true; b.error = '';
+      try {
+        const res = await fetch(`${this.tableBase()}/bulk-update`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.bulkBody(false)) });
+        const data = await res.json();
+        if (!res.ok) { b.error = data.error || 'Update failed — nothing was changed'; return; }
+        b.open = false;
+        const changed = data.changedRows ?? data.affectedRows;
+        this.showToast(`${changed} row(s) updated` + (changed < data.matched ? ` (${data.matched - changed} already had that value)` : ''));
+        await this.loadExploreRows();
+      } catch (e) {
+        b.error = 'Network error, please try again';
+      } finally {
+        b.saving = false;
+      }
     },
     async deleteSelectedRows() {
       const rows = this.exploreRows.filter((r) => this.isRowSelected(r));

@@ -68,6 +68,7 @@ When a database is open, the left menu slides away and is replaced by a full-hei
 * Double-click a cell to edit it in place; long, JSON and binary values open a cell viewer, and binary values can be downloaded
 * Add, edit, clone and delete rows from the row's left-hand actions; delete always asks for confirmation. The row form knows each column's type, can set `NULL`, and can use a function (`NOW()`, `UUID()`, `MD5()`…) instead of a value
 * Select rows and delete them in bulk
+* **Bulk edit**: change one or more columns in the selected rows, or in every row matching the current search and filters — set a value, `NULL` or `DEFAULT`, use a function, add a number, find & replace, prepend or append text. The `UPDATE` is shown with the number of matching rows before it runs, and runs in one transaction
 * Primary-key aware editing; tables without a primary key are read-only
 * **Structure** tab: columns, foreign keys and the table DDL
 * Create and alter tables: add, change, rename, reorder and drop columns, defaults (value, `NULL`, expression), auto-increment, engine, collation, comment and auto-increment value
@@ -648,7 +649,10 @@ Modify rows:
 POST   /api/explore/:key/:database/:table/rows
 PUT    /api/explore/:key/:database/:table/rows
 DELETE /api/explore/:key/:database/:table/rows
+POST   /api/explore/:key/:database/:table/bulk-update
 ```
+
+Bulk update body: `{ "rows": [{ "id": 1 }, ...] }` (at most 1,000, by primary key) or `{ "all": true, "filters": [...] }`, plus `"changes": { "<column>": { "mode": "value|null|default|fn|add|replace|prepend|append", "value": ..., "fn": "NOW", "arg": ..., "find": ..., "replace": ... } }` and optional `"preview": true`, which returns the SQL and the number of matching rows without running it.
 
 Indexes:
 

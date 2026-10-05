@@ -713,6 +713,20 @@ app.put('/api/explore/:key/:database/:table/rows', requireAuth, (req, res) => {
   });
 });
 
+// Bulk edit: { rows: [pk objects] | all: true + filters, changes, preview }.
+app.post('/api/explore/:key/:database/:table/bulk-update', requireAuth, async (req, res) => {
+  const body = req.body || {};
+  const start = Date.now();
+  try {
+    const result = await db.bulkUpdate(req.params.key, req.params.database, req.params.table, body);
+    if (!body.preview) logAction(req, { source: 'explore', sql: result.sql, type: 'UPDATE', ok: true, durationMs: Date.now() - start, affectedRows: result.affectedRows });
+    res.json(result);
+  } catch (err) {
+    if (!body.preview) logAction(req, { source: 'explore', sql: err.sql || `UPDATE ${qualified(req)} (bulk edit)`, type: 'UPDATE', ok: false, error: err.message, durationMs: Date.now() - start });
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.post('/api/explore/:key/:database/:table/rows', requireAuth, (req, res) => {
   const { values } = req.body || {};
   return loggedRowAction(req, res, {
