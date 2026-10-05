@@ -11,6 +11,7 @@ const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
 const importer = require('./api/importer');
+const perms = require('./api/permissions');
 const FileSessionStore = require('./api/sessionstore');
 const { DATA_DIR, readJson, writeJson, withLock } = require('./api/datadir');
 
@@ -102,8 +103,16 @@ function canManage(user, conn) {
   return isAdmin(user) || conn.owner === user.username;
 }
 
-function canWrite(user, conn) {
-  return canManage(user, conn) || !conn.readOnlyShare;
+// What the user may change through this connection: everything for the
+// owner and admins, otherwise what it was shared with them (see permissions.js).
+function permissionsOf(user, conn) {
+  return canManage(user, conn) ? perms.ALL.slice() : perms.sharedPermissions(conn, user.username);
+}
+
+// The Set handed to the Query Runner; null means no restrictions.
+function restrictionsFor(user, conn) {
+  const p = permissionsOf(user, conn);
+  return p.length === perms.ALL.length ? null : new Set(p);
 }
 
 function canUse(user, conn) {
@@ -120,8 +129,9 @@ function connView(conn, user) {
     hasPassword: Boolean(password),
     canManage: manage,
     sharedWith: manage ? shared : undefined,
-    readOnlyShare: Boolean(conn.readOnlyShare),
-    canWrite: canWrite(user, conn),
+    permissions: permissionsOf(user, conn),
+    canWrite: permissionsOf(user, conn).length > 0,
+    sharePermissions: manage ? (conn.sharePermissions || undefined) : undefined,
     isShared: shared.length > 0,
     sharedWithMe: conn.owner !== user.username && (shared.includes('*') || shared.includes(user.username))
   };
@@ -153,12 +163,20 @@ app.param('key', (req, res, next, key) => {
 });
 
 // Every Explore request that is not a GET changes something (rows, schema,
-// objects, imports, restores), so a read-only share stops them all here.
+// objects, imports, restores); each needs the matching permission.
 app.use('/api/explore/:key', (req, res, next) => {
-  if (req.method === 'GET' || !req.user) return next();
+  if (req.method === 'GET' || req.method === 'HEAD' || !req.user) return next();
   const conn = store.getConnection(req.params.key);
-  if (conn && canUse(req.user, conn) && !canWrite(req.user, conn)) {
-    return res.status(403).json({ error: 'This connection is shared with you read-only' });
+  if (!conn || !canUse(req.user, conn)) return next(); // the :key handler answers
+  const segments = req.path.split('/').filter(Boolean).map(decodeURIComponent);
+  const needs = perms.exploreRequirement(req.method, segments, req.body || {}, req.query || {});
+  const has = new Set(permissionsOf(req.user, conn));
+  const missing = needs.filter((p) => !has.has(p));
+  if (missing.length) {
+    const what = missing.map((p) => perms.LABELS[p]).join(', ');
+    return res.status(403).json({
+      error: has.size ? `You don't have permission for this on this connection (needs: ${what})` : 'This connection is shared with you read-only'
+    });
   }
   return next();
 });
@@ -404,9 +422,9 @@ app.put('/api/connections/:key', requireAuth, requireManage, (req, res) => {
 // Replace who a connection is shared with: { sharedWith: ['alice', 'bob'] }
 // or { sharedWith: ['*'] } for every user.
 app.put('/api/connections/:key/sharing', requireAuth, requireManage, (req, res) => {
-  const { sharedWith, readOnly } = req.body || {};
+  const { sharedWith, permissions, readOnly } = req.body || {};
   if (!Array.isArray(sharedWith)) return res.status(400).json({ error: 'sharedWith must be an array' });
-  const updated = store.setConnectionSharing(req.params.key, sharedWith, readOnly === undefined ? undefined : Boolean(readOnly));
+  const updated = store.setConnectionSharing(req.params.key, sharedWith, permissions, readOnly === undefined ? undefined : Boolean(readOnly));
   if (!updated) return res.status(404).json({ error: 'Connection not found' });
   res.json(connView(updated, req.user));
 });
@@ -425,6 +443,11 @@ app.post('/api/connections/:key/test', requireAuth, async (req, res) => {
 });
 
 // Test connection settings from an unsaved form (label optional)
+// The permissions a connection can be shared with, and the presets.
+app.get('/api/permissions', requireAuth, (req, res) => {
+  res.json({ permissions: perms.PERMISSIONS, presets: perms.PRESETS });
+});
+
 app.post('/api/connections/test', requireAuth, async (req, res) => {
   const { host, port, user, password, database, passwordFrom } = req.body || {};
   if (!host || !user || !database) {
@@ -942,7 +965,7 @@ app.post('/api/query', requireAuth, async (req, res) => {
       let result;
       try {
         const { ok, statements, currentDatabase } = await db.runQuery(key, sql, {
-          database: startDb(key, i), explain: Boolean(explain), readOnly: !canWrite(req.user, conns[i])
+          database: startDb(key, i), explain: Boolean(explain), allowed: restrictionsFor(req.user, conns[i])
         });
         result = { key, ok, statements, currentDatabase };
       } catch (err) {

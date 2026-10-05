@@ -310,6 +310,9 @@
 
   /* ---- Confirm dialog (reuses modal-backdrop-custom) ---- */
   .confirm-panel{ background:#fff; border-radius:14px; width:100%; max-width:360px; box-shadow:0 20px 60px rgba(20,20,43,.25); padding:1.25rem; }
+  /* Share dialog: per-user permissions */
+  .share-user-perms{ margin:.15rem 0 .4rem 1.9rem; padding:.45rem .6rem; background:var(--bg); border-radius:8px; }
+  .share-perm-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:.15rem .75rem; margin-top:.4rem; }
   /* Export: what-to-export cards */
   .export-what{ display:grid; grid-template-columns:repeat(3, 1fr); gap:.5rem; }
   .export-card{ display:flex; flex-direction:column; gap:.15rem; padding:.6rem .7rem; border:1px solid var(--border); border-radius:10px; cursor:pointer; }
@@ -318,8 +321,12 @@
   .export-card.active .bi{ color:var(--accent); }
   .export-card.disabled{ opacity:.45; cursor:not-allowed; }
   @media (max-width: 576px){ .export-what{ grid-template-columns:1fr; } }
-  /* Read-only share: hide everything that would change the database */
-  .explore-ro .rw-only{ display:none!important; }
+  /* Shared with limited permissions: hide what the user can't do (see permClasses) */
+  .no-insert .perm-insert, .no-update .perm-update, .no-delete .perm-delete, .no-create .perm-create, .no-alter .perm-alter,
+  .no-index .perm-index, .no-drop .perm-drop, .no-truncate .perm-truncate, .no-restore .perm-restore{ display:none!important; }
+  /* shown while at least one of these is allowed */
+  .no-alter.no-create.no-truncate.no-drop .perm-ddl{ display:none!important; }
+  .no-update.no-delete .perm-rows{ display:none!important; }
   /* Schema diagram */
   .diagram-wrap{ overflow:auto; height:calc(100vh - 210px); min-height:360px; background:
       radial-gradient(circle, var(--border) 1px, transparent 1px) 0 0/20px 20px; }
@@ -739,7 +746,7 @@ Separate multiple statements with ; — highlight text to run just that part."
 
     <!-- ================= EXPLORE ================= -->
     <template x-if="activeTab === 'explore'">
-      <div :class="!exploreCanWrite() && 'explore-ro'">
+      <div :class="permClasses()">
         <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-center gap-3">
           <div class="d-flex align-items-center gap-2">
             <label class="text-muted-sm mb-0">Connection</label>
@@ -758,7 +765,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <option :value="d" x-text="d"></option>
               </template>
             </select>
-            <button class="rw-only btn btn-outline-soft btn-sm" title="Create a database" @click="openDbModal('create')"><i class="bi bi-plus-lg"></i></button>
+            <button class="perm-create btn btn-outline-soft btn-sm" title="Create a database" @click="openDbModal('create')"><i class="bi bi-plus-lg"></i></button>
           </div>
           <span class="text-muted-sm" x-show="exploreLoadingDatabases">
             <span class="spinner-border spinner-border-sm me-1"></span>Loading databases…
@@ -778,7 +785,7 @@ Separate multiple statements with ; — highlight text to run just that part."
             <button class="btn btn-outline-soft btn-sm" @click="openExportModal()">
               <i class="bi bi-cloud-arrow-down me-1"></i>Export
             </button>
-            <button class="rw-only btn btn-outline-soft btn-sm" @click="openRestoreModal">
+            <button class="perm-restore btn btn-outline-soft btn-sm" @click="openRestoreModal">
               <i class="bi bi-cloud-arrow-up me-1"></i>Restore
             </button>
           </div>
@@ -895,8 +902,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                     </div>
                   </div>
                   <div class="d-flex align-items-center gap-2">
-                    <button class="rw-only btn btn-accent btn-sm" @click="openTableEditor('create')"><i class="bi bi-plus-lg me-1"></i>Create table</button>
-                    <div class="rw-only dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
+                    <button class="perm-create btn btn-accent btn-sm" @click="openTableEditor('create')"><i class="bi bi-plus-lg me-1"></i>Create table</button>
+                    <div class="perm-create dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
                       <button class="btn btn-outline-soft btn-sm" @click="open = !open"><i class="bi bi-plus-lg me-1"></i>New <i class="bi bi-chevron-down ms-1" style="font-size:.7rem"></i></button>
                       <div class="dropdown-lite-menu" x-show="open" x-cloak @click="open = false">
                         <a @click="openObjectEditor('view')"><i class="bi bi-eye"></i> View</a>
@@ -906,8 +913,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                         <a @click="openObjectEditor('event')"><i class="bi bi-calendar-event"></i> Event</a>
                       </div>
                     </div>
-                    <button class="rw-only btn btn-outline-soft btn-sm" @click="openDbModal('alter')"><i class="bi bi-pencil me-1"></i>Alter database</button>
-                    <button class="rw-only btn btn-sm btn-outline-danger" @click="dropDatabase()"><i class="bi bi-trash me-1"></i>Drop</button>
+                    <button class="perm-alter btn btn-outline-soft btn-sm" @click="openDbModal('alter')"><i class="bi bi-pencil me-1"></i>Alter database</button>
+                    <button class="perm-drop btn btn-sm btn-outline-danger" @click="dropDatabase()"><i class="bi bi-trash me-1"></i>Drop</button>
                   </div>
                 </div>
 
@@ -915,17 +922,17 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <template x-if="overviewTab === 'tables'">
                   <div class="card-surface">
                     <div class="d-flex flex-wrap align-items-center gap-2 px-2 py-2" style="border-bottom:1px solid var(--border)">
-                      <span class="rw-only text-muted-sm" x-text="overviewSelected.length ? overviewSelected.length + ' selected' : 'Select tables for bulk actions'"></span>
-                      <span class="text-muted-sm" x-show="!exploreCanWrite()"><i class="bi bi-lock me-1"></i>This connection is shared with you read-only</span>
+                      <span class="perm-ddl text-muted-sm" x-text="overviewSelected.length ? overviewSelected.length + ' selected' : 'Select tables for bulk actions'"></span>
+                      <span class="text-muted-sm" x-show="exploreReadOnly()"><i class="bi bi-lock me-1"></i>This connection is shared with you read-only</span>
                       <template x-if="overviewSelected.length">
-                        <div class="rw-only d-flex flex-wrap gap-1">
+                        <div class="d-flex flex-wrap gap-1">
                           <template x-for="a in ['optimize', 'analyze', 'check', 'repair']" :key="a">
-                            <button class="btn btn-outline-soft btn-sm text-capitalize" @click="openTableAction(a, overviewSelected)" x-text="a"></button>
+                            <button class="perm-alter btn btn-outline-soft btn-sm text-capitalize" @click="openTableAction(a, overviewSelected)" x-text="a"></button>
                           </template>
-                          <button class="btn btn-outline-soft btn-sm" @click="openTableAction('copy', overviewSelected)"><i class="bi bi-copy me-1"></i>Copy…</button>
-                          <button class="btn btn-outline-soft btn-sm" @click="openTableAction('move', overviewSelected)"><i class="bi bi-box-arrow-right me-1"></i>Move…</button>
-                          <button class="btn btn-sm btn-outline-danger" @click="openTableAction('truncate', overviewSelected)">Truncate</button>
-                          <button class="btn btn-sm btn-outline-danger" @click="openTableAction('drop', overviewSelected)"><i class="bi bi-trash me-1"></i>Drop</button>
+                          <button class="perm-create perm-insert btn btn-outline-soft btn-sm" @click="openTableAction('copy', overviewSelected)"><i class="bi bi-copy me-1"></i>Copy…</button>
+                          <button class="perm-create perm-drop btn btn-outline-soft btn-sm" @click="openTableAction('move', overviewSelected)"><i class="bi bi-box-arrow-right me-1"></i>Move…</button>
+                          <button class="perm-truncate btn btn-sm btn-outline-danger" @click="openTableAction('truncate', overviewSelected)">Truncate</button>
+                          <button class="perm-drop btn btn-sm btn-outline-danger" @click="openTableAction('drop', overviewSelected)"><i class="bi bi-trash me-1"></i>Drop</button>
                         </div>
                       </template>
                     </div>
@@ -933,7 +940,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <table class="table table-modern mb-0">
                         <thead>
                           <tr>
-                            <th class="rw-only" style="width:1%"><input type="checkbox" class="form-check-input" :checked="exploreTables.length && overviewSelected.length === exploreTables.length"
+                            <th class="perm-ddl" style="width:1%"><input type="checkbox" class="form-check-input" :checked="exploreTables.length && overviewSelected.length === exploreTables.length"
                                      @change="overviewSelected = $event.target.checked ? exploreTables.map(t => t.name) : []"></th>
                             <th>Table</th><th>Engine</th><th class="text-end">Rows</th><th class="text-end">Data</th><th class="text-end">Index</th>
                             <th class="text-end">Auto inc.</th><th>Collation</th><th>Comment</th>
@@ -942,7 +949,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                         <tbody>
                           <template x-for="t in exploreTables" :key="t.name">
                             <tr :class="overviewSelected.includes(t.name) && 'row-selected'">
-                              <td class="rw-only"><input type="checkbox" class="form-check-input" :value="t.name" x-model="overviewSelected"></td>
+                              <td class="perm-ddl"><input type="checkbox" class="form-check-input" :value="t.name" x-model="overviewSelected"></td>
                               <td><a href="#" class="fw-medium text-decoration-none" @click.prevent="selectExploreTable(t.name)" x-text="t.name"></a></td>
                               <td class="text-muted-sm" x-text="/VIEW/i.test(t.type) ? 'view' : (t.engine || '')"></td>
                               <td class="text-end" x-text="/VIEW/i.test(t.type) ? '' : '~' + Number(t.approxRows || 0).toLocaleString()"></td>
@@ -959,7 +966,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                         </tbody>
                         <tfoot x-show="exploreTables.length">
                           <tr class="text-muted-sm">
-                            <td class="rw-only"></td><td x-text="exploreTables.length + ' table(s)'"></td><td></td>
+                            <td class="perm-ddl"></td><td x-text="exploreTables.length + ' table(s)'"></td><td></td>
                             <td class="text-end" x-text="'~' + exploreTables.reduce((a, t) => a + Number(t.approxRows || 0), 0).toLocaleString()"></td>
                             <td class="text-end" x-text="formatBytes(exploreTables.reduce((a, t) => a + Number(t.dataLength || 0), 0))"></td>
                             <td class="text-end" x-text="formatBytes(exploreTables.reduce((a, t) => a + Number(t.indexLength || 0), 0))"></td>
@@ -1050,15 +1057,15 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <i class="bi" :class="exploreIsView() ? 'bi-eye' : 'bi-table'" style="color:var(--accent)"></i>
                     <strong style="font-size:.9rem" x-text="exploreTable"></strong>
                     <span class="use-db-chip" x-show="exploreIsView()">VIEW</span>
-                    <div class="rw-only dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
+                    <div class="perm-ddl dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
                       <button class="btn btn-sm btn-outline-soft" style="padding:.05rem .4rem" title="Table actions" @click="open = !open"><i class="bi bi-three-dots"></i></button>
                       <div class="dropdown-lite-menu" x-show="open" x-cloak @click="open = false">
-                        <a x-show="!exploreIsView()" @click="openTableEditor('alter')"><i class="bi bi-pencil"></i> Alter table…</a>
-                        <a x-show="exploreIsView()" @click="openObjectEditor('view', exploreTable)"><i class="bi bi-pencil"></i> Edit view…</a>
-                        <a x-show="!exploreIsView()" @click="openTableAction('copy', [exploreTable])"><i class="bi bi-copy"></i> Copy…</a>
-                        <a x-show="!exploreIsView()" @click="openTableAction('move', [exploreTable])"><i class="bi bi-box-arrow-right"></i> Move…</a>
-                        <a x-show="!exploreIsView()" class="text-danger" @click="openTableAction('truncate', [exploreTable])"><i class="bi bi-eraser"></i> Truncate…</a>
-                        <a class="text-danger" @click="openTableAction('drop', [exploreTable])"><i class="bi bi-trash"></i> Drop…</a>
+                        <a class="perm-alter" x-show="!exploreIsView()" @click="openTableEditor('alter')"><i class="bi bi-pencil"></i> Alter table…</a>
+                        <a class="perm-alter" x-show="exploreIsView()" @click="openObjectEditor('view', exploreTable)"><i class="bi bi-pencil"></i> Edit view…</a>
+                        <a class="perm-create perm-insert" x-show="!exploreIsView()" @click="openTableAction('copy', [exploreTable])"><i class="bi bi-copy"></i> Copy…</a>
+                        <a class="perm-create perm-drop" x-show="!exploreIsView()" @click="openTableAction('move', [exploreTable])"><i class="bi bi-box-arrow-right"></i> Move…</a>
+                        <a x-show="!exploreIsView()" class="perm-truncate text-danger" @click="openTableAction('truncate', [exploreTable])"><i class="bi bi-eraser"></i> Truncate…</a>
+                        <a class="perm-drop text-danger" @click="openTableAction('drop', [exploreTable])"><i class="bi bi-trash"></i> Drop…</a>
                       </div>
                     </div>
                   </div>
@@ -1071,13 +1078,13 @@ Separate multiple statements with ; — highlight text to run just that part."
                   </div>
                 </div>
                 <div class="d-flex align-items-center gap-2" x-show="exploreView==='indexes'">
-                  <button class="rw-only btn btn-accent btn-sm" @click="openIndexModal()"><i class="bi bi-plus-lg me-1"></i>Add index</button>
+                  <button class="perm-index btn btn-accent btn-sm" @click="openIndexModal()"><i class="bi bi-plus-lg me-1"></i>Add index</button>
                 </div>
                 <div class="d-flex align-items-center gap-2" x-show="exploreView==='data'">
                   <button class="btn btn-outline-soft btn-sm" @click="loadExploreRows" title="Reload"><i class="bi bi-arrow-clockwise"></i></button>
                   <a class="btn btn-outline-soft btn-sm" :href="tableExportUrl()" target="_blank" :title="exploreFiltersActive() ? 'Exports the rows matching the current search/filters' : 'Exports the whole table'"><i class="bi bi-download me-1"></i>Export CSV</a>
-                  <button class="rw-only btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal"><i class="bi bi-upload me-1"></i>Import CSV</button>
-                  <button class="rw-only btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow()"><i class="bi bi-plus-lg me-1"></i>Add row</button>
+                  <button class="perm-insert btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal"><i class="bi bi-upload me-1"></i>Import CSV</button>
+                  <button class="perm-insert btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow()"><i class="bi bi-plus-lg me-1"></i>Add row</button>
                 </div>
               </div>
 
@@ -1108,11 +1115,11 @@ Separate multiple statements with ; — highlight text to run just that part."
                         </div>
                       </div>
                       <button class="btn btn-link btn-sm text-decoration-none" x-show="exploreFilters.length || exploreSearch" @click="clearExploreFilters()">Clear all</button>
-                      <button class="rw-only btn btn-sm btn-outline-soft ms-auto" x-show="!exploreIsView() && exploreRows.length" @click="openBulkEdit()"
+                      <button class="perm-update btn btn-sm btn-outline-soft ms-auto" x-show="!exploreIsView() && exploreRows.length" @click="openBulkEdit()"
                               :title="exploreSelected.length ? 'Change a column in the selected rows' : 'Change a column in every row matching the filters'">
                         <i class="bi bi-pencil-square me-1"></i><span x-text="exploreSelected.length ? 'Edit selected (' + exploreSelected.length + ')' : 'Bulk edit…'"></span>
                       </button>
-                      <button class="btn btn-sm btn-outline-danger" x-show="exploreSelected.length" @click="deleteSelectedRows()">
+                      <button class="perm-delete btn btn-sm btn-outline-danger" x-show="exploreSelected.length" @click="deleteSelectedRows()">
                         <i class="bi bi-trash me-1"></i>Delete selected (<span x-text="exploreSelected.length"></span>)
                       </button>
                     </div>
@@ -1141,7 +1148,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <table class="table table-modern mb-0">
                       <thead>
                         <tr>
-                          <th class="row-actions" x-show="canEditRows()">
+                          <th class="row-actions perm-rows" x-show="canEditRows()">
                             <input type="checkbox" class="form-check-input" title="Select all rows on this page"
                                    :checked="exploreRows.length && exploreSelected.length === exploreRows.length"
                                    @change="toggleSelectAllRows($event.target.checked)">
@@ -1158,10 +1165,10 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <tbody>
                         <template x-for="(row, ridx) in exploreRows" :key="ridx">
                           <tr :class="isRowSelected(row) && 'row-selected'">
-                            <td class="row-actions" x-show="canEditRows()">
+                            <td class="row-actions perm-rows" x-show="canEditRows()">
                               <input type="checkbox" class="form-check-input" :checked="isRowSelected(row)" @change="toggleRowSelected(row)">
-                              <button class="btn btn-sm btn-outline-soft" title="Edit row" @click="openEditRow(row)"><i class="bi bi-pencil"></i></button>
-                              <button class="btn btn-sm btn-ghost-danger" title="Delete row" @click="deleteExploreRow(row)"><i class="bi bi-trash"></i></button>
+                              <button class="perm-update btn btn-sm btn-outline-soft" title="Edit row" @click="openEditRow(row)"><i class="bi bi-pencil"></i></button>
+                              <button class="perm-delete btn btn-sm btn-ghost-danger" title="Delete row" @click="deleteExploreRow(row)"><i class="bi bi-trash"></i></button>
                             </td>
                             <template x-for="col in visibleColumns()" :key="col">
                               <td :class="row[col] === null && 'cell-null'" @dblclick="startInlineEdit(ridx, row, col)"
@@ -1231,7 +1238,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                         <span x-text="' · data ' + formatBytes(exploreSchema && exploreSchema.info.dataLength) + ', index ' + formatBytes(exploreSchema && exploreSchema.info.indexLength)"></span>
                         <span x-show="exploreSchema && exploreSchema.info.comment" x-text="' · “' + (exploreSchema && exploreSchema.info.comment) + '”'"></span>
                       </div>
-                      <button class="rw-only btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openTableEditor('alter')"><i class="bi bi-pencil me-1"></i>Alter table</button>
+                      <button class="perm-alter btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openTableEditor('alter')"><i class="bi bi-pencil me-1"></i>Alter table</button>
                     </div>
                     <div class="table-responsive">
                       <table class="table table-modern mb-0">
@@ -1261,7 +1268,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <div class="card-surface mb-2" x-show="!exploreIsView()">
                     <div class="d-flex align-items-center justify-content-between px-3 py-2" style="border-bottom:1px solid var(--border)">
                       <div class="section-title mb-0"><i class="bi bi-link-45deg me-1"></i>Foreign keys</div>
-                      <button class="rw-only btn btn-outline-soft btn-sm" @click="openFkModal()"><i class="bi bi-plus-lg me-1"></i>Add foreign key</button>
+                      <button class="perm-alter btn btn-outline-soft btn-sm" @click="openFkModal()"><i class="bi bi-plus-lg me-1"></i>Add foreign key</button>
                     </div>
                     <div class="table-responsive">
                       <table class="table table-modern mb-0">
@@ -1270,8 +1277,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                           <template x-for="fk in (exploreSchema ? exploreSchema.foreignKeys : [])" :key="fk.name">
                             <tr>
                               <td class="text-nowrap">
-                                <button class="rw-only btn btn-sm btn-outline-soft" title="Edit foreign key" @click="openFkModal(fk)"><i class="bi bi-pencil"></i></button>
-                                <button class="rw-only btn btn-sm btn-ghost-danger" title="Drop foreign key" @click="dropFk(fk)"><i class="bi bi-trash"></i></button>
+                                <button class="perm-alter btn btn-sm btn-outline-soft" title="Edit foreign key" @click="openFkModal(fk)"><i class="bi bi-pencil"></i></button>
+                                <button class="perm-alter btn btn-sm btn-ghost-danger" title="Drop foreign key" @click="dropFk(fk)"><i class="bi bi-trash"></i></button>
                               </td>
                               <td class="fw-medium" x-text="fk.name"></td>
                               <td x-text="fk.columns.join(', ')"></td>
@@ -1312,8 +1319,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <template x-for="ix in exploreIndexes" :key="ix.name">
                         <tr>
                           <td class="text-nowrap">
-                            <button class="rw-only btn btn-sm btn-outline-soft" title="Edit index" @click="openIndexModal(ix)"><i class="bi bi-pencil"></i></button>
-                            <button class="rw-only btn btn-sm btn-ghost-danger" title="Drop index" @click="dropIndex(ix)"><i class="bi bi-trash"></i></button>
+                            <button class="perm-index btn btn-sm btn-outline-soft" title="Edit index" @click="openIndexModal(ix)"><i class="bi bi-pencil"></i></button>
+                            <button class="perm-index btn btn-sm btn-ghost-danger" title="Drop index" @click="dropIndex(ix)"><i class="bi bi-trash"></i></button>
                           </td>
                           <td class="fw-medium" x-text="ix.name"></td>
                           <td><span class="index-kind" :class="'kind-' + ix.kind.toLowerCase()" x-text="ix.kind"></span></td>
@@ -1349,10 +1356,10 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <button class="btn btn-outline-soft btn-sm" @click="copyDefinition" :disabled="!exploreDefinition">
                       <i class="bi bi-clipboard me-1"></i>Copy
                     </button>
-                    <button class="rw-only btn btn-accent btn-sm" @click="openObjectEditor(exploreObject.kind, exploreObject.name)" :disabled="!exploreDefinition">
+                    <button class="perm-alter btn btn-accent btn-sm" @click="openObjectEditor(exploreObject.kind, exploreObject.name)" :disabled="!exploreDefinition">
                       <i class="bi bi-pencil me-1"></i>Edit
                     </button>
-                    <button class="rw-only btn btn-sm btn-outline-danger" @click="dropObject(exploreObject.kind, exploreObject.name)"><i class="bi bi-trash me-1"></i>Drop</button>
+                    <button class="perm-drop btn btn-sm btn-outline-danger" @click="dropObject(exploreObject.kind, exploreObject.name)"><i class="bi bi-trash me-1"></i>Drop</button>
                   </div>
                 </div>
                 <div class="p-2">
@@ -1978,7 +1985,7 @@ Separate multiple statements with ; — highlight text to run just that part."
       </template>
     </div>
     <div class="modal-footer-custom">
-      <button class="btn btn-outline-soft me-auto" x-show="exploreRowModal.mode === 'edit'" @click="cloneRow()" title="Open a new row pre-filled with these values">
+      <button class="btn btn-outline-soft me-auto" x-show="exploreRowModal.mode === 'edit' && hasPerm('insert')" @click="cloneRow()" title="Open a new row pre-filled with these values">
         <i class="bi bi-copy me-1"></i>Clone
       </button>
       <button class="btn btn-outline-soft" @click="exploreRowModal.open = false">Cancel</button>
@@ -2098,7 +2105,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <label class="form-check-label small" for="impAtomic"><strong>All or nothing</strong> — run the whole import in one transaction; if it stops or is cancelled, nothing is kept</label>
               </div>
               <div class="text-muted-sm ms-4" x-show="!importModal.atomic">Rows are committed every 10,000 rows; if it stops, the rows before that point stay.</div>
-              <div class="form-check">
+              <div class="form-check" x-show="hasPerm('truncate')">
                 <input type="checkbox" class="form-check-input" id="importTruncate" x-model="importModal.truncate">
                 <label class="form-check-label small" for="importTruncate">Delete all existing rows in this table first</label>
               </div>
@@ -2864,36 +2871,69 @@ Separate multiple statements with ; — highlight text to run just that part."
     <div class="modal-body-custom">
       <div class="alert alert-danger py-2 small" x-show="shareModal.error" x-text="shareModal.error"></div>
       <p class="text-muted-sm" x-show="shareModal.kind !== 'query'">
-        People you share with can run queries, browse, export, back up and restore with this connection.
-        They can't see its password, edit it, delete it or share it further.
+        People you share with can always browse, search, export and run SELECT / SHOW / EXPLAIN queries. Choose what else each person may do.
+        They can't see the connection's password, edit it, delete it or share it further.
       </p>
-      <div class="form-check form-switch mb-3" x-show="shareModal.kind !== 'query'">
-        <input class="form-check-input" type="checkbox" id="shareReadOnly" x-model="shareModal.readOnly">
-        <label class="form-check-label fw-medium small" for="shareReadOnly">Read-only</label>
-        <div class="text-muted-sm">They can browse, run SELECT/SHOW queries and export, but can't change data or structure, import or restore.</div>
-      </div>
       <p class="text-muted-sm" x-show="shareModal.kind === 'query'">
         People you share with see this query under Saved Queries and can load it into the Query Runner or save their own copy.
         They can't edit, delete or share it further, and they still need access to a connection to run it.
       </p>
-      <div class="form-check form-switch mb-3">
-        <input class="form-check-input" type="checkbox" id="shareAll" x-model="shareModal.all">
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" id="shareAll" x-model="shareModal.all" @change="sharePermsFor('*')">
         <label class="form-check-label fw-medium small" for="shareAll">Share with every user (including future users)</label>
       </div>
+      <div x-show="shareModal.kind !== 'query' && shareModal.all" class="mb-3">
+        <div class="share-user-perms">
+          <div class="d-flex align-items-center gap-2">
+            <span class="small fw-medium">Everyone can:</span>
+            <select class="form-select form-select-sm" style="width:auto" :value="sharePreset('*')" @change="setSharePreset('*', $event.target.value)">
+              <template x-for="pr in permissionPresets" :key="pr.key"><option :value="pr.key" x-text="pr.label" :selected="sharePreset('*') === pr.key"></option></template>
+              <option value="custom" :selected="sharePreset('*') === 'custom'">Custom</option>
+            </select>
+          </div>
+          <div class="share-perm-grid">
+            <template x-for="p in permissionList" :key="p.key">
+              <label class="form-check small" :title="p.help"><input type="checkbox" class="form-check-input" :checked="(shareModal.perms['*'] || []).includes(p.key)" @change="toggleSharePerm('*', p.key)"> <span x-text="p.label"></span></label>
+            </template>
+          </div>
+        </div>
+      </div>
       <div x-show="!shareModal.all">
-        <div class="text-muted-sm mb-1">Or pick users:</div>
-        <div class="d-flex flex-column gap-1" style="max-height:260px; overflow-y:auto">
+        <div class="text-muted-sm mb-1" x-text="shareModal.kind === 'query' ? 'Pick users:' : 'Or pick users:'"></div>
+        <div class="d-flex flex-column gap-1" style="max-height:340px; overflow-y:auto">
           <template x-for="u in directory.filter(u => u.username !== shareModal.owner)" :key="u.username">
-            <label class="conn-row" :class="shareModal.users.includes(u.username) && 'selected'">
-              <input type="checkbox" class="form-check-input" :value="u.username" x-model="shareModal.users">
-              <div class="conn-meta">
-                <div class="conn-label" x-text="u.displayName"></div>
-                <div class="conn-sub" x-text="u.username"></div>
+            <div>
+              <label class="conn-row" :class="shareModal.users.includes(u.username) && 'selected'">
+                <input type="checkbox" class="form-check-input" :value="u.username" x-model="shareModal.users" @change="sharePermsFor(u.username)">
+                <div class="conn-meta">
+                  <div class="conn-label" x-text="u.displayName"></div>
+                  <div class="conn-sub" x-text="u.username"></div>
+                </div>
+                <span class="share-chip ms-auto" x-show="shareModal.kind !== 'query' && shareModal.users.includes(u.username)" x-text="permLabel(u.username)"></span>
+              </label>
+              <div class="share-user-perms" x-show="shareModal.kind !== 'query' && shareModal.users.includes(u.username)">
+                <div class="d-flex align-items-center gap-2">
+                  <span class="small text-muted-sm">Can:</span>
+                  <select class="form-select form-select-sm" style="width:auto" :value="sharePreset(u.username)" @change="setSharePreset(u.username, $event.target.value)">
+                    <template x-for="pr in permissionPresets" :key="pr.key"><option :value="pr.key" x-text="pr.label" :selected="sharePreset(u.username) === pr.key"></option></template>
+                    <option value="custom" :selected="sharePreset(u.username) === 'custom'">Custom</option>
+                  </select>
+                  <button class="btn btn-link btn-sm p-0 text-decoration-none" @click.prevent="shareModal.open_[u.username] = !shareModal.open_[u.username]"
+                          x-text="shareModal.open_[u.username] ? 'Hide details' : 'Customize…'"></button>
+                </div>
+                <div class="share-perm-grid" x-show="shareModal.open_[u.username]">
+                  <template x-for="p in permissionList" :key="p.key">
+                    <label class="form-check small" :title="p.help"><input type="checkbox" class="form-check-input" :checked="(shareModal.perms[u.username] || []).includes(p.key)" @change="toggleSharePerm(u.username, p.key)"> <span x-text="p.label"></span></label>
+                  </template>
+                </div>
               </div>
-            </label>
+            </div>
           </template>
           <div class="text-muted-sm" x-show="directory.filter(u => u.username !== shareModal.owner).length === 0">There are no other users yet.</div>
         </div>
+      </div>
+      <div class="text-muted-sm mt-2" x-show="shareModal.kind !== 'query'">
+        <i class="bi bi-info-circle me-1"></i>Hover a permission for details. In the Query Runner, other statements need the matching permission (e.g. <code>DELETE</code> needs "Delete rows"); <em>Any SQL</em> also allows <code>CALL</code>, <code>SET</code> and transactions.
       </div>
     </div>
     <div class="modal-footer-custom">
@@ -3017,6 +3057,7 @@ let sqlCm = null;
 function app() {
   return {
     activeTab: 'runner',
+    routing: false,
     leftTab: 'databases',
     username: '',
     displayName: '',
@@ -3043,7 +3084,8 @@ function app() {
     currentDbs: {},               // { [connKey]: db } after USE, if not the connection's default
 
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
-    shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], readOnly: false, saving: false, error: '' },
+    shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], perms: {}, open_: {}, saving: false, error: '' },
+    permissionList: [], permissionPresets: [],
     userModal: { open: false, editing: false, form: {}, saving: false, error: '' },
     passwordModal: { open: false, current: '', next: '', confirm: '', saving: false, error: '' },
 
@@ -3162,7 +3204,7 @@ function app() {
 
     async init() {
       const sess = await fetch('/api/session').then(r => r.json());
-      if (!sess.authenticated) { window.location.href = '/login'; return; }
+      if (!sess.authenticated) { this.goLogin(); return; }
       this.username = sess.username;
       this.displayName = sess.displayName;
       this.role = sess.role;
@@ -3179,15 +3221,153 @@ function app() {
       } catch (e) {
         this.currentDbs = {};
       }
-      await Promise.all([this.loadConnections(), this.loadQueries(), this.loadDirectory()]);
+      await Promise.all([this.loadConnections(), this.loadQueries(), this.loadDirectory(), this.loadPermissionList()]);
       // Text set from elsewhere (saved query, history, log) goes into the editor.
       this.$watch('sql', (v) => { if (sqlCm && sqlCm.getValue() !== v) sqlCm.setValue(v); });
       this.$watch('selectedKeys', () => this.loadHintTables());
       this.$watch('currentDbs', () => this.loadHintTables());
+
+      // The address bar follows the UI (and the UI follows the address bar), so a copied
+      // link, a duplicated tab or the back button opens the same place.
+      try {
+        const saved = sessionStorage.getItem('dbc.afterLogin');
+        if (saved) { sessionStorage.removeItem('dbc.afterLogin'); if (!location.hash) history.replaceState(null, '', saved); }
+      } catch (e) { /* no sessionStorage */ }
+      await this.applyRoute();
+      this.$watch('routeHash', (h) => this.pushRoute(h));
+      window.addEventListener('hashchange', () => { if (!this.routing && location.hash !== this.routeHash) this.applyRoute(); });
+    },
+
+    // Sends the browser to the login page, remembering where it was going.
+    goLogin() {
+      try { if (location.hash) sessionStorage.setItem('dbc.afterLogin', location.hash); } catch (e) { /* no sessionStorage */ }
+      window.location.href = '/login';
+    },
+
+    // ---- URL ↔ UI state ----
+    //   #/runner?c=conn1,conn2     #/connections  #/queries  #/logs  #/analytics  #/users  #/system
+    //   #/explore/<conn>                                 a connection
+    //   #/explore/<conn>/server?tab=processes            server tools
+    //   #/explore/<conn>/<db>?tab=diagram                a database (tab: tables | search | diagram)
+    //   #/explore/<conn>/<db>/table/<name>?view=structure   a table or view (view: data | structure | indexes)
+    //   #/explore/<conn>/<db>/procedure/<name>           a routine / trigger / event
+    get routeHash() {
+      const enc = encodeURIComponent;
+      if (this.activeTab !== 'explore') {
+        if (this.activeTab === 'runner' && this.selectedKeys.length) return `#/runner?c=${this.selectedKeys.map(enc).join(',')}`;
+        return '#/' + this.activeTab;
+      }
+      const parts = ['explore'];
+      const q = [];
+      if (this.exploreConnKey) {
+        parts.push(enc(this.exploreConnKey));
+        if (this.exploreServer) {
+          parts.push('server');
+          if (this.serverTab !== 'processes') q.push('tab=' + this.serverTab);
+        } else if (this.exploreDatabase) {
+          parts.push(enc(this.exploreDatabase));
+          if (this.exploreTable) {
+            parts.push('table', enc(this.exploreTable));
+            if (this.exploreView && this.exploreView !== 'data') q.push('view=' + this.exploreView);
+          } else if (this.exploreObject) {
+            parts.push(enc(this.exploreObject.kind), enc(this.exploreObject.name));
+          } else if (this.overviewTab && this.overviewTab !== 'tables') {
+            q.push('tab=' + this.overviewTab);
+          }
+        }
+      }
+      return '#/' + parts.join('/') + (q.length ? '?' + q.join('&') : '');
+    },
+    pushRoute(hash) {
+      if (this.routing || location.hash === hash) return;
+      // Switching a tab inside the same page replaces the entry; going somewhere else adds one.
+      const samePage = location.hash.split('?')[0] === hash.split('?')[0];
+      try { history[samePage ? 'replaceState' : 'pushState'](null, '', hash); } catch (e) { /* ignore */ }
+    },
+    objectMeta(kind, name) {
+      if (kind === 'trigger') { const t = this.exploreTriggers.find((x) => x.name === name); return t ? `${t.timing} ${t.event} on ${t.tableName}` : ''; }
+      if (kind === 'event') { const e = this.exploreEvents.find((x) => x.name === name); return e ? `${e.status} · ${this.eventSchedule(e)}` : ''; }
+      const r = this.exploreRoutines.find((x) => x.name === name);
+      return r && r.modified ? 'modified ' + new Date(r.modified).toLocaleString() : '';
+    },
+    // Opens what the address bar says, if the user has access to it.
+    async applyRoute() {
+      const raw = location.hash.replace(/^#\/?/, '');
+      if (!raw) { this.pushRoute(this.routeHash); return; }
+      const [path, query = ''] = raw.split('?');
+      const segs = path.split('/').filter(Boolean).map((x) => { try { return decodeURIComponent(x); } catch (e) { return x; } });
+      const q = new URLSearchParams(query);
+      const tabs = ['runner', 'explore', 'connections', 'queries', 'logs', 'analytics'].concat(this.isAdmin() ? ['users', 'system'] : []);
+      const tab = tabs.includes(segs[0]) ? segs[0] : 'runner';
+      this.routing = true;
+      try {
+        if (tab !== 'explore') {
+          if (tab === 'runner' && q.get('c')) {
+            const wanted = q.get('c').split(',').filter(Boolean);
+            const usable = wanted.filter((k) => this.connections.some((c) => c.key === k));
+            if (usable.length < wanted.length) this.showToast("Some of the connections in this link aren't available to you", 'error');
+            if (usable.length) this.selectedKeys = usable;
+          }
+          this.openTab(tab);
+          return;
+        }
+        this.activeTab = 'explore';
+        await this.applyExploreRoute(segs.slice(1), q);
+      } catch (e) {
+        this.showToast('Could not open that link: ' + e.message, 'error');
+      } finally {
+        this.routing = false;
+        // Show the address that matches what actually opened (e.g. after a refused link).
+        if (location.hash !== this.routeHash) { try { history.replaceState(null, '', this.routeHash); } catch (e) { /* ignore */ } }
+      }
+    },
+    async applyExploreRoute(segs, q) {
+      const [key, second, third, fourth] = segs;
+      if (!key) { if (this.exploreConnKey) await this.selectExploreConnection(''); return; }
+      if (!this.connections.some((c) => c.key === key)) {
+        this.showToast(`You don't have access to the connection "${key}", or it no longer exists`, 'error');
+        if (this.exploreConnKey) await this.selectExploreConnection('');
+        return;
+      }
+      if (this.exploreConnKey !== key) await this.selectExploreConnection(key);
+      if (second === 'server') {
+        if (!this.exploreConnCanManage()) { this.showToast('Only the owner of a connection or an admin can open its server tools', 'error'); return; }
+        const tab = q.get('tab');
+        this.serverTab = ['processes', 'variables', 'status', 'accounts'].includes(tab) ? tab : 'processes';
+        this.openServerView();
+        return;
+      }
+      if (!second) { if (this.exploreDatabase || this.exploreServer) await this.selectExploreDatabase(''); return; }
+      if (!this.exploreDatabases.includes(second)) {
+        this.showToast(`Database "${second}" isn't available on this connection`, 'error');
+        return;
+      }
+      if (this.exploreDatabase !== second || this.exploreServer) await this.selectExploreDatabase(second);
+
+      if (third === 'table' && fourth) {
+        if (!this.exploreTables.some((t) => t.name === fourth)) { this.showToast(`Table or view "${fourth}" was not found in ${second}`, 'error'); return; }
+        if (this.exploreTable !== fourth) await this.selectExploreTable(fourth);
+        const view = q.get('view');
+        this.exploreView = view === 'structure' || (view === 'indexes' && !this.exploreIsView()) ? view : 'data';
+      } else if (['procedure', 'function', 'trigger', 'event'].includes(third) && fourth) {
+        this.exploreNav = { procedure: 'routines', function: 'routines', trigger: 'triggers', event: 'events' }[third];
+        await this.selectExploreObject(third, fourth, this.objectMeta(third, fourth));
+      } else {
+        this.exploreTable = ''; this.exploreTableType = ''; this.exploreObject = null;
+        if (q.get('tab') === 'diagram') this.openDiagram();
+        else this.overviewTab = q.get('tab') === 'search' ? 'search' : 'tables';
+      }
     },
 
     isAdmin() {
       return this.role === 'admin';
+    },
+    async loadPermissionList() {
+      try {
+        const data = await fetch('/api/permissions').then((r) => r.json());
+        this.permissionList = data.permissions || [];
+        this.permissionPresets = data.presets || [];
+      } catch (e) { /* the built-in list is used */ }
     },
     // Switches tab and loads that tab's data.
     openTab(tab) {
@@ -3236,7 +3416,10 @@ function app() {
       return u ? u.displayName : username;
     },
     accessLabel(c) {
-      if (c.sharedWithMe) return c.canWrite === false ? 'Shared with you · read-only' : 'Shared with you';
+      if (c.sharedWithMe) {
+        const n = (c.permissions || []).length;
+        return n === 0 ? 'Shared with you · read-only' : (n >= this.allPermissionKeys().length ? 'Shared with you' : 'Shared with you · limited');
+      }
       if (!c.sharedWith || c.sharedWith.length === 0) return 'Private';
       if (c.sharedWith.includes('*')) return 'Everyone';
       return 'Shared · ' + c.sharedWith.length;
@@ -3429,17 +3612,37 @@ function app() {
       this.showToast('History cleared');
     },
 
+    // Statements of the SQL about to run, with comments and string contents blanked out
+    // so a ';' or a keyword inside a string or comment doesn't count.
+    statementsForWarning(sql) {
+      const blanked = String(sql)
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .replace(/(--[ \t][^\n]*|#[^\n]*)/g, ' ')
+        .replace(/'(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.|"")*"|`[^`]*`/g, (m) => m[0] + ' '.repeat(Math.max(0, m.length - 2)) + m[0]);
+      return blanked.split(';').map((t) => t.trim()).filter(Boolean);
+    },
+    // Returns { title, message, confirmLabel, danger } when the SQL needs a confirmation first.
     getQueryWarning(sql) {
-      const trimmed = sql.trim();
-      const isDelete = /^delete\b/i.test(trimmed);
-      const isSelect = /^select\b/i.test(trimmed);
-      const hasLimit = /\blimit\s+\d+/i.test(trimmed);
-
-      if (isDelete) {
-        return `This will run a DELETE statement on ${this.selectedKeys.length} database(s). Rows removed this way cannot be undone. Continue?`;
+      const stmts = this.statementsForWarning(sql);
+      const targets = `${this.selectedKeys.length} database(s)`;
+      const drops = stmts.filter((t) => /^drop\b/i.test(t));
+      const truncates = stmts.filter((t) => /^truncate\b/i.test(t));
+      const deletes = stmts.filter((t) => /^delete\b/i.test(t));
+      const bulkUpdates = stmts.filter((t) => /^(update|delete)\b/i.test(t) && !/\bwhere\b/i.test(t));
+      const danger = [];
+      if (drops.length) danger.push(`${drops.length} DROP statement(s) (${drops.map((t) => t.split(/\s+/).slice(0, 3).join(' ').toUpperCase()).join(', ')})`);
+      if (truncates.length) danger.push(`${truncates.length} TRUNCATE statement(s)`);
+      if (bulkUpdates.length) danger.push(`${bulkUpdates.length} UPDATE/DELETE without a WHERE clause (affects every row)`);
+      if (danger.length) {
+        const label = drops.length ? 'Run DROP' : truncates.length ? 'Run TRUNCATE' : 'Run anyway';
+        return { title: 'This cannot be undone', message: `This will run ${danger.join(' and ')} on ${targets}. ${drops.length || truncates.length ? 'Dropped or truncated data cannot be recovered.' : 'Changes made this way cannot be undone.'} Continue?`, confirmLabel: label, danger: true };
       }
-      if (isSelect && !hasLimit) {
-        return 'This SELECT has no LIMIT clause and could return a very large number of rows. Continue anyway?';
+      if (deletes.length) {
+        return { title: 'Confirm before running', message: `This will run a DELETE statement on ${targets}. Rows removed this way cannot be undone. Continue?`, confirmLabel: 'Run DELETE', danger: true };
+      }
+      const unlimited = stmts.some((t) => /^select\b/i.test(t) && !/\blimit\s+\d+/i.test(t));
+      if (unlimited && stmts.length === 1) {
+        return { title: 'Confirm before running', message: 'This SELECT has no LIMIT clause and could return a very large number of rows (at most 10,000 are shown). Continue anyway?', confirmLabel: 'Run anyway', danger: false };
       }
       return null;
     },
@@ -3451,11 +3654,7 @@ function app() {
 
       const warning = explain ? null : this.getQueryWarning(sqlToRun);
       if (warning) {
-        const isDelete = /^delete\b/i.test(sqlToRun.trim());
-        const ok = await this.askConfirm('Confirm before running', warning, {
-          confirmLabel: isDelete ? 'Run DELETE' : 'Run anyway',
-          danger: isDelete
-        });
+        const ok = await this.askConfirm(warning.title, warning.message, { confirmLabel: warning.confirmLabel, danger: warning.danger });
         if (!ok) return;
       }
 
@@ -3969,7 +4168,7 @@ function app() {
       return this.inlineEdit && this.inlineEdit.ridx === ridx && this.inlineEdit.col === col;
     },
     startInlineEdit(ridx, row, col) {
-      if (!this.canEditRows()) return;
+      if (!this.canEditRows() || !this.hasPerm('update')) return;
       const v = row[col];
       // Binary, JSON and multi-line values are edited in the full form.
       if ((v !== null && typeof v === 'object') || this.isLongValue(v)) { this.openEditRow(row); return; }
@@ -4005,12 +4204,27 @@ function app() {
       this.explorePage = 1;
       this.loadExploreRows();
     },
-    exploreCanWrite() {
+    // Permissions on the connection open in Explore (the owner and admins have all).
+    explorePermissions() {
       const c = this.connections.find((x) => x.key === this.exploreConnKey);
-      return !c || c.canWrite !== false;
+      return c && Array.isArray(c.permissions) ? c.permissions : this.allPermissionKeys();
+    },
+    allPermissionKeys() {
+      return (this.permissionList.length ? this.permissionList : [{ key: 'insert' }, { key: 'update' }, { key: 'delete' }, { key: 'create' }, { key: 'alter' }, { key: 'index' }, { key: 'drop' }, { key: 'truncate' }, { key: 'restore' }, { key: 'sql' }]).map((p) => p.key);
+    },
+    hasPerm(p) {
+      return this.explorePermissions().includes(p);
+    },
+    exploreReadOnly() {
+      return this.explorePermissions().length === 0;
+    },
+    // CSS classes that hide the controls (class "perm-<name>") the user may not use.
+    permClasses() {
+      const has = this.explorePermissions();
+      return this.allPermissionKeys().filter((p) => !has.includes(p)).map((p) => 'no-' + p).join(' ');
     },
     canEditRows() {
-      return this.exploreCanWrite() && !this.exploreIsView() && Array.isArray(this.explorePrimaryKey) && this.explorePrimaryKey.length > 0;
+      return !this.exploreIsView() && Array.isArray(this.explorePrimaryKey) && this.explorePrimaryKey.length > 0;
     },
     // ---- Row form (edit / insert) ----
     functionTakesArg(fn) {
@@ -4080,6 +4294,7 @@ function app() {
     },
     // Clone: a new row with this row's values, except AUTO_INCREMENT columns.
     cloneRow() {
+      if (!this.hasPerm('insert')) return;
       const prefill = Object.fromEntries(this.exploreRowModal.fields.map((f) => [f.col, f]));
       this.openInsertRow(prefill);
     },
@@ -4609,6 +4824,18 @@ function app() {
     },
     async runTableAction() {
       const m = this.tableActionModal;
+      if (['drop', 'truncate'].includes(m.action)) {
+        const n = m.tables.length;
+        const list = m.tables.length > 5 ? `${m.tables.slice(0, 5).join(', ')} and ${n - 5} more` : m.tables.join(', ');
+        const ok = await this.askConfirm(
+          m.action === 'drop' ? `Drop ${n} table(s)?` : `Truncate ${n} table(s)?`,
+          m.action === 'drop'
+            ? `${list} will be permanently deleted, with all their data. This cannot be undone.`
+            : `All rows in ${list} will be permanently deleted. This cannot be undone.`,
+          { confirmLabel: m.action === 'drop' ? `Drop ${n} table(s)` : `Truncate ${n} table(s)`, danger: true }
+        );
+        if (!ok) return;
+      }
       m.saving = true; m.error = '';
       try {
         const result = await this.apiJson('POST', `${this.exploreBase()}/table-actions`, this.tableActionBody(false));
@@ -5197,10 +5424,40 @@ function app() {
         label: kind === 'query' ? item.name : item.label,
         owner: item.owner,
         all: shared.includes('*'), users: shared.filter(u => u !== '*'),
-        readOnly: Boolean(item.readOnlyShare),
+        perms: JSON.parse(JSON.stringify(item.sharePermissions || {})), open_: {},
         saving: false, error: ''
       };
+      // Shares made before permissions existed: full access, or read-only for the old read-only switch.
+      if (kind !== 'query') for (const name of shared) this.sharePermsFor(name, item.readOnlyShare ? [] : null);
       this.loadDirectory();
+    },
+    // Makes sure `name` ('*' for everyone) has a permission list; new shares start with full access.
+    sharePermsFor(name, fallback = null) {
+      if (this.shareModal.kind === 'query') return;
+      if (!Array.isArray(this.shareModal.perms[name])) this.shareModal.perms[name] = fallback ? [...fallback] : this.allPermissionKeys();
+    },
+    sharePreset(name) {
+      const list = this.shareModal.perms[name] || [];
+      const hit = this.permissionPresets.find((p) => p.permissions.length === list.length && p.permissions.every((x) => list.includes(x)));
+      return hit ? hit.key : 'custom';
+    },
+    setSharePreset(name, key) {
+      const preset = this.permissionPresets.find((p) => p.key === key);
+      if (preset) this.shareModal.perms[name] = [...preset.permissions];
+      else this.shareModal.open_[name] = true;
+    },
+    toggleSharePerm(name, perm) {
+      const list = this.shareModal.perms[name] || [];
+      this.shareModal.perms[name] = list.includes(perm) ? list.filter((x) => x !== perm) : [...list, perm];
+    },
+    permLabel(name) {
+      const key = this.sharePreset(name);
+      const preset = this.permissionPresets.find((p) => p.key === key);
+      return preset ? preset.label : `Custom · ${(this.shareModal.perms[name] || []).length}`;
+    },
+    sharePermissionsToSend() {
+      const names = this.shareModal.all ? ['*'] : this.shareModal.users;
+      return Object.fromEntries(names.map((n) => [n, this.shareModal.perms[n] || this.allPermissionKeys()]));
     },
     async saveSharing() {
       this.shareModal.saving = true; this.shareModal.error = '';
@@ -5212,7 +5469,7 @@ function app() {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sharedWith: this.shareModal.all ? ['*'] : this.shareModal.users,
-            ...(this.shareModal.kind === 'query' ? {} : { readOnly: this.shareModal.readOnly })
+            ...(this.shareModal.kind === 'query' ? {} : { permissions: this.sharePermissionsToSend() })
           })
         });
         const data = await res.json();
@@ -5353,7 +5610,7 @@ function app() {
         // Changing your own role/status ends your session.
         if (username === this.username) {
           const sess = await fetch('/api/session').then(r => r.json());
-          if (!sess.authenticated) { window.location.href = '/login'; return; }
+          if (!sess.authenticated) { this.goLogin(); return; }
           this.displayName = sess.displayName; this.role = sess.role;
         }
         await Promise.all([this.loadUsers(), this.loadDirectory()]);
@@ -5470,7 +5727,7 @@ function app() {
       while (Date.now() - started < 180000) {
         try {
           const res = await fetch('/api/system/status', { cache: 'no-store' });
-          if (res.status === 401) { window.location.href = '/login'; return; }
+          if (res.status === 401) { this.goLogin(); return; }
           const st = await res.json();
           const inst = st.pm2.instances;
           const fresh = inst

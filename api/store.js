@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { DATA_DIR, FILE_MODE, ensureDir, readJson, writeJson, withLock } = require('./datadir');
+const perms = require('./permissions');
 
 const CONNECTIONS_FILE = path.join(DATA_DIR, 'connections.json');
 const QUERIES_FILE = path.join(DATA_DIR, 'queries.json');
@@ -168,18 +169,31 @@ function updateConnection(key, data) {
   return updated;
 }
 
-// sharedWith: array of usernames, or ['*'] for every user. readOnly: the
-// people it is shared with may only read (undefined keeps the current setting).
-function setConnectionSharing(key, sharedWith, readOnly) {
+// sharedWith: array of usernames, or ['*'] for every user.
+// permissions: { username | '*': [permission names] } (see permissions.js);
+// a user left out keeps what they had, or gets full access when new.
+// readOnly (older API): applies to everyone listed when `permissions` is not given.
+function setConnectionSharing(key, sharedWith, permissions, readOnly) {
   const conns = listConnections();
   const idx = conns.findIndex((c) => c.key === key);
   if (idx === -1) return null;
+  const current = conns[idx];
 
-  conns[idx] = {
-    ...conns[idx],
-    sharedWith: normalizeSharedWith(sharedWith, conns[idx].owner),
-    readOnlyShare: readOnly === undefined ? Boolean(conns[idx].readOnlyShare) : Boolean(readOnly)
-  };
+  const list = normalizeSharedWith(sharedWith, current.owner);
+  const names = list.includes('*') ? ['*'] : list;
+  const given = perms.cleanMap(permissions, names);
+  const previous = perms.cleanMap(current.sharePermissions, null);
+  const map = {};
+  for (const name of names) {
+    if (given[name]) map[name] = given[name];
+    else if (readOnly !== undefined && !permissions) map[name] = readOnly ? [] : perms.ALL.slice();
+    else if (previous[name]) map[name] = previous[name];
+    else if (name !== '*' && previous['*']) map[name] = previous['*'];
+    else map[name] = current.readOnlyShare && !current.sharePermissions ? [] : perms.ALL.slice();
+  }
+  const next = { ...current, sharedWith: list, sharePermissions: map };
+  delete next.readOnlyShare; // replaced by sharePermissions
+  conns[idx] = next;
   writeJson(CONNECTIONS_FILE, conns);
   return conns[idx];
 }

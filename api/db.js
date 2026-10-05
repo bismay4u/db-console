@@ -5,6 +5,7 @@
 const mysql = require('mysql2/promise');
 const mysqlUtil = require('mysql2'); // for safe identifier escaping (escapeId)
 const store = require('./store');
+const permissions = require('./permissions');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -244,21 +245,13 @@ function splitStatements(sqlText) {
 const MAX_RESULT_ROWS = 10000;
 const EXPLAINABLE_RE = /^(select|with|update|delete|insert|replace|table)\b/i;
 
-// What a read-only user may run. Anything else is refused before it reaches
-// the server, and what is allowed runs inside a READ ONLY transaction on a
-// connection that is thrown away afterwards, so a stored function that
-// writes, or a WITH … DELETE, still fails.
-const READ_ONLY_RE = /^(select|with|show|describe|desc|explain|use|table|values|help)\b/i;
-const WRITES_FILE_RE = /\binto\s+(outfile|dumpfile)\b/i;
-
-function readOnlyViolation(stmt) {
-  const s = stripLeadingComments(stmt);
-  if (!READ_ONLY_RE.test(s)) return `Read-only access: only SELECT, SHOW, DESCRIBE, EXPLAIN and USE are allowed (refused: ${s.split(/\s+/)[0].toUpperCase()})`;
-  if (WRITES_FILE_RE.test(s)) return 'Read-only access: SELECT … INTO OUTFILE/DUMPFILE is not allowed';
-  return null;
-}
-
-async function runQuery(key, sqlText, { database, explain = false, readOnly = false } = {}) {
+// `allowed` is the Set of permissions the user has on this connection (see
+// permissions.js), or null for no restrictions. A statement that needs a
+// permission they lack is refused before anything runs. Statements that only
+// read run inside a READ ONLY transaction, on a connection that is thrown
+// away afterwards, so a stored function that writes, or a WITH … DELETE,
+// still fails for a user who may not write.
+async function runQuery(key, sqlText, { database, explain = false, allowed = null } = {}) {
   let statements = splitStatements(sqlText);
   if (statements.length === 0) {
     throw new Error('No SQL statement to execute');
@@ -270,21 +263,22 @@ async function runQuery(key, sqlText, { database, explain = false, readOnly = fa
     if (!statements.length) throw new Error('Nothing to explain — EXPLAIN works on SELECT, UPDATE, DELETE, INSERT and REPLACE');
   }
 
-  if (readOnly) {
-    const refused = statements.map((st) => ({ st, error: readOnlyViolation(st) })).find((x) => x.error);
+  const restricted = Boolean(allowed);
+  if (restricted) {
+    const refused = statements.map((st) => ({ st, error: permissions.statementDenied(st, allowed) })).find((x) => x.error);
     if (refused) return { ok: false, statements: [{ sql: refused.st, ok: false, error: refused.error, durationMs: 0 }], currentDatabase: null };
   }
+  const mayCallAnything = !restricted || allowed.has('sql');
 
   const pool = getPool(key);
   const defaultDb = store.getConnection(key).database;
   const conn = await pool.getConnection();
   const results = [];
   let ok = true;
-  let discard = readOnly || statements.some(leavesSessionState);
+  let discard = restricted || statements.some(leavesSessionState);
   let currentDatabase = null;
 
   try {
-    if (readOnly) await conn.query('START TRANSACTION READ ONLY');
     if (database && database !== defaultDb) {
       try {
         await conn.query(`USE ${esc(database)}`);
@@ -298,8 +292,12 @@ async function runQuery(key, sqlText, { database, explain = false, readOnly = fa
 
     for (const stmt of ok ? statements : []) {
       const start = Date.now();
+      // For restricted users, a statement that only reads can't write by
+      // accident (a function with side effects, a writing CTE).
+      const guarded = restricted && !mayCallAnything && permissions.statementNeeds(stmt) === 'read' && !/^\s*use\b/i.test(stripLeadingComments(stmt));
       try {
-        let [rows, fields] = await conn.query(stmt);
+        if (guarded) await conn.query('START TRANSACTION READ ONLY');
+        let [rows, fields] = await conn.query(stmt).finally(() => (guarded ? conn.query('COMMIT').catch(() => {}) : null));
         const durationMs = Date.now() - start;
         // CALL returns several result sets; show the first one.
         if (Array.isArray(rows) && Array.isArray(rows[0])) {

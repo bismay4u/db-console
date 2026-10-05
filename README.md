@@ -56,7 +56,8 @@ When a database is open, the left menu slides away and is replaced by a full-hei
 * Browse all databases on a connection
 * Create, alter (collation, rename) and drop databases — renaming moves every table and is refused when the database has views, routines, triggers or events
 * Overview of every table: engine, approximate rows, data and index size, auto-increment, collation and comment
-* Bulk table actions: optimize, analyze, check, repair, truncate, drop, copy and move to another database
+* Bulk table actions: optimize, analyze, check, repair, truncate, drop, copy and move to another database. Drop and truncate always ask for confirmation first
+* **Links that open the same place.** The address bar follows the UI: `#/explore/<connection>/<database>/table/<table>?view=structure`, `#/explore/<connection>/server?tab=variables`, `#/runner?c=<connections>`, `#/queries`, `#/logs`… Copy a link, duplicate a tab, press Back or reload and the same page opens. If the person doesn't have access to the connection, they're told so instead; if they're signed out, the link survives the login
 * Search a value across every table of a database
 * **Diagram** tab: every table with its columns, primary and foreign keys, joined by a line per foreign key. Drag tables to arrange them, zoom, or auto-layout; the layout is remembered per connection and database. Double-click a table to open it
 
@@ -119,7 +120,8 @@ Features include:
 * Result rows
 * Affected-row counts
 * Error reporting, and the server's warnings for a statement that produced any
-* **Explain** shows the execution plan of SELECT / UPDATE / DELETE / INSERT statements
+* **Explain** (next to **Run**) shows the execution plan of SELECT / UPDATE / DELETE / INSERT statements without running them
+* Asks for confirmation before running `DROP`, `TRUNCATE`, `DELETE`, or an `UPDATE` / `DELETE` without a `WHERE` anywhere in the batch (comments and text inside strings are ignored), and before a `SELECT` with no `LIMIT`
 * Results are paged in the browser; at most 10,000 rows are returned per statement
 * `CALL` shows the procedure's first result set
 * Saved SQL queries
@@ -145,7 +147,22 @@ Manage Database connections directly from the web interface.
 * Every connection has an owner
 * Share a connection with specific users, or with everyone
 * Shared users can use a connection but cannot see its password, edit, delete or re-share it
-* Share **read-only**: those users can browse, search, view the diagram, run `SELECT` / `SHOW` / `DESCRIBE` / `EXPLAIN` / `USE` and export, but cannot change data or structure, import or restore. Their queries run in a `READ ONLY` transaction, so even a stored function that writes fails
+* **Per-user permissions.** Everyone a connection is shared with can always browse, search, view the diagram, export and run `SELECT` / `SHOW` / `DESCRIBE` / `EXPLAIN` / `USE`. For each person (or for "everyone") the owner chooses what else they may do, with presets (**Read-only**, **Data editor**, **Developer**, **Full access**) or tick-boxes:
+
+  | Permission | Allows |
+  |---|---|
+  | Add rows | add rows, import CSV/TSV |
+  | Edit rows | edit rows in the grid, bulk edit |
+  | Delete rows | delete rows |
+  | Create | create tables, views, procedures, functions, triggers, events and databases; copy tables |
+  | Change structure | alter tables (columns, foreign keys), rename, alter databases, optimize/repair |
+  | Indexes | create, change and drop indexes |
+  | Drop | drop tables, views, routines, triggers, events and databases |
+  | Truncate | `TRUNCATE` tables |
+  | Restore | restore a backup / SQL file |
+  | Any SQL | other Query Runner statements: `CALL`, `SET`, transactions… |
+
+  The server enforces them on every Explore route and on each statement in the Query Runner (a batch is refused as a whole before anything runs; `DELETE` needs *Delete rows*, `DROP` needs *Drop*, `CREATE INDEX` needs *Indexes*, and so on). Controls a user can't use are hidden. Statements that only read run in a `READ ONLY` transaction, so a stored function that writes fails for them. The owner and admins can always do everything.
 
 Example:
 
@@ -592,7 +609,8 @@ DELETE /api/connections/:key
 POST /api/connections/:key/test
 POST /api/connections/test
 
-PUT  /api/connections/:key/sharing    # { "sharedWith": ["alice"] } or ["*"], optional "readOnly": true
+PUT  /api/connections/:key/sharing    # { "sharedWith": ["alice"] or ["*"], "permissions": { "alice": ["insert", "update"] } }
+GET  /api/permissions                 # the permission names, labels and presets
 ```
 
 Only the owner or an admin can edit, delete or share a connection.
@@ -704,7 +722,7 @@ DELETE /api/server/:key/accounts             # { user, host }
 POST   /api/server/:key/grants               # { action: grant|revoke, user, host, privileges, db, table }
 ```
 
-When a connection is shared read-only, every non-`GET` request under `/api/explore/:key` returns `403` for the people it is shared with.
+Every non-`GET` request under `/api/explore/:key` needs the matching permission (see Connection Manager) and returns `403` without it. `sharePermissions` is `{ "<username>" | "*": [permission names] }`; a user without an entry gets the `"*"` entry. Older shares with no permissions stored keep working: full access, or none if they were shared with the old read-only switch (`"readOnly": true` is still accepted).
 
 ---
 
@@ -1026,6 +1044,7 @@ db-console/
 │   ├── db.js             # MySQL pools, queries, explore, CSV, export/restore
 │   ├── schema.js         # databases, tables, columns, foreign keys, objects, diagram
 │   ├── importer.js       # streaming CSV / TSV import
+│   ├── permissions.js    # what a shared user may do; statement and route requirements
 │   ├── serveradmin.js    # process list, variables, accounts and privileges
 │   ├── store.js          # users, connections, saved queries
 │   ├── datadir.js        # data directory, atomic writes, cross-process lock
@@ -1141,7 +1160,7 @@ The project is intentionally small, but potential future improvements include:
 * [ ] Docker image
 * [ ] Docker Compose deployment
 * [ ] Health-check endpoint
-* [x] Read-only sharing
+* [x] Per-user, per-connection permissions (read-only, data editor, developer, full, or custom)
 * [ ] Environment-based configuration
 * [ ] Kubernetes deployment
 * [ ] Single-binary/package distribution
