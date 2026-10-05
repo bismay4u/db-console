@@ -245,7 +245,7 @@ async function runQuery(key, sqlText, { database } = {}) {
             ok: true,
             type: 'rows',
             columns: fields ? fields.map((f) => f.name) : [],
-            rows,
+            rows: encodeRows(rows),
             rowCount: rows.length,
             durationMs
           });
@@ -314,6 +314,7 @@ module.exports = {
   alterIndex,
   getObjectDefinition,
   getTableColumns,
+  getCellValue,
   browseTable,
   updateRow,
   deleteRow,
@@ -626,7 +627,16 @@ function buildWhere(filters, columnNames) {
   return { where: conds.length ? `WHERE ${conds.join(' AND ')}` : '', params };
 }
 
-async function browseTable(key, database, table, { page = 1, pageSize = 50, sortCol, sortDir, filters } = {}) {
+// ORDER BY for [{ col, dir }] (or a single sortCol/sortDir); unknown columns are ignored.
+function orderBy(columnNames, sort, sortCol, sortDir) {
+  const list = Array.isArray(sort) && sort.length ? sort : (sortCol ? [{ col: sortCol, dir: sortDir }] : []);
+  const parts = list
+    .filter((s) => s && columnNames.includes(s.col))
+    .map((s) => `${esc(s.col)} ${s.dir === 'desc' ? 'DESC' : 'ASC'}`);
+  return parts.length ? `ORDER BY ${parts.join(', ')}` : '';
+}
+
+async function browseTable(key, database, table, { page = 1, pageSize = 50, sortCol, sortDir, sort, filters } = {}) {
   const pool = getPool(key);
   const safePageSize = Math.min(Math.max(Number(pageSize) || 50, 1), 500);
   const safePage = Math.max(Number(page) || 1, 1);
@@ -635,11 +645,7 @@ async function browseTable(key, database, table, { page = 1, pageSize = 50, sort
   const { columns } = await getTableColumns(key, database, table);
   const columnNames = columns.map((c) => c.name);
 
-  let orderClause = '';
-  if (sortCol && columnNames.includes(sortCol)) {
-    orderClause = `ORDER BY ${esc(sortCol)} ${sortDir === 'desc' ? 'DESC' : 'ASC'}`;
-  }
-
+  const orderClause = orderBy(columnNames, sort, sortCol, sortDir);
   const { where, params } = buildWhere(filters, columnNames);
 
   const [countRows] = await pool.query(
@@ -655,7 +661,7 @@ async function browseTable(key, database, table, { page = 1, pageSize = 50, sort
 
   return {
     columns: fields ? fields.map((f) => f.name) : columnNames,
-    rows,
+    rows: encodeRows(rows),
     total,
     page: safePage,
     pageSize: safePageSize
@@ -679,6 +685,67 @@ function applyBlankToNull(values, nullable) {
   return out;
 }
 
+// ---- Values that can't travel as plain JSON ----
+// Binary values go to the browser as { __hex } when small (so e.g. a
+// BINARY(16) key can be sent back in a WHERE) or { __blob, size } when
+// large. From the browser, a value may be { __hex } / { __base64 } (binary)
+// or { __fn, arg } (one of VALUE_FUNCTIONS, Adminer-style).
+const HEX_INLINE_MAX = 64;
+
+function encodeValue(v) {
+  if (!Buffer.isBuffer(v)) return v;
+  return v.length <= HEX_INLINE_MAX ? { __hex: v.toString('hex') } : { __blob: true, size: v.length };
+}
+
+function encodeRows(rows) {
+  for (const r of rows) for (const k of Object.keys(r)) if (Buffer.isBuffer(r[k])) r[k] = encodeValue(r[k]);
+  return rows;
+}
+
+const VALUE_FUNCTIONS = {
+  NOW: 'NOW()', CURDATE: 'CURDATE()', CURTIME: 'CURTIME()', UTC_TIMESTAMP: 'UTC_TIMESTAMP()',
+  UNIX_TIMESTAMP: 'UNIX_TIMESTAMP()', UUID: 'UUID()',
+  MD5: 'MD5(?)', SHA1: 'SHA1(?)', SHA2: 'SHA2(?, 256)', UPPER: 'UPPER(?)', LOWER: 'LOWER(?)', TRIM: 'TRIM(?)'
+};
+
+// SQL ("?" or a function call) and parameters for one value.
+function valueSql(v) {
+  if (v && typeof v === 'object' && !Buffer.isBuffer(v)) {
+    if (v.__hex !== undefined) return { sql: '?', params: [Buffer.from(String(v.__hex), 'hex')] };
+    if (v.__base64 !== undefined) return { sql: '?', params: [Buffer.from(String(v.__base64), 'base64')] };
+    if (v.__fn !== undefined) {
+      const tpl = VALUE_FUNCTIONS[v.__fn];
+      if (!tpl) throw new Error(`Unsupported function: ${v.__fn}`);
+      return { sql: tpl, params: tpl.includes('?') ? [v.arg ?? ''] : [] };
+    }
+    if (v.__blob) throw new Error("A large binary value can't be sent back as-is — upload a file to replace it");
+    return { sql: '?', params: [JSON.stringify(v)] }; // a JSON column value
+  }
+  return { sql: '?', params: [v] };
+}
+
+function assignments(obj, params, joiner) {
+  return Object.entries(obj).map(([c, v]) => {
+    const x = valueSql(v);
+    params.push(...x.params);
+    return `${esc(c)} = ${x.sql}`;
+  }).join(joiner);
+}
+
+// Raw value of one cell (for downloading a binary value).
+async function getCellValue(key, database, table, where, column) {
+  const { columns } = await getTableColumns(key, database, table);
+  if (!columns.some((c) => c.name === column)) throw new Error(`Unknown column: ${column}`);
+  if (!where || !Object.keys(where).length) throw new Error('Missing row identifier');
+  const params = [];
+  const whereClause = assignments(where, params, ' AND ');
+  const [rows] = await getPool(key).query(
+    `SELECT ${esc(column)} AS v FROM ${esc(database)}.${esc(table)} WHERE ${whereClause} LIMIT 1`, params
+  );
+  if (!rows.length) throw new Error('Row not found');
+  return rows[0].v;
+}
+
 async function updateRow(key, database, table, where, changes) {
   if (!where || Object.keys(where).length === 0) {
     throw new Error('Missing row identifier (no primary key values supplied)');
@@ -689,9 +756,9 @@ async function updateRow(key, database, table, where, changes) {
 
   const pool = getPool(key);
   changes = applyBlankToNull(changes, await blankToNullColumns(key, database, table));
-  const setClause = Object.keys(changes).map((c) => `${esc(c)} = ?`).join(', ');
-  const whereClause = Object.keys(where).map((c) => `${esc(c)} = ?`).join(' AND ');
-  const params = [...Object.values(changes), ...Object.values(where)];
+  const params = [];
+  const setClause = assignments(changes, params, ', ');
+  const whereClause = assignments(where, params, ' AND ');
 
   const [result] = await pool.query(
     `UPDATE ${esc(database)}.${esc(table)} SET ${setClause} WHERE ${whereClause} LIMIT 1`,
@@ -706,8 +773,8 @@ async function deleteRow(key, database, table, where) {
   }
 
   const pool = getPool(key);
-  const whereClause = Object.keys(where).map((c) => `${esc(c)} = ?`).join(' AND ');
-  const params = Object.values(where);
+  const params = [];
+  const whereClause = assignments(where, params, ' AND ');
 
   const [result] = await pool.query(
     `DELETE FROM ${esc(database)}.${esc(table)} WHERE ${whereClause} LIMIT 1`,
@@ -725,8 +792,12 @@ async function insertRow(key, database, table, values) {
   const pool = getPool(key);
   values = applyBlankToNull(values, await blankToNullColumns(key, database, table));
   const colClause = cols.map(esc).join(', ');
-  const placeholders = cols.map(() => '?').join(', ');
-  const params = cols.map((c) => values[c]);
+  const params = [];
+  const placeholders = cols.map((c) => {
+    const x = valueSql(values[c]);
+    params.push(...x.params);
+    return x.sql;
+  }).join(', ');
 
   const [result] = await pool.query(
     `INSERT INTO ${esc(database)}.${esc(table)} (${colClause}) VALUES (${placeholders})`,
@@ -763,17 +834,14 @@ function csvField(value) {
 
 // Streams a table's full contents (no LIMIT) to `res` as CSV, one row at a
 // time, so exporting a very large table doesn't buffer it all in memory.
-async function streamTableCsv(key, database, table, res, { sortCol, sortDir, filters } = {}) {
+async function streamTableCsv(key, database, table, res, { sortCol, sortDir, sort, filters } = {}) {
   const conn = store.getConnection(key);
   if (!conn) throw new Error(`Unknown connection: ${key}`);
 
   const { columns } = await getTableColumns(key, database, table);
   const columnNames = columns.map((c) => c.name);
 
-  let orderClause = '';
-  if (sortCol && columnNames.includes(sortCol)) {
-    orderClause = `ORDER BY ${esc(sortCol)} ${sortDir === 'desc' ? 'DESC' : 'ASC'}`;
-  }
+  const orderClause = orderBy(columnNames, sort, sortCol, sortDir);
   const { where, params } = buildWhere(filters, columnNames);
   const sql = `SELECT * FROM ${esc(database)}.${esc(table)} ${where} ${orderClause}`;
 

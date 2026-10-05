@@ -171,6 +171,10 @@
   .table-modern tbody tr:hover .row-actions{ background:var(--bg); }
   .table-modern tbody tr.row-selected, .table-modern tbody tr.row-selected .row-actions{ background:var(--accent-soft); }
   .cell-null{ color:var(--muted); font-style:italic; }
+  .cell-long{ cursor:zoom-in; border-bottom:1px dotted var(--muted); }
+  .inline-cell-input{ min-width:120px; padding:.1rem .35rem; font-size:.82rem; }
+  .row-field{ padding:.5rem 0; border-bottom:1px solid var(--border); }
+  .row-field:last-child{ border-bottom:none; }
   .index-kind{ font-size:.68rem; font-weight:700; letter-spacing:.03em; border-radius:999px; padding:.12rem .5rem; background:var(--bg); color:var(--muted); }
   .index-kind.kind-primary{ background:var(--accent-soft); color:var(--accent); }
   .index-kind.kind-unique{ background:#e7f8f1; color:var(--success); }
@@ -857,7 +861,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <button class="btn btn-outline-soft btn-sm" @click="loadExploreRows" title="Reload"><i class="bi bi-arrow-clockwise"></i></button>
                   <a class="btn btn-outline-soft btn-sm" :href="tableExportUrl()" target="_blank" :title="exploreFiltersActive() ? 'Exports the rows matching the current search/filters' : 'Exports the whole table'"><i class="bi bi-download me-1"></i>Export CSV</a>
                   <button class="btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal"><i class="bi bi-upload me-1"></i>Import CSV</button>
-                  <button class="btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow"><i class="bi bi-plus-lg me-1"></i>Add row</button>
+                  <button class="btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow()"><i class="bi bi-plus-lg me-1"></i>Add row</button>
                 </div>
               </div>
 
@@ -873,6 +877,20 @@ Separate multiple statements with ; — highlight text to run just that part."
                                @input.debounce.400ms="applyExploreFilters()" @keydown.enter="applyExploreFilters()">
                       </div>
                       <button class="btn btn-outline-soft btn-sm" @click="addExploreFilter()"><i class="bi bi-funnel me-1"></i>Add filter</button>
+                      <div class="dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
+                        <button class="btn btn-outline-soft btn-sm" @click="open = !open">
+                          <i class="bi bi-layout-three-columns me-1"></i>Columns<span x-show="exploreHiddenCols.length" x-text="' (' + visibleColumns().length + '/' + exploreResultColumns.length + ')'"></span>
+                        </button>
+                        <div class="dropdown-lite-menu" x-show="open" x-cloak style="max-height:320px; overflow-y:auto; min-width:220px">
+                          <a @click="setHiddenColumns([])"><i class="bi bi-eye"></i> Show all</a>
+                          <template x-for="col in exploreResultColumns" :key="col">
+                            <label class="d-flex align-items-center gap-2 px-2 py-1 small" style="cursor:pointer">
+                              <input type="checkbox" class="form-check-input m-0" :checked="!exploreHiddenCols.includes(col)" @change="toggleColumn(col)">
+                              <span x-text="col"></span>
+                            </label>
+                          </template>
+                        </div>
+                      </div>
                       <button class="btn btn-link btn-sm text-decoration-none" x-show="exploreFilters.length || exploreSearch" @click="clearExploreFilters()">Clear all</button>
                       <button class="btn btn-sm btn-outline-danger ms-auto" x-show="exploreSelected.length" @click="deleteSelectedRows()">
                         <i class="bi bi-trash me-1"></i>Delete selected (<span x-text="exploreSelected.length"></span>)
@@ -908,10 +926,11 @@ Separate multiple statements with ; — highlight text to run just that part."
                                    :checked="exploreRows.length && exploreSelected.length === exploreRows.length"
                                    @change="toggleSelectAllRows($event.target.checked)">
                           </th>
-                          <template x-for="col in exploreResultColumns" :key="col">
-                            <th style="cursor:pointer; white-space:nowrap" @click="sortByColumn(col)">
+                          <template x-for="col in visibleColumns()" :key="col">
+                            <th style="cursor:pointer; white-space:nowrap" @click="sortByColumn(col, $event.shiftKey)" title="Click to sort · Shift+click to add a secondary sort">
                               <span x-text="col"></span>
-                              <i class="bi" :class="exploreSortCol===col ? (exploreSortDir==='asc' ? 'bi-caret-up-fill' : 'bi-caret-down-fill') : 'bi-caret-down'" style="opacity:.45; font-size:.62rem"></i>
+                              <i class="bi" :class="sortState(col) ? (sortState(col).dir === 'asc' ? 'bi-caret-up-fill' : 'bi-caret-down-fill') : 'bi-caret-down'" :style="sortState(col) ? 'opacity:.9; font-size:.62rem' : 'opacity:.45; font-size:.62rem'"></i>
+                              <sup class="text-muted" x-show="exploreSort.length > 1 && sortState(col)" x-text="sortState(col) ? exploreSort.indexOf(sortState(col)) + 1 : ''"></sup>
                             </th>
                           </template>
                         </tr>
@@ -924,18 +943,36 @@ Separate multiple statements with ; — highlight text to run just that part."
                               <button class="btn btn-sm btn-outline-soft" title="Edit row" @click="openEditRow(row)"><i class="bi bi-pencil"></i></button>
                               <button class="btn btn-sm btn-ghost-danger" title="Delete row" @click="deleteExploreRow(row)"><i class="bi bi-trash"></i></button>
                             </td>
-                            <template x-for="col in exploreResultColumns" :key="col">
-                              <td :class="row[col] === null && 'cell-null'">
-                                <template x-if="fkForColumn(col) && row[col] !== null">
-                                  <a href="#" class="fk-link" :title="'Open the referenced row in ' + (fkForColumn(col) || {}).refTable" @click.prevent="fkForColumn(col) && followFk(fkForColumn(col), row[col])" x-text="formatCell(row[col])"></a>
+                            <template x-for="col in visibleColumns()" :key="col">
+                              <td :class="row[col] === null && 'cell-null'" @dblclick="startInlineEdit(ridx, row, col)"
+                                  :title="canEditRows() ? 'Double-click to edit' : ''">
+                                <template x-if="isInlineEditing(ridx, col)">
+                                  <input type="text" class="form-control form-control-sm inline-cell-input" x-model="inlineEdit.value"
+                                         x-init="$nextTick(() => { $el.focus(); $el.select(); })"
+                                         @keydown.enter.prevent="saveInlineEdit()" @keydown.escape.prevent="inlineEdit = null" @blur="inlineEdit && !inlineEdit.saving && (inlineEdit = null)">
                                 </template>
-                                <template x-if="!(fkForColumn(col) && row[col] !== null)"><span x-text="formatCell(row[col])"></span></template>
+                                <template x-if="!isInlineEditing(ridx, col)">
+                                  <span>
+                                    <template x-if="fkForColumn(col) && row[col] !== null">
+                                      <a href="#" class="fk-link" :title="'Open the referenced row in ' + (fkForColumn(col) || {}).refTable" @click.prevent="fkForColumn(col) && followFk(fkForColumn(col), row[col])" x-text="formatCell(row[col])"></a>
+                                    </template>
+                                    <template x-if="!(fkForColumn(col) && row[col] !== null) && row[col] && row[col].__blob">
+                                      <a href="#" class="text-decoration-none text-muted-sm" @click.prevent="downloadCell(row, col)" :title="'Download (' + (row[col] || {}).size + ' bytes)'">
+                                        <i class="bi bi-file-earmark-binary me-1"></i><span x-text="'binary · ' + formatBytes((row[col] || {}).size)"></span>
+                                      </a>
+                                    </template>
+                                    <template x-if="!(fkForColumn(col) && row[col] !== null) && !(row[col] && row[col].__blob)">
+                                      <span :class="isLongValue(row[col]) && 'cell-long'" x-text="displayCell(row[col])"
+                                            @click="isLongValue(row[col]) && openCellViewer(col, row[col])"></span>
+                                    </template>
+                                  </span>
+                                </template>
                               </td>
                             </template>
                           </tr>
                         </template>
                         <tr x-show="!exploreLoadingRows && exploreRows.length === 0">
-                          <td :colspan="exploreResultColumns.length + 1" class="text-center text-muted-sm py-4"
+                          <td :colspan="visibleColumns().length + 1" class="text-center text-muted-sm py-4"
                               x-text="exploreFiltersActive() ? 'No rows match the search / filters.' : 'No rows.'"></td>
                         </tr>
                       </tbody>
@@ -1659,32 +1696,88 @@ Separate multiple statements with ; — highlight text to run just that part."
 </div>
 
 <!-- ===== Explore: Row Edit/Insert Modal ===== -->
-<div class="modal-backdrop-custom" x-show="exploreRowModal.open" x-cloak @click.self="exploreRowModal.open = false">
+<div class="modal-backdrop-custom" x-show="exploreRowModal.open" x-cloak @click.self="!exploreRowModal.saving && (exploreRowModal.open = false)">
   <div class="modal-panel modal-panel-lg">
     <div class="modal-header-custom">
-      <h2 class="h6 mb-0 fw-semibold" x-text="exploreRowModal.mode === 'edit' ? 'Edit row' : 'Add row'"></h2>
+      <h2 class="h6 mb-0 fw-semibold" x-text="(exploreRowModal.mode === 'edit' ? 'Edit row in ' : 'Add row to ') + exploreTable"></h2>
       <button class="btn btn-sm btn-outline-soft" @click="exploreRowModal.open = false"><i class="bi bi-x-lg"></i></button>
     </div>
-    <div class="modal-body-custom" style="max-height:60vh; overflow-y:auto;">
+    <div class="modal-body-custom" style="max-height:65vh; overflow-y:auto;">
       <div class="alert alert-danger py-2 small" x-show="exploreRowModal.error" x-text="exploreRowModal.error"></div>
-      <template x-for="col in exploreResultColumns" :key="col">
-        <div class="mb-2">
-          <label class="form-label small fw-medium">
-            <span x-text="col"></span>
-            <span class="text-muted-sm" x-show="explorePrimaryKey.includes(col)">(key)</span>
-          </label>
-          <input type="text" class="form-control form-control-sm" x-model="exploreRowModal.values[col]"
-                 :placeholder="exploreRowModal.mode === 'insert' ? 'default' : (exploreRowModal.values[col] === null ? 'NULL' : '')"
-                 :disabled="exploreRowModal.mode === 'edit' && explorePrimaryKey.includes(col)">
+      <template x-for="f in (exploreRowModal.fields || [])" :key="f.col">
+        <div class="row-field">
+          <div class="d-flex align-items-baseline gap-2 mb-1">
+            <label class="form-label small fw-medium mb-0" x-text="f.col"></label>
+            <code class="text-muted-sm" x-text="f.type"></code>
+            <span class="text-muted-sm" x-show="f.pk">key</span>
+            <span class="text-muted-sm" x-show="f.autoIncrement">auto increment</span>
+            <span class="text-muted-sm text-truncate" x-show="f.comment" x-text="'· ' + f.comment"></span>
+          </div>
+          <div class="d-flex align-items-start gap-2">
+            <select class="form-select form-select-sm" style="width:auto; max-width:9.5rem" x-model="f.fn" x-show="f.kind !== 'blob'"
+                    :disabled="!!(f.isNull || (exploreRowModal.mode === 'edit' && f.pk))" title="Set the value with an SQL function">
+              <option value="">value</option>
+              <template x-for="fn in valueFunctions" :key="fn"><option :value="fn" x-text="fn + (functionTakesArg(fn) ? '(value)' : '()')"></option></template>
+            </select>
+            <div class="flex-grow-1">
+              <template x-if="f.kind === 'enum'">
+                <select class="form-select form-select-sm" x-model="f.value" :disabled="!!(f.isNull || (f.fn && !functionTakesArg(f.fn)))">
+                  <option value="" x-show="exploreRowModal.mode === 'insert'">(default)</option>
+                  <template x-for="o in f.options" :key="o"><option :value="o" x-text="o" :selected="f.value === o"></option></template>
+                </select>
+              </template>
+              <template x-if="f.kind === 'textarea'">
+                <textarea class="form-control form-control-sm" rows="3" x-model="f.value" :disabled="!!(f.isNull || (f.fn && !functionTakesArg(f.fn)))"
+                          :placeholder="exploreRowModal.mode === 'insert' ? 'default' : ''"></textarea>
+              </template>
+              <template x-if="f.kind === 'blob'">
+                <div class="d-flex align-items-center gap-2 small">
+                  <span class="text-muted-sm" x-show="f.size !== null" x-text="'Current: ' + formatBytes(f.size)"></span>
+                  <a href="#" x-show="exploreRowModal.mode === 'edit' && f.size" @click.prevent="downloadCell(exploreRowModal.row, f.col)">download</a>
+                  <input type="file" class="form-control form-control-sm" style="max-width:260px" :disabled="!!(f.isNull)" @change="loadFieldFile(f, $event)">
+                </div>
+              </template>
+              <template x-if="['text', 'date', 'datetime', 'hex'].includes(f.kind)">
+                <input class="form-control form-control-sm" x-model="f.value"
+                       :type="f.kind === 'date' ? 'date' : (f.kind === 'datetime' ? 'datetime-local' : 'text')" :step="f.kind === 'datetime' ? 1 : null"
+                       :placeholder="f.kind === 'hex' ? 'hex bytes, e.g. 0a1b2c' : (exploreRowModal.mode === 'insert' ? (f.autoIncrement ? 'auto' : 'default') : '')"
+                       :disabled="!!(f.isNull || (exploreRowModal.mode === 'edit' && f.pk) || (f.fn && !functionTakesArg(f.fn)))">
+              </template>
+            </div>
+            <label class="form-check-label small text-nowrap pt-1" x-show="f.nullable">
+              <input type="checkbox" class="form-check-input" x-model="f.isNull" :disabled="!!(exploreRowModal.mode === 'edit' && f.pk)"> NULL
+            </label>
+          </div>
         </div>
       </template>
     </div>
     <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft me-auto" x-show="exploreRowModal.mode === 'edit'" @click="cloneRow()" title="Open a new row pre-filled with these values">
+        <i class="bi bi-copy me-1"></i>Clone
+      </button>
       <button class="btn btn-outline-soft" @click="exploreRowModal.open = false">Cancel</button>
-      <button class="btn btn-accent" @click="saveExploreRow" :disabled="exploreRowModal.saving">
+      <button class="btn btn-outline-soft" x-show="exploreRowModal.mode === 'insert'" @click="saveExploreRow(true)" :disabled="!!(exploreRowModal.saving)">Save &amp; add another</button>
+      <button class="btn btn-accent" @click="saveExploreRow(false)" :disabled="!!(exploreRowModal.saving)">
         <span x-show="exploreRowModal.saving" class="spinner-border spinner-border-sm me-1"></span>
         Save
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Explore: Full cell value viewer ===== -->
+<div class="modal-backdrop-custom" x-show="cellViewer.open" x-cloak @click.self="cellViewer.open = false">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="cellViewer.col"></h2>
+      <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-soft" @click="copyText(cellViewer.value)"><i class="bi bi-clipboard me-1"></i>Copy</button>
+        <button class="btn btn-sm btn-outline-soft" @click="cellViewer.open = false"><i class="bi bi-x-lg"></i></button>
+      </div>
+    </div>
+    <div class="modal-body-custom">
+      <div class="text-muted-sm mb-1" x-text="cellViewer.value.length.toLocaleString() + ' characters'"></div>
+      <pre class="definition-block mb-0" style="white-space:pre-wrap; word-break:break-word; max-height:60vh" x-text="cellViewer.value"></pre>
     </div>
   </div>
 </div>
@@ -2426,6 +2519,11 @@ function app() {
     exploreLoadingRows: false,
     exploreError: '',
     exploreRowModal: { open: false, mode: 'edit', where: null, values: {}, saving: false, error: '' },
+    exploreSort: [],              // [{ col, dir }] — Shift+click a header adds a secondary sort
+    exploreHiddenCols: [],        // columns hidden with the Columns menu (remembered per table)
+    inlineEdit: null,             // { ridx, col, row, value, saving } while a cell is edited in place
+    cellViewer: { open: false, col: '', value: '' },
+    valueFunctions: ['NOW', 'CURDATE', 'CURTIME', 'UTC_TIMESTAMP', 'UNIX_TIMESTAMP', 'UUID', 'MD5', 'SHA1', 'SHA2', 'UPPER', 'LOWER', 'TRIM'],
     exploreSearch: '',            // free-text search across all columns
     exploreFilters: [],           // [{ id, col, op, value }]
     exploreAppliedFilters: [],    // what the current rows were loaded with
@@ -2601,7 +2699,11 @@ function app() {
     },
     formatCell(val) {
       if (val === null || val === undefined) return 'NULL';
-      if (typeof val === 'object') return JSON.stringify(val);
+      if (typeof val === 'object') {
+        if (val.__hex !== undefined) return '0x' + val.__hex;
+        if (val.__blob) return `[binary, ${val.size} bytes]`;
+        return JSON.stringify(val);
+      }
       return String(val);
     },
 
@@ -2912,6 +3014,7 @@ function app() {
       this.exploreTableType = entry ? entry.type : '';
       this.exploreIndexes = []; this.exploreDefinition = '';
       this.explorePage = 1; this.exploreSortCol = ''; this.exploreSortDir = 'asc'; this.exploreView = 'data';
+      this.exploreSort = []; this.inlineEdit = null; this.exploreHiddenCols = this.loadHiddenColumns(tableName);
       this.exploreSearch = ''; this.exploreFilters = []; this.exploreAppliedFilters = []; this.exploreSelected = [];
       this.exploreSchema = null;
       await Promise.all([
@@ -2965,9 +3068,9 @@ function app() {
       this.exploreLoadingRows = true; this.exploreError = '';
       try {
         const params = new URLSearchParams({ page: this.explorePage, pageSize: this.explorePageSize });
-        if (this.exploreSortCol) { params.set('sortCol', this.exploreSortCol); params.set('sortDir', this.exploreSortDir); }
+        if (this.exploreSort.length) params.set('sort', JSON.stringify(this.exploreSort));
         if (this.exploreAppliedFilters.length) params.set('filters', JSON.stringify(this.exploreAppliedFilters));
-        this.exploreSelected = [];
+        this.exploreSelected = []; this.inlineEdit = null;
         const url = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/rows?${params}`;
         const res = await fetch(url);
         const data = await res.json();
@@ -2981,15 +3084,92 @@ function app() {
         this.exploreLoadingRows = false;
       }
     },
-    sortByColumn(col) {
-      if (this.exploreSortCol === col) {
-        this.exploreSortDir = this.exploreSortDir === 'asc' ? 'desc' : 'asc';
+    // Click: sort by this column (again to flip). Shift+click: add/flip it as an extra sort level.
+    sortByColumn(col, add = false) {
+      const existing = this.exploreSort.find((x) => x.col === col);
+      if (add) {
+        if (existing) existing.dir = existing.dir === 'asc' ? 'desc' : 'asc';
+        else this.exploreSort.push({ col, dir: 'asc' });
+        this.exploreSort = [...this.exploreSort];
       } else {
-        this.exploreSortCol = col; this.exploreSortDir = 'asc';
+        this.exploreSort = [{ col, dir: existing && this.exploreSort.length === 1 && existing.dir === 'asc' ? 'desc' : 'asc' }];
       }
       this.explorePage = 1;
       this.loadExploreRows();
     },
+    sortState(col) {
+      return this.exploreSort.find((x) => x.col === col) || null;
+    },
+
+    // ---- Column chooser ----
+    hiddenColsKey(table) {
+      return `dbconsole_hidden:${this.exploreConnKey}:${this.exploreDatabase}:${table}`;
+    },
+    loadHiddenColumns(table) {
+      try { return JSON.parse(localStorage.getItem(this.hiddenColsKey(table)) || '[]'); } catch (e) { return []; }
+    },
+    setHiddenColumns(cols) {
+      this.exploreHiddenCols = cols;
+      try { localStorage.setItem(this.hiddenColsKey(this.exploreTable), JSON.stringify(cols)); } catch (e) { /* storage unavailable */ }
+    },
+    toggleColumn(col) {
+      const hidden = this.exploreHiddenCols.includes(col) ? this.exploreHiddenCols.filter((c) => c !== col) : [...this.exploreHiddenCols, col];
+      if (hidden.length >= this.exploreResultColumns.length) return; // keep at least one column
+      this.setHiddenColumns(hidden);
+    },
+    visibleColumns() {
+      return this.exploreResultColumns.filter((c) => !this.exploreHiddenCols.includes(c));
+    },
+
+    // ---- Long values & binary cells ----
+    isLongValue(v) {
+      return typeof v === 'string' && (v.length > 120 || v.includes('\n'));
+    },
+    displayCell(v) {
+      const text = this.formatCell(v);
+      if (typeof v !== 'string') return text;
+      const firstLine = text.split('\n')[0];
+      return firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : (text.includes('\n') ? firstLine + ' …' : text);
+    },
+    openCellViewer(col, value) {
+      this.cellViewer = { open: true, col, value: String(value) };
+    },
+    async copyText(text) {
+      try { await navigator.clipboard.writeText(text); this.showToast('Copied'); } catch (e) { this.showToast('Copy failed — select the text and copy manually', 'error'); }
+    },
+    downloadCell(row, col) {
+      const where = this.rowWhere(row);
+      const params = new URLSearchParams({ where: JSON.stringify(where), col });
+      window.open(`${this.tableBase()}/cell?${params}`, '_blank');
+    },
+
+    // ---- Inline cell editing (double-click a cell) ----
+    isInlineEditing(ridx, col) {
+      return this.inlineEdit && this.inlineEdit.ridx === ridx && this.inlineEdit.col === col;
+    },
+    startInlineEdit(ridx, row, col) {
+      if (!this.canEditRows()) return;
+      const v = row[col];
+      // Binary, JSON and multi-line values are edited in the full form.
+      if ((v !== null && typeof v === 'object') || this.isLongValue(v)) { this.openEditRow(row); return; }
+      this.inlineEdit = { ridx, col, row, value: v === null ? '' : String(v), original: v, saving: false };
+    },
+    async saveInlineEdit() {
+      const e = this.inlineEdit;
+      if (!e || e.saving) return;
+      if (e.value === (e.original === null ? '' : String(e.original))) { this.inlineEdit = null; return; }
+      e.saving = true;
+      try {
+        await this.apiJson('PUT', `${this.tableBase()}/rows`, { where: this.rowWhere(e.row), changes: { [e.col]: e.value } });
+        this.inlineEdit = null;
+        this.showToast('Saved');
+        await this.loadExploreRows();
+      } catch (err) {
+        e.saving = false;
+        this.showToast(err.message, 'error');
+      }
+    },
+
     exploreMaxPage() {
       return Math.max(1, Math.ceil(this.exploreTotal / this.explorePageSize));
     },
@@ -3007,57 +3187,111 @@ function app() {
     canEditRows() {
       return !this.exploreIsView() && Array.isArray(this.explorePrimaryKey) && this.explorePrimaryKey.length > 0;
     },
+    // ---- Row form (edit / insert) ----
+    functionTakesArg(fn) {
+      return ['MD5', 'SHA1', 'SHA2', 'UPPER', 'LOWER', 'TRIM'].includes(fn);
+    },
+    columnMeta(col) {
+      return this.exploreColumns.find((c) => c.name === col) || { name: col, type: '', nullable: true, key: '', extra: '' };
+    },
+    // One form field per column, with an input chosen from the column type.
+    rowField(col, raw, mode) {
+      const meta = this.columnMeta(col);
+      const type = String(meta.type || '').toLowerCase();
+      let kind = 'text';
+      let options = [];
+      if (/^enum\(/.test(type)) { kind = 'enum'; options = [...type.matchAll(/'((?:[^']|'')*)'/g)].map((m) => m[1].replace(/''/g, "'")); }
+      else if (/blob|^binary|^varbinary/.test(type)) kind = (raw && raw.__blob) || /blob/.test(type) ? 'blob' : 'hex';
+      else if (/text|json/.test(type)) kind = 'textarea';
+      else if (type === 'date') kind = 'date';
+      else if (/^(datetime|timestamp)$/.test(type)) kind = 'datetime';
+      let value = '';
+      let size = null;
+      if (raw !== null && raw !== undefined) {
+        if (raw.__hex !== undefined) value = raw.__hex;
+        else if (raw.__blob) size = raw.size;
+        else if (typeof raw === 'object') value = JSON.stringify(raw);
+        else value = String(raw);
+      }
+      if (kind === 'datetime' && value) value = value.replace(' ', 'T');
+      if (kind === 'blob' && raw && raw.__hex !== undefined) size = raw.__hex.length / 2;
+      return {
+        col, type: meta.type, comment: meta.comment, kind, options, size,
+        nullable: meta.nullable, pk: this.explorePrimaryKey.includes(col), autoIncrement: /auto_increment/i.test(meta.extra || ''),
+        value, isNull: mode === 'edit' && raw === null, fn: '', file: null
+      };
+    },
+    fieldPayload(f) {
+      if (f.isNull) return null;
+      if (f.fn) return { __fn: f.fn, arg: f.value };
+      if (f.kind === 'blob') return f.file ? { __base64: f.file } : undefined;
+      if (f.kind === 'hex') return { __hex: f.value.replace(/^0x/i, '').replace(/\s+/g, '') };
+      if (f.kind === 'datetime') return f.value.replace('T', ' ');
+      return f.value;
+    },
+    loadFieldFile(f, event) {
+      const file = event.target.files[0];
+      if (!file) { f.file = null; return; }
+      const reader = new FileReader();
+      reader.onload = () => { f.file = String(reader.result).split(',')[1]; f.size = file.size; };
+      reader.readAsDataURL(file);
+    },
     openEditRow(row) {
       if (!this.canEditRows()) return;
-      const where = {};
-      this.explorePrimaryKey.forEach((pk) => { where[pk] = row[pk]; });
-      // JSON columns arrive as objects; edit them as JSON text.
-      const values = {};
-      for (const [k, v] of Object.entries(row)) values[k] = v !== null && typeof v === 'object' ? JSON.stringify(v) : v;
-      this.exploreRowModal = { open: true, mode: 'edit', where, original: { ...values }, values, saving: false, error: '' };
+      this.inlineEdit = null;
+      const fields = this.exploreResultColumns.map((c) => this.rowField(c, row[c], 'edit'));
+      this.exploreRowModal = {
+        open: true, mode: 'edit', row, where: this.rowWhere(row), fields,
+        original: Object.fromEntries(fields.map((f) => [f.col, JSON.stringify(this.fieldPayload(f))])), saving: false, error: ''
+      };
     },
-    openInsertRow() {
-      const blank = {};
-      this.exploreResultColumns.forEach((c) => { blank[c] = ''; });
-      this.exploreRowModal = { open: true, mode: 'insert', where: null, values: blank, saving: false, error: '' };
+    openInsertRow(prefill) {
+      const fields = this.exploreResultColumns.map((c) => {
+        const f = this.rowField(c, null, 'insert');
+        if (prefill && prefill[c] && !f.autoIncrement) Object.assign(f, { value: prefill[c].value, isNull: prefill[c].isNull, fn: prefill[c].fn, file: prefill[c].file });
+        return f;
+      });
+      this.exploreRowModal = { open: true, mode: 'insert', row: null, where: null, fields, original: {}, saving: false, error: '' };
     },
-    async saveExploreRow() {
-      this.exploreRowModal.saving = true; this.exploreRowModal.error = '';
-      const base = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/rows`;
+    // Clone: a new row with this row's values, except AUTO_INCREMENT columns.
+    cloneRow() {
+      const prefill = Object.fromEntries(this.exploreRowModal.fields.map((f) => [f.col, f]));
+      this.openInsertRow(prefill);
+    },
+    async saveExploreRow(addAnother = false) {
+      const m = this.exploreRowModal;
+      m.saving = true; m.error = '';
       try {
-        let res;
-        if (this.exploreRowModal.mode === 'edit') {
-          // Send only the fields the user changed, so untouched values
-          // (binary data, JSON, values the browser can't round-trip) are
-          // never rewritten.
+        if (m.mode === 'edit') {
+          // Only the fields the user changed are sent, so untouched values
+          // (binary data, JSON, values the browser can't round-trip) are never rewritten.
           const changes = {};
-          for (const [k, v] of Object.entries(this.exploreRowModal.values)) {
-            if (v !== this.exploreRowModal.original[k]) changes[k] = v;
+          for (const f of m.fields) {
+            const p = this.fieldPayload(f);
+            if (p === undefined) continue;
+            if (JSON.stringify(p) !== m.original[f.col]) changes[f.col] = p;
           }
-          if (Object.keys(changes).length === 0) { this.exploreRowModal.open = false; return; }
-          res = await fetch(base, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ where: this.exploreRowModal.where, changes })
-          });
+          if (!Object.keys(changes).length) { m.open = false; return; }
+          await this.apiJson('PUT', `${this.tableBase()}/rows`, { where: m.where, changes });
         } else {
-          // Blank fields are left out, so the column's default (or
-          // AUTO_INCREMENT) applies.
+          // Untouched blank fields are left out, so defaults / AUTO_INCREMENT apply.
           const values = {};
-          for (const [k, v] of Object.entries(this.exploreRowModal.values)) if (v !== '' && v !== null) values[k] = v;
-          res = await fetch(base, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ values })
-          });
+          for (const f of m.fields) {
+            const p = this.fieldPayload(f);
+            if (p === undefined || (p === '' && !f.fn)) continue;
+            values[f.col] = p;
+          }
+          if (!Object.keys(values).length) throw new Error('Fill in at least one field');
+          await this.apiJson('POST', `${this.tableBase()}/rows`, { values });
         }
-        const data = await res.json();
-        if (!res.ok) { this.exploreRowModal.error = data.error || 'Save failed'; return; }
-        this.exploreRowModal.open = false;
+        this.showToast(m.mode === 'edit' ? 'Row updated' : 'Row added');
         await this.loadExploreRows();
-        this.showToast(this.exploreRowModal.mode === 'edit' ? 'Row updated' : 'Row added');
+        if (addAnother && m.mode === 'insert') this.openInsertRow();
+        else m.open = false;
       } catch (e) {
-        this.exploreRowModal.error = 'Network error, please try again';
+        m.error = e.message;
       } finally {
-        this.exploreRowModal.saving = false;
+        m.saving = false;
       }
     },
     rowWhere(row) {
@@ -3622,7 +3856,7 @@ function app() {
     tableExportUrl() {
       if (!this.exploreConnKey || !this.exploreDatabase || !this.exploreTable) return '#';
       const params = new URLSearchParams();
-      if (this.exploreSortCol) { params.set('sortCol', this.exploreSortCol); params.set('sortDir', this.exploreSortDir); }
+      if (this.exploreSort.length) params.set('sort', JSON.stringify(this.exploreSort));
       if (this.exploreAppliedFilters.length) params.set('filters', JSON.stringify(this.exploreAppliedFilters));
       const qs = params.toString();
       const base = `/api/explore/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}/export.csv`;

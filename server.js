@@ -602,11 +602,26 @@ app.get('/api/explore/:key/:database/:table/rows', requireAuth, async (req, res)
       pageSize,
       sortCol,
       sortDir,
+      sort: parseFilters(req.query.sort),
       filters: parseFilters(req.query.filters)
     });
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Download one cell's raw value (for binary columns): ?where={pk json}&col=name
+app.get('/api/explore/:key/:database/:table/cell', requireAuth, async (req, res) => {
+  try {
+    const where = JSON.parse(req.query.where || '{}');
+    const value = await db.getCellValue(req.params.key, req.params.database, req.params.table, where, String(req.query.col || ''));
+    const buf = Buffer.isBuffer(value) ? value : Buffer.from(value === null ? '' : String(value), 'utf8');
+    res.setHeader('Content-Type', 'application/octet-stream');
+    attachment(res, `${req.params.table}-${req.query.col}.bin`);
+    res.end(buf);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -663,15 +678,17 @@ app.get('/api/explore/:key/:database/:table/export.csv', requireAuth, async (req
     type: 'SELECT'
   };
   let filters;
+  let sort;
   try {
     filters = parseFilters(req.query.filters);
+    sort = parseFilters(req.query.sort);
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
   try {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     attachment(res, `${table}.csv`);
-    await db.streamTableCsv(req.params.key, req.params.database, table, res, { sortCol, sortDir, filters });
+    await db.streamTableCsv(req.params.key, req.params.database, table, res, { sortCol, sortDir, sort, filters });
     res.end();
     logAction(req, { ...entry, ok: true, durationMs: Date.now() - start });
   } catch (err) {
