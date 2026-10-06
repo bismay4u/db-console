@@ -61,6 +61,21 @@ When a database is open, the left menu slides away and is replaced by a full-hei
 * Search a value across every table of a database
 * **Diagram** tab: every table with its columns, primary and foreign keys, joined by a line per foreign key. Drag tables to arrange them, zoom, or auto-layout; the layout is remembered per connection and database. Double-click a table to open it
 
+**Analysis** — **Analyze** (or the **Analysis** tab) checks the database against a set of rules and lists what looks wrong, grouped by table or by rule and filterable by severity (error / warning / info), category and text. Nothing is changed; findings that have an obvious remedy show the SQL for it, with **Copy SQL** and **Open in Query Runner**. Anyone with access to the connection can run it. The built-in rules cover:
+
+* **Indexes:** tables without a primary key (and a unique NOT NULL index that could become one); large tables with no index besides the primary key; `*_id` columns with no index; foreign keys without a usable index; duplicate and redundant indexes; too many indexes; indexes on columns with very few distinct values (off by default)
+* **Design:** auto-increment columns close to their maximum; foreign keys between columns of different type or character set; non-InnoDB tables; money in `FLOAT`/`DOUBLE`; legacy character sets (`latin1`, 3-byte `utf8`); collations that differ from the database default; columns that look like foreign keys but aren't; very wide tables
+* **Storage:** very large tables; indexes much larger than the data; free space inside tables (`OPTIMIZE TABLE`); empty and long-unmodified tables (off by default)
+* **Objects:** views that no longer work (`CHECK TABLE`); disabled events
+* **Security:** possibly sensitive column names such as `password` or `token` (off by default)
+
+**Rules are managed by admins** (**Manage rules**; everyone else can view them): switch any rule off, change its severity and thresholds (e.g. "at least 1,000 rows"), and set a regex of table names to ignore. Admins can also add their own rules, which can be tried against the open database before saving:
+
+* **SQL rule:** one read-only `SELECT`; every row it returns is a finding. `@db` (or `DATABASE()`) is the database being analyzed; the optional columns `table`, `object`, `message`, `detail`, `fix` and `severity` fill in the finding. It runs in a `READ ONLY` transaction with a 10-second limit and returns at most 200 rows.
+* **Naming / structure rule:** a regex for table, column or index names ("must match" / "must not match", optionally limited to column types), or "every table has a column matching…" (e.g. `created_at`).
+
+Rule settings are stored in `data/analyzer_rules.json`. Open `#/explore/<connection>/<database>?tab=analysis` to share the analysis.
+
 **Tables**
 
 * **Data** tab: pagination, multi-column sorting (Shift+click a header to add a sort), search across all columns, and Adminer-style filters: column (or any column) + operator (`=`, `≠`, `<`, `>`, contains, starts/ends with, `LIKE`, `REGEXP`, `IN`, `IS NULL`...) + value, combined with AND; applied on the server, and used by CSV export too
@@ -697,6 +712,7 @@ PUT    /api/explore/:key/:database                    # { collation, rename }
 DELETE /api/explore/:key/:database
 GET    /api/explore/:key/:database/search?q=...
 GET    /api/explore/:key/:database/diagram            # tables, columns and foreign keys
+GET    /api/explore/:key/:database/analyze            # run the rules: { summary, findings, skipped, … }
 GET    /api/explore/:key/:database/foreign-keys
 GET    /api/explore/:key/:database/autocomplete       # { table: [columns] }
 POST   /api/explore/:key/:database/tables             # create table
@@ -706,6 +722,16 @@ POST   /api/explore/:key/:database/:table/alter
 POST   /api/explore/:key/:database/:table/foreign-keys  # { drop, add }
 POST   /api/explore/:key/:database/objects/save       # { kind, name (when editing), sql }
 POST   /api/explore/:key/:database/objects/drop       # { kind, name }
+```
+
+Analysis rules:
+
+```http
+GET    /api/analyzer/rules              # built-in + custom rules (custom SQL only for admins)
+POST   /api/analyzer/rules              # admin: add a custom rule
+PUT    /api/analyzer/rules/:id          # admin: built-in { enabled, severity, params, exclude } or a custom rule
+DELETE /api/analyzer/rules/:id          # admin: delete a custom rule
+POST   /api/analyzer/test               # admin: { key, database, rule } try a rule without saving it
 ```
 
 Server tools (owner or admin only):
@@ -1044,6 +1070,7 @@ db-console/
 │   ├── db.js             # MySQL pools, queries, explore, CSV, export/restore
 │   ├── schema.js         # databases, tables, columns, foreign keys, objects, diagram
 │   ├── importer.js       # streaming CSV / TSV import
+│   ├── analyzer.js       # database health check: built-in and custom rules
 │   ├── permissions.js    # what a shared user may do; statement and route requirements
 │   ├── serveradmin.js    # process list, variables, accounts and privileges
 │   ├── store.js          # users, connections, saved queries
@@ -1128,7 +1155,7 @@ The project is intentionally small, but potential future improvements include:
 * [ ] Database health information
 * [x] Process list
 * [x] Active query monitoring
-* [ ] Index recommendations
+* [x] Index recommendations (missing, duplicate and redundant indexes in Analyze)
 * [ ] Query execution statistics
 * [x] Table size information
 * [x] Schema diagram

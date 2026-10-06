@@ -310,6 +310,15 @@
 
   /* ---- Confirm dialog (reuses modal-backdrop-custom) ---- */
   .confirm-panel{ background:#fff; border-radius:14px; width:100%; max-width:360px; box-shadow:0 20px 60px rgba(20,20,43,.25); padding:1.25rem; }
+  /* Database analysis */
+  .sev-dot{ width:.65rem; height:.65rem; border-radius:50%; flex:none; margin-top:.35rem; display:inline-block; }
+  .sev-error{ background:var(--danger); } .sev-warning{ background:#f0a020; } .sev-info{ background:#4a8df9; }
+  .sev-chip{ display:inline-flex; align-items:center; gap:.4rem; border:1px solid var(--border); background:var(--card); border-radius:999px; padding:.15rem .7rem; font-size:.8rem; opacity:.55; }
+  .sev-chip.on{ opacity:1; border-color:var(--accent); background:var(--accent-soft); }
+  .analysis-group-head{ display:flex; align-items:center; gap:.5rem; padding:.45rem .9rem; background:var(--bg); border-top:1px solid var(--border); font-size:.85rem; }
+  .analysis-item{ padding:.5rem .9rem .5rem 1.3rem; border-top:1px solid var(--border); }
+  .rule-row{ display:flex; align-items:center; gap:.6rem; padding:.45rem .6rem; border:1px solid var(--border); border-radius:9px; margin-bottom:.35rem; }
+  .rule-settings{ margin:-.15rem 0 .45rem 2.4rem; padding:.6rem .8rem; background:var(--bg); border-radius:9px; }
   /* Share dialog: per-user permissions */
   .share-user-perms{ margin:.15rem 0 .4rem 1.9rem; padding:.45rem .6rem; background:var(--bg); border-radius:8px; }
   .share-perm-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:.15rem .75rem; margin-top:.4rem; }
@@ -350,7 +359,7 @@
   .diagram-type{ margin-left:auto; color:var(--muted); font-size:.68rem; white-space:nowrap; max-width:90px; overflow:hidden; text-overflow:ellipsis; }
 </style>
 </head>
-<body x-data="app()" x-init="init()" x-cloak :class="exploreSidebarActive() && 'explore-mode'">
+<body x-data="app()" x-cloak :class="exploreSidebarActive() && 'explore-mode'">
 
 <aside class="sidebar" :class="exploreSidebarActive() && 'explore-mode'">
   <!-- Explore navigator: replaces the menu while browsing a database -->
@@ -899,9 +908,13 @@ Separate multiple statements with ; — highlight text to run just that part."
                       </button>
                       <button class="tab-btn" :class="overviewTab==='search' && 'active'" @click="overviewTab='search'">Search</button>
                       <button class="tab-btn" :class="overviewTab==='diagram' && 'active'" @click="openDiagram()">Diagram</button>
+                      <button class="tab-btn" :class="overviewTab==='analysis' && 'active'" @click="openAnalysis()">
+                        Analysis <span class="tab-count" :class="analysisBadgeClass()" x-show="analysisHere() && analysis.result" x-text="analysis.result ? analysis.result.summary.total : ''"></span>
+                      </button>
                     </div>
                   </div>
                   <div class="d-flex align-items-center gap-2">
+                    <button class="btn btn-outline-soft btn-sm" @click="openAnalysis(true)" title="Check this database for missing indexes and other anomalies"><i class="bi bi-heart-pulse me-1"></i>Analyze</button>
                     <button class="perm-create btn btn-accent btn-sm" @click="openTableEditor('create')"><i class="bi bi-plus-lg me-1"></i>Create table</button>
                     <div class="perm-create dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
                       <button class="btn btn-outline-soft btn-sm" @click="open = !open"><i class="bi bi-plus-lg me-1"></i>New <i class="bi bi-chevron-down ms-1" style="font-size:.7rem"></i></button>
@@ -1017,6 +1030,92 @@ Separate multiple statements with ; — highlight text to run just that part."
                       </div>
                       <div class="text-center text-muted-sm py-4" x-show="!diagram.loading && !diagram.tables.length && !diagram.error">This database has no tables yet.</div>
                     </div>
+                  </div>
+                </template>
+
+                <!-- Analysis: anomalies found by the built-in and admin-defined rules -->
+                <template x-if="overviewTab === 'analysis'">
+                  <div class="card-surface">
+                    <div class="d-flex flex-wrap align-items-center gap-2 px-3 py-2" style="border-bottom:1px solid var(--border)">
+                      <button class="btn btn-accent btn-sm" @click="runAnalysis()" :disabled="!!analysis.running">
+                        <span x-show="analysis.running" class="spinner-border spinner-border-sm me-1"></span>
+                        <i class="bi bi-play-fill me-1" x-show="!analysis.running"></i><span x-text="analysisHere() && analysis.result ? 'Run again' : 'Run analysis'"></span>
+                      </button>
+                      <span class="text-muted-sm" x-show="analysisHere() && analysis.result" x-text="analysisSubtitle()"></span>
+                      <button class="btn btn-outline-soft btn-sm ms-auto" @click="openRulesModal()"><i class="bi bi-sliders me-1"></i><span x-text="isAdmin() ? 'Manage rules' : 'View rules'"></span></button>
+                    </div>
+                    <div class="alert alert-danger py-2 small m-3" x-show="analysis.error" x-text="analysis.error"></div>
+                    <div class="text-center text-muted-sm py-5" x-show="!analysis.running && !analysis.error && !(analysisHere() && analysis.result)">
+                      <i class="bi bi-heart-pulse" style="font-size:1.6rem"></i>
+                      <div class="mt-2">Checks tables, indexes, keys and settings against a set of rules and lists what looks wrong.<br>Nothing is changed.</div>
+                    </div>
+                    <template x-if="analysisHere() && analysis.result">
+                      <div>
+                        <div class="d-flex flex-wrap align-items-center gap-2 px-3 py-2">
+                          <template x-for="sv in ['error', 'warning', 'info']" :key="sv">
+                            <button class="sev-chip" :class="[analysis.sev.includes(sv) && 'on', 'sev-chip-' + sv]" @click="toggleAnalysisSeverity(sv)">
+                              <span class="sev-dot" :class="'sev-' + sv" style="margin:0"></span>
+                              <span x-text="analysis.result.summary[sv]"></span> <span class="text-capitalize" x-text="sv === 'info' ? 'info' : sv + 's'"></span>
+                            </button>
+                          </template>
+                          <select class="form-select form-select-sm" style="width:auto" x-model="analysis.category" x-show="analysisCategories().length > 1">
+                            <option value="">All categories</option>
+                            <template x-for="c in analysisCategories()" :key="c"><option :value="c" x-text="c"></option></template>
+                          </select>
+                          <input type="search" class="form-control form-control-sm" style="width:200px" placeholder="Filter…" x-model="analysis.q">
+                          <div class="tab-switch ms-auto" style="width:auto">
+                            <button class="tab-btn" :class="analysis.group === 'table' && 'active'" @click="analysis.group = 'table'">By table</button>
+                            <button class="tab-btn" :class="analysis.group === 'rule' && 'active'" @click="analysis.group = 'rule'">By rule</button>
+                          </div>
+                        </div>
+                        <div class="alert alert-success py-2 small mx-3" x-show="analysis.result.summary.total === 0">
+                          <i class="bi bi-check-circle me-1"></i>No anomalies found by <span x-text="analysis.result.rulesRun"></span> rules.
+                        </div>
+                        <div class="text-muted-sm px-3 pb-2" x-show="analysis.result.summary.total && !analysisFiltered().length">Nothing matches the filter.</div>
+                        <template x-for="g in analysisGroups()" :key="g.key">
+                          <div>
+                            <div class="analysis-group-head">
+                              <span class="sev-dot" :class="'sev-' + g.worst" style="margin:0"></span>
+                              <a href="#" class="fw-semibold text-decoration-none" x-show="g.table" @click.prevent="openAnalysisTable(g.table)" x-text="g.title"></a>
+                              <span class="fw-semibold" x-show="!g.table" x-text="g.title"></span>
+                              <span class="text-muted-sm" x-show="analysis.group === 'rule'" x-text="g.category"></span>
+                              <span class="text-muted-sm ms-auto" x-text="g.items.length + (g.items.length === 1 ? ' finding' : ' findings')"></span>
+                            </div>
+                            <template x-for="f in g.items" :key="f.id">
+                              <div class="analysis-item">
+                                <div class="d-flex gap-2 align-items-start" :style="(f.fix || f.detail) ? 'cursor:pointer' : ''" @click="(f.fix || f.detail) && (analysis.open[f.id] = !analysis.open[f.id])">
+                                  <span class="sev-dot" :class="'sev-' + f.severity"></span>
+                                  <div class="flex-grow-1" style="min-width:0">
+                                    <div class="small" x-text="f.message"></div>
+                                    <div class="text-muted-sm">
+                                      <span x-show="analysis.group === 'table'" x-text="f.ruleTitle"></span>
+                                      <a href="#" class="text-decoration-none" x-show="analysis.group === 'rule' && f.table" @click.prevent.stop="openAnalysisTable(f.table, f)" x-text="f.object"></a>
+                                      <span x-show="analysis.group === 'rule' && !f.table" x-text="f.object"></span>
+                                      <span x-show="analysis.group === 'table' && f.object !== f.table" x-text="'· ' + f.object"></span>
+                                    </div>
+                                  </div>
+                                  <span class="text-muted-sm text-nowrap" x-show="f.fix || f.detail"><i class="bi" :class="analysis.open[f.id] ? 'bi-chevron-up' : 'bi-chevron-down'"></i> <span x-text="f.fix ? 'Fix' : 'Details'"></span></span>
+                                </div>
+                                <div class="mt-2 ms-4" x-show="analysis.open[f.id]">
+                                  <div class="text-muted-sm mb-1" x-show="f.detail" x-text="f.detail"></div>
+                                  <template x-if="f.fix">
+                                    <div>
+                                      <pre class="definition-block mb-1" style="white-space:pre-wrap" x-text="f.fix"></pre>
+                                      <button class="btn btn-outline-soft btn-sm me-1" @click="copyText(f.fix)"><i class="bi bi-clipboard me-1"></i>Copy SQL</button>
+                                      <button class="btn btn-outline-soft btn-sm" @click="openFixInRunner(f)"><i class="bi bi-terminal me-1"></i>Open in Query Runner</button>
+                                    </div>
+                                  </template>
+                                </div>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                        <div class="px-3 py-2" x-show="analysis.result.skipped.length" style="border-top:1px solid var(--border)">
+                          <div class="small text-warning"><i class="bi bi-exclamation-triangle me-1"></i>Some rules could not run:</div>
+                          <template x-for="sk in analysis.result.skipped" :key="sk.id"><div class="text-muted-sm"><strong x-text="sk.rule"></strong>: <span x-text="sk.reason"></span></div></template>
+                        </div>
+                      </div>
+                    </template>
                   </div>
                 </template>
 
@@ -2368,6 +2467,166 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
+<!-- ===== Explore: Analysis rules ===== -->
+<div class="modal-backdrop-custom" x-show="rulesModal.open" x-cloak @click.self="rulesModal.open = false">
+  <div class="modal-panel modal-panel-xl">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold">Analysis rules</h2>
+      <button class="btn btn-sm btn-outline-soft" @click="rulesModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom" style="max-height:72vh; overflow-y:auto">
+      <div class="alert alert-danger py-2 small" x-show="rulesModal.error" x-text="rulesModal.error"></div>
+      <div class="d-flex align-items-center gap-2 mb-2">
+        <div class="text-muted-sm" x-text="isAdmin() ? 'Switch rules off, change their severity and limits, exclude tables, or add your own. Changes apply to everyone and to the next analysis.' : 'The rules an analysis checks. Only admins can change them.'"></div>
+        <button class="btn btn-accent btn-sm ms-auto text-nowrap" x-show="isAdmin()" @click="openRuleEditor()"><i class="bi bi-plus-lg me-1"></i>Add rule</button>
+      </div>
+      <div class="text-center py-4" x-show="rulesModal.loading"><span class="spinner-border spinner-border-sm"></span></div>
+
+      <template x-if="rulesModal.custom.length">
+        <div class="mb-3">
+          <div class="section-title mb-1">Custom rules</div>
+          <template x-for="r in rulesModal.custom" :key="r.id">
+            <div class="rule-row">
+              <div class="form-check form-switch m-0"><input class="form-check-input" type="checkbox" :checked="r.enabled !== false" :disabled="!isAdmin()" @change="toggleCustomRule(r, $event.target.checked)"></div>
+              <span class="sev-dot" :class="'sev-' + r.severity" style="margin:0"></span>
+              <div class="flex-grow-1" style="min-width:0">
+                <div class="small fw-medium"><span x-text="r.title"></span> <span class="badge rounded-pill badge-soft-success ms-1" x-text="r.kind === 'sql' ? 'SQL' : 'naming'"></span> <span class="text-muted-sm ms-1" x-text="r.category"></span></div>
+                <div class="text-muted-sm text-truncate" x-text="r.description || (r.kind === 'sql' ? (r.sql || '').replace(/\s+/g, ' ') : r.pattern)"></div>
+              </div>
+              <button class="btn btn-sm btn-outline-soft" x-show="isAdmin()" @click="openRuleEditor(r)"><i class="bi bi-pencil"></i></button>
+              <button class="btn btn-sm btn-ghost-danger" x-show="isAdmin()" @click="deleteRule(r)"><i class="bi bi-trash"></i></button>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <template x-for="cat in rulesModalCategories()" :key="cat">
+        <div class="mb-3">
+          <div class="section-title mb-1" x-text="cat"></div>
+          <template x-for="r in rulesModal.builtin.filter(x => x.category === cat)" :key="r.id">
+            <div>
+              <div class="rule-row">
+                <div class="form-check form-switch m-0"><input class="form-check-input" type="checkbox" :checked="r.enabled" :disabled="!isAdmin()" @change="saveBuiltinRule(r, { enabled: $event.target.checked })"></div>
+                <span class="sev-dot" :class="'sev-' + r.severity" style="margin:0"></span>
+                <div class="flex-grow-1" style="min-width:0">
+                  <div class="small fw-medium" x-text="r.title"></div>
+                  <div class="text-muted-sm" x-text="r.description"></div>
+                </div>
+                <button class="btn btn-sm btn-outline-soft" @click="rulesModal.expanded[r.id] = !rulesModal.expanded[r.id]" title="Settings"><i class="bi bi-gear"></i></button>
+              </div>
+              <div class="rule-settings" x-show="rulesModal.expanded[r.id]">
+                <div class="d-flex flex-wrap gap-3 align-items-end">
+                  <div>
+                    <label class="form-label small mb-1">Severity</label>
+                    <select class="form-select form-select-sm" style="width:auto" :disabled="!isAdmin()" :value="r.severity" @change="saveBuiltinRule(r, { severity: $event.target.value })">
+                      <option value="error">Error</option><option value="warning">Warning</option><option value="info">Info</option>
+                    </select>
+                  </div>
+                  <template x-for="p in r.params" :key="p.key">
+                    <div>
+                      <label class="form-label small mb-1" x-text="p.label"></label>
+                      <input :type="p.type === 'number' ? 'number' : 'text'" class="form-control form-control-sm" :style="p.type === 'number' ? 'width:130px' : 'width:220px'" :disabled="!isAdmin()"
+                             :value="p.value" @change="saveBuiltinRule(r, { params: { [p.key]: $event.target.value } })">
+                    </div>
+                  </template>
+                  <div>
+                    <label class="form-label small mb-1">Ignore tables matching (regex)</label>
+                    <input type="text" class="form-control form-control-sm" style="width:220px" placeholder="e.g. ^(migrations|tmp_)" :disabled="!isAdmin()" :value="r.exclude" @change="saveBuiltinRule(r, { exclude: $event.target.value })">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+    <div class="modal-footer-custom"><button class="btn btn-outline-soft" @click="rulesModal.open = false">Close</button></div>
+  </div>
+</div>
+
+<!-- Rule editor (admin) -->
+<div class="modal-backdrop-custom" x-show="ruleEditor.open" x-cloak @click.self="!ruleEditor.saving && (ruleEditor.open = false)">
+  <div class="modal-panel modal-panel-xl">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="ruleEditor.id ? 'Edit rule' : 'New rule'"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="ruleEditor.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom" style="max-height:72vh; overflow-y:auto">
+      <div class="alert alert-danger py-2 small" x-show="ruleEditor.error" x-text="ruleEditor.error"></div>
+      <div class="row g-3">
+        <div class="col-md-6"><label class="form-label small fw-medium">Title</label><input type="text" class="form-control form-control-sm" x-model="ruleEditor.title" placeholder="e.g. Orders older than 5 years"></div>
+        <div class="col-md-3"><label class="form-label small fw-medium">Severity</label>
+          <select class="form-select form-select-sm" x-model="ruleEditor.severity"><option value="error">Error</option><option value="warning">Warning</option><option value="info">Info</option></select></div>
+        <div class="col-md-3"><label class="form-label small fw-medium">Category</label><input type="text" class="form-control form-control-sm" x-model="ruleEditor.category" placeholder="Custom"></div>
+        <div class="col-12"><label class="form-label small fw-medium">Description <span class="text-muted-sm">(why it matters)</span></label><input type="text" class="form-control form-control-sm" x-model="ruleEditor.description"></div>
+        <div class="col-md-4">
+          <label class="form-label small fw-medium">Type</label>
+          <select class="form-select form-select-sm" x-model="ruleEditor.kind"><option value="sql">SQL query</option><option value="pattern">Naming / structure pattern</option></select>
+        </div>
+        <div class="col-md-8"><label class="form-label small fw-medium">Ignore tables matching <span class="text-muted-sm">(regex, optional)</span></label><input type="text" class="form-control form-control-sm" x-model="ruleEditor.exclude" placeholder="e.g. ^(migrations|tmp_)"></div>
+
+        <template x-if="ruleEditor.kind === 'sql'">
+          <div class="col-12">
+            <label class="form-label small fw-medium">SELECT statement</label>
+            <textarea class="form-control sql-editor" rows="7" x-model="ruleEditor.sql" spellcheck="false"
+                      placeholder="SELECT table_name AS `table`,&#10;       CONCAT('about ', table_rows, ' rows') AS message,&#10;       CONCAT('OPTIMIZE TABLE `', table_name, '`') AS fix&#10;FROM information_schema.tables&#10;WHERE table_schema = @db AND table_rows > 1000000"></textarea>
+            <div class="text-muted-sm mt-1">
+              Every row it returns is a finding. Use <code>@db</code> (or <code>DATABASE()</code>) for the database being analyzed.
+              Optional columns: <code>table</code>, <code>object</code> (the first column is used if absent), <code>message</code>, <code>detail</code>, <code>fix</code> (SQL to suggest), <code>severity</code>.
+              Runs read-only, 10 s limit, 200 rows at most.
+            </div>
+          </div>
+        </template>
+        <template x-if="ruleEditor.kind === 'pattern'">
+          <div class="col-12">
+            <div class="row g-3">
+              <div class="col-md-5">
+                <label class="form-label small fw-medium">Check</label>
+                <select class="form-select form-select-sm" x-model="ruleEditor.target">
+                  <option value="table">Table names</option>
+                  <option value="column">Column names</option>
+                  <option value="index">Index names</option>
+                  <option value="table-needs-column">Every table has a column named…</option>
+                </select>
+              </div>
+              <div class="col-md-3" x-show="ruleEditor.target !== 'table-needs-column'">
+                <label class="form-label small fw-medium">Rule</label>
+                <select class="form-select form-select-sm" x-model="ruleEditor.mode"><option value="must-match">Must match</option><option value="must-not-match">Must not match</option></select>
+              </div>
+              <div class="col-md-4"><label class="form-label small fw-medium">Pattern <span class="text-muted-sm">(regex)</span></label><input type="text" class="form-control form-control-sm" x-model="ruleEditor.pattern" placeholder="^[a-z_]+$"></div>
+              <div class="col-md-6" x-show="ruleEditor.target === 'column' || ruleEditor.target === 'table-needs-column'">
+                <label class="form-label small fw-medium">Only columns whose type matches <span class="text-muted-sm">(regex, optional)</span></label>
+                <input type="text" class="form-control form-control-sm" x-model="ruleEditor.typePattern" placeholder="^varchar">
+              </div>
+            </div>
+            <div class="text-muted-sm mt-1">Matching ignores upper/lower case. “Must match” lists the names that don't fit the pattern; “must not match” lists the ones that do.</div>
+          </div>
+        </template>
+      </div>
+
+      <div class="mt-3">
+        <button class="btn btn-outline-soft btn-sm" @click="testRuleEditor()" :disabled="!!ruleEditor.testing">
+          <span x-show="ruleEditor.testing" class="spinner-border spinner-border-sm me-1"></span><i class="bi bi-play-circle me-1" x-show="!ruleEditor.testing"></i>Test on <span x-text="exploreDatabase"></span>
+        </button>
+        <template x-if="ruleEditor.test">
+          <div class="mt-2">
+            <div class="small" x-text="ruleEditor.test.findings.length + ' finding(s) in ' + ruleEditor.test.tables + ' table(s)' + (ruleEditor.test.findings.length > 10 ? ' — first 10:' : '')"></div>
+            <template x-for="(f, i) in ruleEditor.test.findings.slice(0, 10)" :key="i">
+              <div class="text-muted-sm"><span class="sev-dot d-inline-block me-1" :class="'sev-' + f.severity" style="margin:0"></span><strong x-text="f.object"></strong> — <span x-text="f.message"></span></div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="ruleEditor.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveRuleEditor()" :disabled="!!ruleEditor.saving">
+        <span x-show="ruleEditor.saving" class="spinner-border spinner-border-sm me-1"></span>Save rule
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Explore: Restore Modal ===== -->
 <div class="modal-backdrop-custom" x-show="restoreModal.open" x-cloak @click.self="!restoreModal.running && (restoreModal.open = false)">
   <div class="modal-panel">
@@ -3053,6 +3312,7 @@ Separate multiple statements with ; — highlight text to run just that part."
 // The CodeMirror instance lives outside Alpine's reactive state (Alpine
 // would wrap it in a proxy, which CodeMirror doesn't survive).
 let sqlCm = null;
+let routeQueue = Promise.resolve(); // see applyRoute()
 
 function app() {
   return {
@@ -3086,6 +3346,9 @@ function app() {
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
     shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], perms: {}, open_: {}, saving: false, error: '' },
     permissionList: [], permissionPresets: [],
+    analysis: { running: false, error: '', result: null, conn: '', db: '', sev: ['error', 'warning', 'info'], category: '', q: '', group: 'table', open: {} },
+    rulesModal: { open: false, loading: false, error: '', builtin: [], custom: [], expanded: {} },
+    ruleEditor: { open: false, id: null, title: '', description: '', severity: 'warning', category: '', kind: 'sql', sql: '', target: 'table', pattern: '', mode: 'must-match', typePattern: '', exclude: '', enabled: true, error: '', saving: false, test: null, testing: false },
     userModal: { open: false, editing: false, form: {}, saving: false, error: '' },
     passwordModal: { open: false, current: '', next: '', confirm: '', saving: false, error: '' },
 
@@ -3290,8 +3553,13 @@ function app() {
       const r = this.exploreRoutines.find((x) => x.name === name);
       return r && r.modified ? 'modified ' + new Date(r.modified).toLocaleString() : '';
     },
-    // Opens what the address bar says, if the user has access to it.
-    async applyRoute() {
+    // Opens what the address bar says, if the user has access to it. Changes are
+    // applied one at a time, so a second link can't run in the middle of the first.
+    applyRoute() {
+      routeQueue = routeQueue.then(() => this.applyRouteNow()).catch(() => {});
+      return routeQueue;
+    },
+    async applyRouteNow() {
       const raw = location.hash.replace(/^#\/?/, '');
       if (!raw) { this.pushRoute(this.routeHash); return; }
       const [path, query = ''] = raw.split('?');
@@ -3355,6 +3623,7 @@ function app() {
       } else {
         this.exploreTable = ''; this.exploreTableType = ''; this.exploreObject = null;
         if (q.get('tab') === 'diagram') this.openDiagram();
+        else if (q.get('tab') === 'analysis') await this.openAnalysis();
         else this.overviewTab = q.get('tab') === 'search' ? 'search' : 'tables';
       }
     },
@@ -3839,12 +4108,153 @@ function app() {
       this.overviewTab = 'tables'; this.overviewSelected = []; this.exploreDbInfo = null;
       this.dbSearch = { term: '', running: false, result: null, error: '' };
       this.diagram = { loading: false, error: '', tables: [], foreignKeys: [], pos: {}, scale: 1, hover: '' };
+      this.analysis = { ...this.analysis, running: false, error: '', result: null, db: '', conn: '', open: {}, category: '', q: '' };
       if (dbName) this.loadDbInfo();
       this.resetExploreObjects();
       this.exploreError = '';
       if (!dbName) return;
       await this.loadExploreTables();
     },
+    // ---- Database analysis ----
+    analysisHere() {
+      return this.analysis.conn === this.exploreConnKey && this.analysis.db === this.exploreDatabase;
+    },
+    async openAnalysis(rerun = false) {
+      this.overviewTab = 'analysis';
+      if (rerun || !(this.analysisHere() && this.analysis.result)) await this.runAnalysis();
+    },
+    async runAnalysis() {
+      const conn = this.exploreConnKey, db = this.exploreDatabase;
+      this.analysis = { ...this.analysis, running: true, error: '', open: {} };
+      try {
+        const data = await this.apiJson('GET', `${this.exploreBase()}/analyze`);
+        if (conn !== this.exploreConnKey || db !== this.exploreDatabase) return;
+        data.findings.forEach((f, i) => { f.id = i; });
+        this.analysis = { ...this.analysis, result: data, conn, db };
+      } catch (e) {
+        this.analysis = { ...this.analysis, error: e.message, result: null };
+      } finally {
+        this.analysis.running = false;
+      }
+    },
+    analysisSubtitle() {
+      const r = this.analysis.result;
+      if (!r) return '';
+      return `${r.tables} table(s)${r.views ? ' and ' + r.views + ' view(s)' : ''} checked by ${r.rulesRun} rules in ${r.durationMs < 1000 ? r.durationMs + ' ms' : (r.durationMs / 1000).toFixed(1) + ' s'}`;
+    },
+    analysisBadgeClass() {
+      const s = this.analysis.result && this.analysis.result.summary;
+      return !s ? '' : (s.error ? 'text-danger' : s.warning ? 'text-warning' : '');
+    },
+    analysisCategories() {
+      return this.analysis.result ? [...new Set(this.analysis.result.findings.map((f) => f.category))].sort() : [];
+    },
+    toggleAnalysisSeverity(sv) {
+      const s = this.analysis.sev;
+      this.analysis.sev = s.includes(sv) ? s.filter((x) => x !== sv) : [...s, sv];
+    },
+    analysisFiltered() {
+      const r = this.analysis.result;
+      if (!r) return [];
+      const q = this.analysis.q.trim().toLowerCase();
+      return r.findings.filter((f) => this.analysis.sev.includes(f.severity)
+        && (!this.analysis.category || f.category === this.analysis.category)
+        && (!q || `${f.message} ${f.object} ${f.table || ''} ${f.ruleTitle}`.toLowerCase().includes(q)));
+    },
+    analysisGroups() {
+      const order = { error: 0, warning: 1, info: 2 };
+      const groups = new Map();
+      for (const f of this.analysisFiltered()) {
+        const byTable = this.analysis.group === 'table';
+        const key = byTable ? (f.table || '\u0000database') : f.rule;
+        if (!groups.has(key)) groups.set(key, { key, title: byTable ? (f.table || '(database)') : f.ruleTitle, table: byTable ? f.table : null, category: f.category, worst: f.severity, items: [] });
+        const g = groups.get(key);
+        g.items.push(f);
+        if (order[f.severity] < order[g.worst]) g.worst = f.severity;
+      }
+      return [...groups.values()].sort((a, b) => order[a.worst] - order[b.worst] || a.title.localeCompare(b.title));
+    },
+    async openAnalysisTable(table, finding) {
+      if (!this.exploreTables.some((t) => t.name === table)) return;
+      await this.selectExploreTable(table);
+      if (finding && finding.objectType === 'index') this.exploreView = 'indexes';
+      else if (finding && ['foreign key', 'column'].includes(finding.objectType)) this.exploreView = 'structure';
+    },
+    async copyText(text) {
+      try { await navigator.clipboard.writeText(text); this.showToast('Copied'); } catch (e) { this.showToast('Copy failed — select the text and copy manually', 'error'); }
+    },
+    openFixInRunner(f) {
+      this.selectedKeys = [this.exploreConnKey];
+      this.setCurrentDb(this.exploreConnKey, this.exploreDatabase);
+      this.sql = f.fix;
+      this.activeTab = 'runner';
+      this.$nextTick(() => { if (sqlCm) sqlCm.setValue(f.fix); });
+    },
+    // ---- Analysis rules ----
+    async openRulesModal() {
+      this.rulesModal = { ...this.rulesModal, open: true, error: '', expanded: {} };
+      await this.loadRules();
+    },
+    async loadRules() {
+      this.rulesModal.loading = true;
+      try {
+        const data = await this.apiJson('GET', '/api/analyzer/rules');
+        this.rulesModal.builtin = data.builtin; this.rulesModal.custom = data.custom;
+      } catch (e) { this.rulesModal.error = e.message; } finally { this.rulesModal.loading = false; }
+    },
+    rulesModalCategories() {
+      return [...new Set(this.rulesModal.builtin.map((r) => r.category))];
+    },
+    async saveBuiltinRule(rule, patch) {
+      try {
+        const updated = await this.apiJson('PUT', `/api/analyzer/rules/${rule.id}`, patch);
+        const i = this.rulesModal.builtin.findIndex((r) => r.id === rule.id);
+        if (i >= 0) this.rulesModal.builtin[i] = updated;
+        this.rulesModal.error = '';
+      } catch (e) {
+        this.rulesModal.error = e.message;
+        await this.loadRules(); // put the inputs back to what is saved
+      }
+    },
+    async toggleCustomRule(rule, enabled) {
+      try {
+        await this.apiJson('PUT', `/api/analyzer/rules/${rule.id}`, { ...rule, enabled });
+        rule.enabled = enabled;
+      } catch (e) { this.rulesModal.error = e.message; await this.loadRules(); }
+    },
+    openRuleEditor(rule) {
+      const r = rule || {};
+      this.ruleEditor = {
+        open: true, id: r.id || null, title: r.title || '', description: r.description || '', severity: r.severity || 'warning', category: r.category || '',
+        kind: r.kind || 'sql', sql: r.sql || '', target: r.target || 'table', pattern: r.pattern || '', mode: r.mode || 'must-match', typePattern: r.typePattern || '',
+        exclude: r.exclude || '', enabled: r.enabled !== false, error: '', saving: false, test: null, testing: false
+      };
+    },
+    ruleEditorBody() {
+      const e = this.ruleEditor;
+      return { title: e.title, description: e.description, severity: e.severity, category: e.category, kind: e.kind, sql: e.sql, target: e.target, pattern: e.pattern, mode: e.mode, typePattern: e.typePattern, exclude: e.exclude, enabled: e.enabled };
+    },
+    async saveRuleEditor() {
+      const e = this.ruleEditor;
+      e.saving = true; e.error = '';
+      try {
+        await this.apiJson(e.id ? 'PUT' : 'POST', e.id ? `/api/analyzer/rules/${e.id}` : '/api/analyzer/rules', this.ruleEditorBody());
+        e.open = false;
+        this.showToast('Rule saved');
+        await this.loadRules();
+      } catch (err) { e.error = err.message; } finally { e.saving = false; }
+    },
+    async testRuleEditor() {
+      const e = this.ruleEditor;
+      e.testing = true; e.error = ''; e.test = null;
+      try { e.test = await this.apiJson('POST', '/api/analyzer/test', { key: this.exploreConnKey, database: this.exploreDatabase, rule: this.ruleEditorBody() }); } catch (err) { e.error = err.message; } finally { e.testing = false; }
+    },
+    async deleteRule(rule) {
+      const ok = await this.askConfirm(`Delete rule “${rule.title}”?`, 'It stops being checked for everyone.', { confirmLabel: 'Delete', danger: true });
+      if (!ok) return;
+      try { await this.apiJson('DELETE', `/api/analyzer/rules/${rule.id}`); await this.loadRules(); } catch (e) { this.rulesModal.error = e.message; }
+    },
+
     // ---- Schema diagram ----
     diagramStorageKey() {
       return `dbc.diagram.${this.exploreConnKey}.${this.exploreDatabase}`;

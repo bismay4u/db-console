@@ -12,6 +12,7 @@ const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
 const importer = require('./api/importer');
 const perms = require('./api/permissions');
+const analyzer = require('./api/analyzer');
 const FileSessionStore = require('./api/sessionstore');
 const { DATA_DIR, readJson, writeJson, withLock } = require('./api/datadir');
 
@@ -578,6 +579,48 @@ function schemaRoute(handler, { logged = true } = {}) {
     }
   };
 }
+
+// ---- Database analysis (Explore → Analyze) ----
+// Anyone with access to the connection can run it (it only reads); the rules
+// are managed by admins.
+app.get('/api/explore/:key/:database/analyze', requireAuth, async (req, res) => {
+  const start = Date.now();
+  const entry = { source: 'explore', sql: `ANALYZE DATABASE \`${req.params.database}\``, type: 'OTHER' };
+  try {
+    const result = await analyzer.analyze(req.params.key, req.params.database);
+    logAction(req, { ...entry, ok: true, durationMs: Date.now() - start });
+    res.json(result);
+  } catch (err) {
+    logAction(req, { ...entry, ok: false, error: err.message, durationMs: Date.now() - start });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/analyzer/rules', requireAuth, (req, res) => {
+  res.json(analyzer.listRules({ includeSql: isAdmin(req.user) }));
+});
+app.post('/api/analyzer/rules', requireAdmin, (req, res) => {
+  try { res.status(201).json(analyzer.saveCustom(req.body || {})); } catch (err) { res.status(400).json({ error: err.message }); }
+});
+app.put('/api/analyzer/rules/:id', requireAdmin, (req, res) => {
+  try {
+    const id = req.params.id;
+    const rule = id.startsWith('custom-') ? analyzer.saveCustom(req.body || {}, id) : analyzer.updateBuiltin(id, req.body || {});
+    if (!rule) return res.status(404).json({ error: 'Rule not found' });
+    return res.json(rule);
+  } catch (err) { return res.status(400).json({ error: err.message }); }
+});
+app.delete('/api/analyzer/rules/:id', requireAdmin, (req, res) => {
+  if (!analyzer.deleteCustom(req.params.id)) return res.status(404).json({ error: 'Custom rule not found (built-in rules can only be switched off)' });
+  return res.json({ ok: true });
+});
+// Try a rule that isn't saved yet against one database.
+app.post('/api/analyzer/test', requireAdmin, async (req, res) => {
+  const { key, database, rule } = req.body || {};
+  const conn = store.getConnection(key);
+  if (!conn || !canUse(req.user, conn)) return res.status(404).json({ error: 'Connection not found' });
+  try { return res.json(await analyzer.testRule(key, database || conn.database, rule || {})); } catch (err) { return res.status(400).json({ error: err.message }); }
+});
 
 app.get('/api/explore/:key/meta', requireAuth, schemaRoute((req) => schema.getServerMeta(req.params.key), { logged: false }));
 app.post('/api/explore/:key/databases', requireAuth, schemaRoute((req, b) => schema.createDatabase(req.params.key, b)));
