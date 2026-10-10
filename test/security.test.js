@@ -43,6 +43,9 @@ test('IP allow-list, /health exemption, sign-in log, CSV, idle timeout', { timeo
 
   const s2 = await T.startServer({ config: { idleMinutes: 0.02 } });
   try {
+    const h = await fetch(s2.B + '/health');
+    const hb = await h.json();
+    check(h.status === 200 && hb.status === 'ok' && !h.headers.get('set-cookie'), '/health answers without signing in or creating a session', hb);
     const bad = await fetch(s2.B + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'nope' }) });
     check(bad.status === 401, 'bad password is 401', bad.status);
     const cookie = await T.login(s2.B);

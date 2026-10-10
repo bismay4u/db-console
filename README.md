@@ -468,6 +468,28 @@ On first start the app creates its `data/` directory (connections, saved queries
 
 ---
 
+## Running with Docker
+
+```bash
+export SESSION_SECRET=$(openssl rand -hex 32)
+export DBC_ENCRYPTION_KEY='a long passphrase you keep safe'
+docker compose up -d          # http://localhost:3000, admin / admin123! (change it)
+```
+
+or without compose:
+
+```bash
+docker build -t db-console .
+docker run -d -p 3000:3000 -v dbc-data:/data \
+  -e SESSION_SECRET=... -e DBC_ENCRYPTION_KEY=... db-console
+```
+
+* `/data` (connections, users, sessions, logs) must be a volume.
+* Settings are the environment variables from [Other settings](#other-settings); `APP_USER` / `APP_PASS` create the first admin on first start. To seed a connection on first start use `DB1_HOST`, `DB1_PORT`, `DB1_USER`, `DB1_PASSWORD`, `DB1_NAME` (`config_sample.js`), or add connections in the UI.
+* The container reaches databases on the Docker host as `host.docker.internal` (add `extra_hosts: ["host.docker.internal:host-gateway"]` on Linux), not `localhost`.
+* The image runs as the unprivileged `node` user and has a `HEALTHCHECK` on **`GET /health`**, which needs no sign-in and returns `200 {"status":"ok"}` (or `503` if the data directory isn't writable). Use it for load balancers and uptime monitors too; it stays reachable when `ALLOWED_IPS` is set.
+* The Dockerfile was checked by installing and starting exactly the files it copies; if a `docker build` fails for you, please open an issue.
+
 ## Running with PM2
 
 ```bash

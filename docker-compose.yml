@@ -1,0 +1,21 @@
+# Quick start:  SESSION_SECRET=$(openssl rand -hex 32) docker compose up -d
+# then open http://localhost:3000 and sign in as admin / the APP_PASS below.
+services:
+  db-console:
+    build: .
+    image: db-console
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET to a long random string}
+      DBC_ENCRYPTION_KEY: ${DBC_ENCRYPTION_KEY:-}   # passphrase for saved connection passwords (recommended)
+      APP_USER: ${APP_USER:-admin}                  # first admin, created on first start only
+      APP_PASS: ${APP_PASS:-admin123!}
+      # TRUST_PROXY: "1"                            # when behind nginx / a load balancer
+      # ALLOWED_IPS: "10.0.0.0/8,192.168.1.5"
+    volumes:
+      - dbc-data:/data
+
+volumes:
+  dbc-data:

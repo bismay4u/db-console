@@ -1,4 +1,5 @@
 // server.js
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const session = require('express-session');
@@ -39,6 +40,15 @@ if (ipGuard.active) {
     return res.status(403).type('text/plain').send('Access from your address is not allowed.');
   });
 }
+
+// Liveness / readiness probe for Docker, load balancers and uptime monitors.
+// No sign-in needed and no session is created; it fails (503) when the data
+// directory isn't writable, which means the app can't work.
+app.get('/health', (req, res) => {
+  let ok = true;
+  try { fs.accessSync(DATA_DIR, fs.constants.W_OK); } catch (e) { ok = false; }
+  res.status(ok ? 200 : 503).set('Cache-Control', 'no-store').json({ status: ok ? 'ok' : 'unavailable', uptime: Math.round(process.uptime()), version: require('./package.json').version });
+});
 
 // Sessions: SESSION_MINUTES (or `sessionMinutes`) is how long a sign-in lasts at most (default 240);
 // IDLE_MINUTES (or `idleMinutes`) signs out after that long without activity (default: off).
