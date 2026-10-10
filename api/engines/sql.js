@@ -118,7 +118,7 @@ function buildWhere(filters, columnNames, dialect, b = binder(dialect)) {
     const negative = ['!=', 'not contains', 'NOT LIKE', 'NOT IN', 'IS NOT NULL'].includes(f.op);
     const parts = cols.map((c) => {
       let cond;
-      if (f.op in SIMPLE) cond = `${quote(c)} ${SIMPLE[f.op]} ${b.bind(f.value)}`;
+      if (f.op in SIMPLE) cond = `${any && dialect === 'postgres' ? `${quote(c)}::text` : quote(c)} ${SIMPLE[f.op]} ${b.bind(f.value)}`;
       else if (f.op === 'IS NULL') cond = `${quote(c)} IS NULL`;
       else if (f.op === 'IS NOT NULL') cond = `${quote(c)} IS NOT NULL`;
       else if (f.op === 'contains' || f.op === 'not contains') cond = like(c, b.bind(`%${escapeLike(f.value)}%`), f.op === 'not contains');

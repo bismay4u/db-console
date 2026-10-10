@@ -245,6 +245,8 @@ async function knownDatabases(key) {
 // null when `sql` stays inside what the user may touch on `conn`, else the message.
 async function scopeError(user, conn, sql, currentDb) {
   const sc = scopeOf(user, conn);
+  // Restrictions read SQL with MySQL's quoting rules; other engines quote differently, so free-form SQL is refused (Explore still works).
+  if (sc && conn.engine && conn.engine !== 'mysql') return 'Your access to this connection is limited to certain databases or tables, so SQL cannot be run on a ' + (conn.engine === 'sqlite' ? 'SQLite' : 'PostgreSQL') + ' connection. Use Explore instead.';
   return sc ? scopeLib.checkSql(sc, sql, currentDb, await knownDatabases(conn.key)) : null;
 }
 const DB_LEVEL_FORBIDDEN_WITH_HIDDEN = new Set(['export', 'restore', 'analyze', 'search-replace']); // they read every table
