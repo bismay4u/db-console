@@ -942,7 +942,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <span class="use-db-chip" x-show="exploreMeta" x-text="exploreMeta && exploreMeta.version"></span>
                 </div>
                 <div class="tab-switch" style="width:auto">
-                  <template x-for="t in [['processes', 'Processes'], ['variables', 'Variables'], ['status', 'Status'], ['accounts', 'Users & privileges']]" :key="t[0]">
+                  <template x-for="t in [['health', 'Health'], ['processes', 'Processes'], ['variables', 'Variables'], ['status', 'Status'], ['accounts', 'Users & privileges']]" :key="t[0]">
                     <button class="tab-btn px-3 text-nowrap" :class="serverTab === t[0] && 'active'" @click="switchServerTab(t[0])" x-text="t[1]"></button>
                   </template>
                 </div>
@@ -951,6 +951,9 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <label class="form-check-label small" x-show="serverTab === 'processes'">
                   <input type="checkbox" class="form-check-input" x-model="serverAutoRefresh" @change="scheduleProcessRefresh()"> Auto-refresh
                 </label>
+                <label class="form-check-label small" x-show="serverTab === 'health'">
+                  <input type="checkbox" class="form-check-input" x-model="health.auto" @change="scheduleProcessRefresh()"> Auto-refresh (5 s)
+                </label>
                 <input type="search" class="form-control form-control-sm" style="width:220px" placeholder="Filter…" x-model="serverFilter" x-show="serverTab === 'variables' || serverTab === 'status'">
                 <button class="btn btn-accent btn-sm" x-show="serverTab === 'accounts'" @click="openAccountModal('create')"><i class="bi bi-person-plus me-1"></i>New user</button>
                 <button class="btn btn-outline-soft btn-sm" @click="loadServerTab()" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
@@ -958,6 +961,65 @@ Separate multiple statements with ; — highlight text to run just that part."
               </div>
             </div>
             <div class="alert alert-danger py-2 small m-2" x-show="serverError" x-text="serverError"></div>
+
+            <template x-if="serverTab === 'health'">
+              <div class="p-3">
+                <div class="text-muted-sm" x-show="!health.data && health.loading"><span class="spinner-border spinner-border-sm me-1"></span>Reading the server…</div>
+                <template x-if="health.data">
+                  <div>
+                    <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+                      <span class="small text-muted-sm" x-text="health.data.version + ' · up ' + healthUptime(health.data.uptime)"></span>
+                      <span class="badge rounded-pill badge-soft-danger" x-show="health.data.readOnly">read-only</span>
+                      <button class="btn btn-outline-soft btn-sm ms-auto" @click="openInnodbStatus()"><i class="bi bi-file-earmark-text me-1"></i>InnoDB status</button>
+                    </div>
+                    <div class="row g-2 mb-3">
+                      <template x-for="c in healthCards()" :key="c[0]">
+                        <div class="col-6 col-md-3"><div class="border rounded-2 p-2 h-100"><div class="text-muted-sm" x-text="c[0]"></div><div class="fw-semibold" :class="c[3]" x-text="c[1]"></div><div class="text-muted-sm" x-text="c[2]"></div></div></div>
+                      </template>
+                    </div>
+                    <div class="mb-3">
+                      <div class="section-title mb-1">Worth a look</div>
+                      <div class="text-success small" x-show="!health.data.flags.length"><i class="bi bi-check-circle me-1"></i>Nothing stands out.</div>
+                      <template x-for="(f, i) in health.data.flags" :key="i">
+                        <div class="d-flex gap-2 small mb-1"><span class="sev-dot mt-1" :class="'sev-' + (f.level === 'error' ? 'error' : f.level === 'warning' ? 'warning' : 'info')"></span><span x-text="f.text"></span></div>
+                      </template>
+                    </div>
+                    <div class="mb-3">
+                      <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+                        <div class="section-title mb-0">Over time</div>
+                        <select class="form-select form-select-sm" style="width:auto" x-model="health.metric" @change="drawHealthSoon()">
+                          <option value="conns">Connections</option><option value="qps">Queries per second</option><option value="slow">Slow queries per minute</option><option value="hit">Buffer pool hit ratio</option>
+                        </select>
+                        <select class="form-select form-select-sm" style="width:auto" x-model="health.range" @change="loadHealthHistory()">
+                          <option value="live">Since you opened this page</option><option value="1">Last hour</option><option value="6">Last 6 hours</option><option value="24">Last 24 hours</option><option value="168">Last 7 days</option>
+                        </select>
+                        <span class="text-muted-sm" x-show="health.range !== 'live' && !health.recording">Nothing is recorded in the background yet.</span>
+                        <button class="btn btn-outline-soft btn-sm ms-auto" x-show="!health.recording" @click="setRecording(true)"><i class="bi bi-record-circle me-1"></i>Record every minute</button>
+                        <button class="btn btn-outline-soft btn-sm ms-auto" x-show="health.recording" @click="setRecording(false)"><i class="bi bi-stop-circle me-1"></i>Stop recording</button>
+                      </div>
+                      <div style="height:200px; position:relative"><canvas x-effect="drawHealthChart($el, healthPoints(), health.metric)"></canvas></div>
+                    </div>
+                    <div class="row g-3">
+                      <div class="col-lg-6">
+                        <div class="section-title mb-1">Running now</div>
+                        <div class="text-muted-sm" x-show="!health.data.running.length">No query is running.</div>
+                        <template x-for="q in health.data.running" :key="q.id"><div class="small mb-1"><span class="text-muted-sm" x-text="q.user + ' · ' + q.time + 's · '"></span><code x-text="q.info"></code></div></template>
+                      </div>
+                      <div class="col-lg-6">
+                        <div class="section-title mb-1">Open transactions &amp; lock waits</div>
+                        <div class="text-muted-sm" x-show="!health.data.transactions.length && !health.data.lockWaits.length">None.</div>
+                        <template x-for="t in health.data.transactions" :key="t.id"><div class="small mb-1"><span x-text="'Connection ' + t.id + ' · open ' + t.age + 's · ' + t.modified + ' row(s) modified'"></span><span class="text-muted-sm" x-show="t.query" x-text="' · ' + t.query"></span></div></template>
+                        <template x-for="w in health.data.lockWaits" :key="w.waiting"><div class="small mb-1 text-danger" x-text="'Connection ' + w.waiting + ' has waited ' + w.secs + 's for connection ' + w.blocking"></div></template>
+                      </div>
+                    </div>
+                    <template x-if="health.data.replication">
+                      <div class="mt-3"><div class="section-title mb-1">Replication</div>
+                        <div class="small" x-text="'IO thread: ' + health.data.replication.io + ' · SQL thread: ' + health.data.replication.sql + ' · behind by ' + (health.data.replication.lag === null ? 'unknown' : health.data.replication.lag + 's') + (health.data.replication.source ? ' · source ' + health.data.replication.source : '')"></div></div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
 
             <template x-if="serverTab === 'processes'">
               <div class="table-responsive">
@@ -2477,6 +2539,14 @@ Separate multiple statements with ; — highlight text to run just that part."
         Save
       </button>
     </div>
+  </div>
+</div>
+
+<!-- ===== InnoDB status ===== -->
+<div class="modal-backdrop-custom" x-show="health.innodb.open" x-cloak @click.self="health.innodb.open = false">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">SHOW ENGINE INNODB STATUS</h2><button class="btn btn-sm btn-outline-soft" @click="health.innodb.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom"><pre class="definition-block mb-0" style="white-space:pre; max-height:65vh; overflow:auto; font-size:.72rem" x-text="health.innodb.text || 'Loading…'"></pre></div>
   </div>
 </div>
 
@@ -4431,7 +4501,8 @@ function app() {
     importModal: { open: false, step: 'pick', file: null, previewFields: [], previewRows: [], mapping: [], running: false, error: '', progress: {}, result: null },
     objectEditor: { open: false, kind: 'view', name: null, sql: '', preview: '', error: '', saving: false },
     exploreServer: false,
-    serverTab: 'processes',
+    serverTab: 'health',
+    health: { data: null, loading: false, raw: [], range: 'live', metric: 'conns', history: [], recording: false, auto: true, innodb: { open: false, text: '' } },
     serverProcesses: [],
     serverVars: [],
     serverAccounts: [],
@@ -4506,7 +4577,7 @@ function app() {
         parts.push(enc(this.exploreConnKey));
         if (this.exploreServer) {
           parts.push('server');
-          if (this.serverTab !== 'processes') q.push('tab=' + this.serverTab);
+          if (this.serverTab !== 'health') q.push('tab=' + this.serverTab);
         } else if (this.exploreDatabase) {
           parts.push(enc(this.exploreDatabase));
           if (this.exploreTable) {
@@ -4581,7 +4652,7 @@ function app() {
       if (second === 'server') {
         if (!this.exploreConnCanManage()) { this.showToast('Only the owner of a connection or an admin can open its server tools', 'error'); return; }
         const tab = q.get('tab');
-        this.serverTab = ['processes', 'variables', 'status', 'accounts'].includes(tab) ? tab : 'processes';
+        this.serverTab = ['health', 'processes', 'variables', 'status', 'accounts'].includes(tab) ? tab : 'health';
         this.openServerView();
         return;
       }
@@ -7188,6 +7259,7 @@ function app() {
     },
     openServerView() {
       this.exploreServer = true;
+      if (this.health.conn !== this.exploreConnKey) this.health = { data: null, loading: false, raw: [], range: 'live', metric: 'conns', history: [], recording: false, auto: true, innodb: { open: false, text: '' }, conn: this.exploreConnKey };
       if (!this.exploreMeta) this.loadExploreMeta();
       this.switchServerTab(this.serverTab);
     },
@@ -7199,7 +7271,8 @@ function app() {
     async loadServerTab() {
       this.serverError = '';
       try {
-        if (this.serverTab === 'processes') this.serverProcesses = await this.apiJson('GET', `${this.serverBase()}/processes`);
+        if (this.serverTab === 'health') await this.loadHealth();
+        else if (this.serverTab === 'processes') this.serverProcesses = await this.apiJson('GET', `${this.serverBase()}/processes`);
         else if (this.serverTab === 'variables' || this.serverTab === 'status') this.serverVars = await this.apiJson('GET', `${this.serverBase()}/${this.serverTab}`);
         else {
           const data = await this.apiJson('GET', `${this.serverBase()}/accounts`);
@@ -7211,12 +7284,98 @@ function app() {
     },
     scheduleProcessRefresh() {
       clearTimeout(this.serverTimer);
-      if (!this.serverAutoRefresh || this.serverTab !== 'processes') return;
+      if (!(this.serverTab === 'processes' ? this.serverAutoRefresh : this.serverTab === 'health' && this.health.auto)) return;
       this.serverTimer = setTimeout(async () => {
         if (!this.exploreServer || this.activeTab !== 'explore') return;
         await this.loadServerTab();
         this.scheduleProcessRefresh();
-      }, 3000);
+      }, this.serverTab === 'health' ? 5000 : 3000);
+    },
+
+    // ---- Server health ----
+    healthUptime(sec) {
+      const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+      return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+    },
+    healthCards() {
+      const d = this.health.data;
+      if (!d) return [];
+      const last = this.healthRates(this.health.raw).slice(-1)[0] || {};
+      const usedPct = d.connections.max ? d.connections.current / d.connections.max * 100 : 0;
+      return [
+        ['Connections', `${d.connections.current} / ${d.connections.max}`, `${usedPct.toFixed(0)}% of the limit · peak ${d.connections.maxUsed}`, usedPct >= 80 ? 'text-danger' : ''],
+        ['Running queries', String(d.connections.running), 'at this moment', d.connections.running >= 20 ? 'text-warning' : ''],
+        ['Queries per second', last.qps === null || last.qps === undefined ? '…' : last.qps.toFixed(1), `${Number(d.queries.total).toLocaleString()} since start`, ''],
+        ['Slow queries', Number(d.queries.slow).toLocaleString(), d.queries.slowLog ? `slower than ${d.queries.longQueryTime}s, logged` : 'slow query log is off', ''],
+        ['Buffer pool hits', d.innodb.hitRatio === null ? '—' : d.innodb.hitRatio.toFixed(2) + '%', `${this.formatBytes(d.innodb.bufferPoolBytes)} buffer pool`, d.innodb.hitRatio !== null && d.innodb.hitRatio < 95 ? 'text-warning' : ''],
+        ['Row lock waits', String(d.innodb.rowLockWaitsNow), `${Number(d.innodb.rowLockWaitsTotal).toLocaleString()} so far · avg ${d.innodb.rowLockTimeAvgMs} ms`, d.innodb.rowLockWaitsNow ? 'text-warning' : ''],
+        ['Temp tables on disk', d.tmpTables.diskPct === null ? '—' : d.tmpTables.diskPct.toFixed(0) + '%', `${Number(d.tmpTables.disk).toLocaleString()} of ${Number(d.tmpTables.total).toLocaleString()}`, ''],
+        ['Network', this.formatBytes(d.traffic.received) + ' in', this.formatBytes(d.traffic.sent) + ' out since start', '']
+      ];
+    },
+    async loadHealth() {
+      this.health.loading = true;
+      try {
+        const d = await this.apiJson('GET', `${this.serverBase()}/health`);
+        this.health.data = d;
+        this.health.raw.push(d.sample);
+        if (this.health.raw.length > 360) this.health.raw.shift();
+        if (this.health.range !== 'live' && !this.health.history.length) await this.loadHealthHistory();
+        else if (this.health.range === 'live' && this.health.recording === undefined) this.health.recording = false;
+      } finally { this.health.loading = false; }
+      if (this.health.range === 'live' || !this.health.history.length) this.loadHealthRecording();
+    },
+    async loadHealthRecording() {
+      try { const h = await this.apiJson('GET', `${this.serverBase()}/health/history?hours=0.1`); this.health.recording = h.recording; } catch (e) { /* ignore */ }
+    },
+    async loadHealthHistory() {
+      if (this.health.range === 'live') { this.health.history = []; return; }
+      try {
+        const h = await this.apiJson('GET', `${this.serverBase()}/health/history?hours=${this.health.range}`);
+        this.health.history = h.points; this.health.recording = h.recording;
+      } catch (e) { this.serverError = e.message; }
+    },
+    async setRecording(on) {
+      try {
+        await this.apiJson('PUT', `/api/connections/${this.exploreConnKey}`, { monitor: on });
+        this.health.recording = on;
+        this.showToast(on ? 'Recording once a minute — the history builds up from now on' : 'Stopped recording');
+        await this.loadConnections();
+      } catch (e) { this.serverError = e.message; }
+    },
+    // Same arithmetic as the server: counters become per-second / per-minute rates; a restart resets them.
+    healthRates(raw) {
+      return raw.map((s, i) => {
+        const p = raw[i - 1];
+        const dt = p ? (s.ts - p.ts) / 1000 : 0;
+        const ok = p && dt > 0 && s.up >= p.up;
+        const rate = (a, b) => (ok ? Math.max(0, (a - b) / dt) : null);
+        const dReq = ok ? s.bpRequests - p.bpRequests : 0;
+        return { ts: s.ts, threads: s.threads, running: s.running, qps: rate(s.questions, p && p.questions), slowPerMin: ok ? rate(s.slow, p.slow) * 60 : null,
+          hitRatio: ok && dReq > 0 ? (1 - (s.bpReads - p.bpReads) / dReq) * 100 : null };
+      });
+    },
+    healthPoints() { return this.health.range === 'live' ? this.healthRates(this.health.raw) : this.health.history; },
+    drawHealthSoon() { this.health.range = this.health.range + ''; },
+    drawHealthChart(canvas, points, metric) {
+      if (!window.Chart) return;
+      const pts = Alpine.raw(points).slice(-720);
+      const prev = window.Chart.getChart(canvas);
+      if (prev) prev.destroy();
+      const fmt = (t) => { const d = new Date(t); return this.health.range === 'live' || Number(this.health.range) <= 6 ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: this.health.range === 'live' ? '2-digit' : undefined }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
+      const sets = {
+        conns: [['Connected', 'threads', '#4f46e5'], ['Running', 'running', '#ef4444']],
+        qps: [['Queries/s', 'qps', '#0ea5e9']], slow: [['Slow queries/min', 'slowPerMin', '#f59e0b']], hit: [['Hit ratio %', 'hitRatio', '#10b981']]
+      }[metric];
+      new window.Chart(canvas, {
+        type: 'line',
+        data: { labels: pts.map((p) => fmt(p.ts)), datasets: sets.map(([label, k, color]) => ({ label, data: pts.map((p) => p[k]), borderColor: color, backgroundColor: color + '22', tension: .2, pointRadius: pts.length > 80 ? 0 : 2, spanGaps: true })) },
+        options: { responsive: true, maintainAspectRatio: false, animation: false, scales: { y: { beginAtZero: metric !== 'hit' } }, plugins: { legend: { display: sets.length > 1 } } }
+      });
+    },
+    async openInnodbStatus() {
+      this.health.innodb = { open: true, text: '' };
+      try { this.health.innodb.text = (await this.apiJson('GET', `${this.serverBase()}/innodb-status`)).text; } catch (e) { this.health.innodb.text = e.message; }
     },
     filteredServerVars() {
       const q = this.serverFilter.trim().toLowerCase();

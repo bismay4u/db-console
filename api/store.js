@@ -190,6 +190,7 @@ function createConnection(data) {
     owner: data.owner,
     sharedWith: []
   };
+  if (data.monitor) conn.monitor = true; // record server metrics every minute
   applyNetwork(conn, data);
 
   conns.push(conn);
@@ -214,6 +215,7 @@ function updateConnection(key, data) {
     database: data.database ?? existing.database
   };
   applyNetwork(updated, data, existing);
+  if (data.monitor !== undefined) { if (data.monitor) updated.monitor = true; else delete updated.monitor; }
 
   conns[idx] = updated;
   saveConnections(conns);

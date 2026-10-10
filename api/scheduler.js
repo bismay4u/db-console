@@ -21,6 +21,7 @@ const uploader = require('./uploader');
 const analyzer = require('./analyzer');
 const querylog = require('./querylog');
 const access = require('./access');
+const metrics = require('./metrics');
 
 const LEADER_FILE = path.join(DATA_DIR, '.scheduler.lock');
 const LOCK_DIR = path.join(DATA_DIR, 'job-locks');
@@ -304,11 +305,22 @@ async function runNow(id, by) {
   return runJob(job, { trigger: 'manual', by });
 }
 
+let lastMetrics = 0;
+// Once a minute, the leader records a few server counters for every connection with "record metrics" on.
+function sampleMetrics(now) {
+  if (now - lastMetrics < (Number(process.env.METRICS_INTERVAL_MS) || 60000)) return;
+  lastMetrics = now;
+  for (const c of store.listConnections()) {
+    if (c.monitor && !c.secretError) metrics.record(c.key).catch(() => {});
+  }
+}
+
 async function tick() {
   try {
     leader = claimLeadership();
     if (!leader) return;
     const now = Date.now();
+    sampleMetrics(now);
     for (const job of jobs.list()) {
       if (!job.enabled || !job.schedule || running.has(job.id)) continue;
       if (!job.nextRunAt) { jobs.patch(job.id, { nextRunAt: jobs.nextRunAt(job) }); continue; }

@@ -134,6 +134,7 @@ Every change to the schema shows the exact SQL before it runs, and is written to
 
 **Server** (owner or admin of the connection)
 
+* **Health** (the first tab): connections against the limit, running queries, queries per second, slow queries, InnoDB buffer-pool hit ratio, row-lock waits, temporary tables on disk and traffic; a plain-language **Worth a look** list (connection limit nearly reached, statements waiting for a lock, transactions left open, a stopped or lagging replica, a too-small buffer pool, slow query log off…); what is running and which transactions are open; the full `SHOW ENGINE INNODB STATUS`; and charts over time. The live chart fills while the page is open (refreshing every 5 s); **Record every minute** makes the server keep a few counters for that connection (`data/metrics/`, the newest 7 days) so the chart can show the last hour, 6 hours, 24 hours or 7 days even when nobody is looking
 * Process list, with kill query / kill connection
 * Server variables and status
 * Database accounts: create, drop, change password, grant and revoke privileges (server-wide, per database or per table)

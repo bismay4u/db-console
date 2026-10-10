@@ -15,6 +15,7 @@ const notify = require('./api/notify');
 const cron = require('./api/cron');
 const insight = require('./api/insight');
 const diff = require('./api/diff');
+const metrics = require('./api/metrics');
 const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
@@ -461,8 +462,8 @@ app.post('/api/connections', requireAuth, async (req, res) => {
 });
 
 app.put('/api/connections/:key', requireAuth, requireManage, (req, res) => {
-  const { label, host, port, user, password, database } = req.body || {};
-  const updated = store.updateConnection(req.params.key, { label, host, port, user, password, database, ...networkFromBody(req.body || {}) });
+  const { label, host, port, user, password, database, monitor } = req.body || {};
+  const updated = store.updateConnection(req.params.key, { label, host, port, user, password, database, monitor, ...networkFromBody(req.body || {}) });
   if (!updated) return res.status(404).json({ error: 'Connection not found' });
   db.dropPool(req.params.key); // force pool rebuild with new settings
   res.json(connView(updated, req.user));
@@ -803,6 +804,9 @@ function serverRoute(handler, { logged = true } = {}) {
   }];
 }
 
+app.get('/api/server/:key/health', ...serverRoute((req) => metrics.snapshot(req.params.key), { logged: false }));
+app.get('/api/server/:key/health/history', ...serverRoute((req) => ({ recording: Boolean(req.conn.monitor), points: metrics.history(req.params.key, Date.now() - Math.min(Math.max(Number(req.query.hours) || 1, 0.1), 168) * 3600000) }), { logged: false }));
+app.get('/api/server/:key/innodb-status', ...serverRoute(async (req) => ({ text: await metrics.innodbStatus(req.params.key) }), { logged: false }));
 app.get('/api/server/:key/processes', ...serverRoute((req) => serverAdmin.processList(req.params.key), { logged: false }));
 app.post('/api/server/:key/processes/:id/kill', ...serverRoute((req, b) => serverAdmin.killProcess(req.params.key, req.params.id, b)));
 app.get('/api/server/:key/variables', ...serverRoute((req) => serverAdmin.variables(req.params.key, 'variables'), { logged: false }));
