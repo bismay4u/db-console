@@ -3022,6 +3022,8 @@ Separate multiple statements with ; — highlight text to run just that part."
         <div class="col-12"><label class="form-label small mb-0">URL <span class="text-muted-sm">(Slack / Teams / Discord incoming webhook, or your own endpoint)</span></label><input class="form-control form-control-sm" x-model="notifyModal.form.webhookUrl" placeholder="https://hooks.slack.com/services/…"></div>
         <div class="col-12"><label class="form-label small mb-0">Signing secret <span class="text-muted-sm">(optional — adds an <code>X-DBConsole-Signature</code> HMAC header)</span> <span class="text-muted-sm" x-show="notifyModal.info.hasWebhookSecret">(saved — blank keeps it)</span></label><input type="password" class="form-control form-control-sm" x-model="notifyModal.form.webhookSecret" autocomplete="new-password"></div>
       </div>
+      <div class="section-title mt-3 mb-1">Approval requests</div>
+      <input class="form-control form-control-sm" x-model="notifyModal.form.approvalEmails" placeholder="E-mail addresses to tell when someone asks to run a risky statement (comma-separated)">
       <div class="section-title mt-3 mb-1">Links in alerts</div>
       <input class="form-control form-control-sm" x-model="notifyModal.form.baseUrl" placeholder="https://dbconsole.example.com (this app's public address)">
       <div class="section-title mt-3 mb-1">Send a test</div>
@@ -8043,7 +8045,7 @@ function app() {
         const info = await this.apiJson('GET', '/api/notify');
         this.notifyModal = {
           open: true, info, error: '', saving: false, testEmail: '', testing: false, testResult: '', testOk: false,
-          form: { smtp: { host: info.smtp.host, port: info.smtp.port, user: info.smtp.user, from: info.smtp.from, secure: info.smtp.secure, password: '' }, webhookUrl: info.webhookUrl, webhookSecret: '', baseUrl: info.baseUrl }
+          form: { smtp: { host: info.smtp.host, port: info.smtp.port, user: info.smtp.user, from: info.smtp.from, secure: info.smtp.secure, password: '' }, webhookUrl: info.webhookUrl, webhookSecret: '', baseUrl: info.baseUrl, approvalEmails: info.approvalEmails || '' }
         };
       } catch (e) { this.showToast(e.message, 'error'); }
     },
