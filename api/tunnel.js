@@ -106,6 +106,7 @@ class TunnelStream extends Duplex {
   setNoDelay() { return this; }
   setKeepAlive() { return this; }
   setTimeout() { return this; }
+  connect() { return this; } // pg calls stream.connect(port, host); the SSH channel is opened by the constructor
   ref() { return this; }
   unref() { return this; }
 }

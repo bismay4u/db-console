@@ -6,6 +6,7 @@ const mysql = require('mysql2/promise');
 const mysqlUtil = require('mysql2'); // for safe identifier escaping (escapeId)
 const store = require('./store');
 const tunnel = require('./tunnel');
+const engines = require('./engines');
 const permissions = require('./permissions');
 const fs = require('fs');
 const os = require('os');
@@ -58,6 +59,7 @@ function getPool(key) {
     throw new Error(`Unknown connection: ${key}`);
   }
   if (conn.secretError) throw new Error(conn.secretError);
+  if (engines.engineOf(conn) !== 'mysql') throw engines.unsupported(engines.engineOf(conn));
 
   // Only settings that affect the pool count; sharing/ownership changes don't.
   const configStr = JSON.stringify([poolConfig(conn), conn.sshHost, conn.sshPort, conn.sshUser, conn.sshPassword, conn.sshPrivateKey, conn.sshPassphrase, conn.sshHostKey]);
@@ -76,6 +78,7 @@ function getPool(key) {
 }
 
 function dropPool(key) {
+  engines.dropPool(key);
   const cached = poolCache.get(key);
   if (cached) {
     cached.pool.end().catch(() => {});
@@ -85,6 +88,7 @@ function dropPool(key) {
 }
 
 async function closeAllPools() {
+  await engines.closeAll();
   const pools = [...poolCache.values()].map((c) => c.pool);
   const keys = [...poolCache.keys()];
   poolCache.clear();
@@ -277,6 +281,8 @@ const EXPLAINABLE_RE = /^(select|with|update|delete|insert|replace|table)\b/i;
 // away afterwards, so a stored function that writes, or a WITH … DELETE,
 // still fails for a user who may not write.
 async function runQuery(key, sqlText, { database, explain = false, allowed = null, track = null } = {}) {
+  const other = engines.forKey(key);
+  if (other) return other.a.runQuery(other.conn, sqlText, { database, explain, allowed, track });
   let statements = splitStatements(sqlText);
   if (statements.length === 0) {
     throw new Error('No SQL statement to execute');
@@ -397,6 +403,8 @@ async function runQuery(key, sqlText, { database, explain = false, allowed = nul
 // that starts with `sqlStart`: pooled connections are reused, and the thread
 // may meanwhile belong to another user's query. Returns 1 if it was stopped.
 async function killQuery(key, thread, sqlStart) {
+  const other = engines.forKey(key);
+  if (other) return other.a.cancel(other.conn, thread, sqlStart);
   const n = Number(thread);
   if (!Number.isInteger(n) || n <= 0) throw new Error('Invalid thread id');
   const pool = getPool(key);
@@ -410,6 +418,8 @@ async function killQuery(key, thread, sqlStart) {
 // Test an arbitrary connection config (used for "Test connection" in the UI,
 // both for unsaved forms and for existing saved connections).
 async function testConnection(saved) {
+  const other = engines.forConn(saved);
+  if (other) return other.a.test({ ...saved, key: saved.key || 'test:' + crypto.randomBytes(4).toString('hex') });
   // A throwaway tunnel key, so testing never tears down the live tunnel of a saved connection.
   const conn = { ...saved, key: 'test:' + crypto.randomBytes(6).toString('hex') };
   let connection;
@@ -458,6 +468,8 @@ module.exports = {
   exportDatabase,
   exportQueryResult,
   isExportable,
+  splitStatementsFor,
+  ping,
   stripTrailingLimit,
   restoreDump
 };
@@ -469,6 +481,8 @@ function esc(identifier) {
 }
 
 async function listDatabases(key) {
+  const other = engines.forKey(key);
+  if (other) return other.a.listDatabases(other.conn);
   const pool = getPool(key);
   const [rows] = await pool.query('SHOW DATABASES');
   // Row shape is { Database: 'name' }
@@ -477,6 +491,8 @@ async function listDatabases(key) {
 
 // Tables AND views (type is 'BASE TABLE' or 'VIEW').
 async function listTables(key, database) {
+  const other = engines.forKey(key);
+  if (other) return other.a.listTables(other.conn, database);
   const pool = getPool(key);
   const [rows] = await pool.query(
     `SELECT TABLE_NAME AS name, TABLE_ROWS AS approxRows, ENGINE AS engine, TABLE_TYPE AS type,
@@ -533,6 +549,8 @@ async function listEvents(key, database) {
 // is a real error; routines/triggers/events failing (e.g. missing privilege
 // or an old server) just yields an empty list plus a note.
 async function listObjects(key, database) {
+  const other = engines.forKey(key);
+  if (other) return other.a.listObjects(other.conn, database);
   const [t, r, tr, e] = await Promise.allSettled([
     listTables(key, database),
     listRoutines(key, database),
@@ -553,6 +571,8 @@ async function listObjects(key, database) {
 
 // Groups SHOW INDEX rows (one per indexed column) into one entry per index.
 async function getTableIndexes(key, database, table) {
+  const other = engines.forKey(key);
+  if (other) return other.a.tableIndexes(other.conn, database, table);
   const pool = getPool(key);
   const [rows] = await pool.query(`SHOW INDEX FROM ${esc(database)}.${esc(table)}`);
   const byName = new Map();
@@ -665,6 +685,8 @@ const DEFINITION_KEYWORDS = {
 // SHOW CREATE <kind> for any object type; the DDL column name differs per
 // kind ('Create Table', 'Create View', 'SQL Original Statement', ...).
 async function getObjectDefinition(key, database, kind, name) {
+  const other = engines.forKey(key);
+  if (other) return other.a.objectDefinition(other.conn, database, kind, name);
   const keyword = DEFINITION_KEYWORDS[kind];
   if (!keyword) throw new Error(`Unsupported object type: ${kind}`);
   const pool = getPool(key);
@@ -675,6 +697,8 @@ async function getObjectDefinition(key, database, kind, name) {
 }
 
 async function getTableColumns(key, database, table) {
+  const other = engines.forKey(key);
+  if (other) return other.a.getTableColumns(other.conn, database, table);
   const pool = getPool(key);
   const [cols] = await pool.query(`SHOW FULL COLUMNS FROM ${esc(database)}.${esc(table)}`);
   const [keyRows] = await pool.query(
@@ -772,6 +796,8 @@ function orderBy(columnNames, sort, sortCol, sortDir) {
 }
 
 async function browseTable(key, database, table, { page = 1, pageSize = 50, sortCol, sortDir, sort, filters } = {}) {
+  const other = engines.forKey(key);
+  if (other) return other.a.browse(other.conn, database, table, { page, pageSize, sortCol, sortDir, sort, filters });
   const pool = getPool(key);
   const safePageSize = Math.min(Math.max(Number(pageSize) || 50, 1), 500);
   const safePage = Math.max(Number(page) || 1, 1);
@@ -869,6 +895,8 @@ function assignments(obj, params, joiner) {
 
 // Raw value of one cell (for downloading a binary value).
 async function getCellValue(key, database, table, where, column) {
+  const other = engines.forKey(key);
+  if (other) return other.a.cellValue(other.conn, database, table, where, column);
   const { columns } = await getTableColumns(key, database, table);
   if (!columns.some((c) => c.name === column)) throw new Error(`Unknown column: ${column}`);
   if (!where || !Object.keys(where).length) throw new Error('Missing row identifier');
@@ -882,6 +910,8 @@ async function getCellValue(key, database, table, where, column) {
 }
 
 async function updateRow(key, database, table, where, changes) {
+  const other = engines.forKey(key);
+  if (other) return other.a.updateRow(other.conn, database, table, where, changes);
   if (!where || Object.keys(where).length === 0) {
     throw new Error('Missing row identifier (no primary key values supplied)');
   }
@@ -990,6 +1020,8 @@ async function bulkUpdate(key, database, table, { rows, all, filters, changes, p
 }
 
 async function deleteRow(key, database, table, where) {
+  const other = engines.forKey(key);
+  if (other) return other.a.deleteRow(other.conn, database, table, where);
   if (!where || Object.keys(where).length === 0) {
     throw new Error('Missing row identifier (no primary key values supplied)');
   }
@@ -1006,6 +1038,8 @@ async function deleteRow(key, database, table, where) {
 }
 
 async function insertRow(key, database, table, values) {
+  const other = engines.forKey(key);
+  if (other) return other.a.insertRow(other.conn, database, table, values);
   const cols = Object.keys(values || {});
   if (cols.length === 0) {
     throw new Error('No values supplied');
@@ -1068,6 +1102,8 @@ function csvField(value) {
 // Streams a table's full contents (no LIMIT) to `res` as CSV, one row at a
 // time, so exporting a very large table doesn't buffer it all in memory.
 async function streamTableCsv(key, database, table, res, { sortCol, sortDir, sort, filters, format = 'csv' } = {}) {
+  const other = engines.forKey(key);
+  if (other) return other.a.streamTableCsv(other.conn, database, table, res, { sortCol, sortDir, sort, filters, format });
   const field = format === 'tsv' ? tsvField : csvField;
   const sep = format === 'tsv' ? '\t' : ',';
   const eol = format === 'tsv' ? '\n' : '\r\n';
@@ -1129,8 +1165,22 @@ function rawQuery(rawConn, sql) {
 }
 
 const EXPORTABLE_RE = /^(select|with|table|values|show|describe|desc|explain)\b/i;
+// The statements of a script, split the way this connection's engine reads them.
+function splitStatementsFor(key, sqlText) {
+  const other = engines.forKey(key);
+  return other ? require('./engines/sql').splitSql(sqlText, other.engine) : splitStatements(sqlText);
+}
+// A cheap "are you there?" for connection checks, whatever the engine.
+async function ping(key) {
+  const other = engines.forKey(key);
+  if (other) return other.a.ping(other.conn);
+  await getPool(key).query({ sql: 'SELECT 1', timeout: 10000 });
+}
+
 // True for one statement that returns rows and can be streamed to a file (see exportQueryResult).
-function isExportable(sqlText) {
+function isExportable(sqlText, key) {
+  const other = key ? engines.forKey(key) : null;
+  if (other) { const st = require('./engines/sql').splitSql(sqlText, other.engine); return st.length === 1 && permissions.statementNeeds(st[0]) === 'read' && /^(select|with|table|values|show|explain)\b/i.test(stripLeadingComments(st[0])); }
   const st = splitStatements(sqlText);
   return st.length === 1 && permissions.statementNeeds(st[0]) === 'read' && EXPORTABLE_RE.test(stripLeadingComments(st[0]));
 }
@@ -1141,6 +1191,8 @@ function isExportable(sqlText) {
 // onStart(filename, contentType) is called, so the caller can still answer
 // with a normal error.
 async function exportQueryResult(key, sqlText, options, res, onStart) {
+  const other = engines.forKey(key);
+  if (other) return other.a.exportQuery(other.conn, sqlText, options, res, onStart);
   const o = { format: 'csv', gzip: false, bom: true, nulls: 'empty', stripLimit: false, maxRows: 0, database: null, allowed: null, ...options };
   const statements = splitStatements(sqlText);
   if (statements.length !== 1) throw new Error('Choose one statement to download');

@@ -123,6 +123,8 @@ function slugify(text) {
 
 // ---------- Connections ----------
 
+const DEFAULT_PORTS = { postgres: 5432, mysql: 3306 };
+
 // Fields of a connection that are encrypted in connections.json (see secrets.js).
 const SECRET_FIELDS = ['password', 'sshPassword', 'sshPrivateKey', 'sshPassphrase', 'sslKey'];
 // Network options: TLS (sslMode: '' | 'on' encrypts without checking the server,
@@ -184,13 +186,15 @@ function createConnection(data) {
     key,
     label: data.label,
     host: data.host,
-    port: Number(data.port) || 3306,
+    port: Number(data.port) || DEFAULT_PORTS[data.engine] || 3306,
     user: data.user,
     password: data.password || '',
     database: data.database,
     owner: data.owner,
     sharedWith: []
   };
+  if (['postgres', 'sqlite'].includes(data.engine)) conn.engine = data.engine; // MySQL / MariaDB is the default and has no field
+  if (data.engine === 'sqlite') { conn.host = ''; conn.user = ''; conn.password = ''; if (data.sqliteCreate) conn.sqliteCreate = true; if (data.sqliteReadOnly) conn.sqliteReadOnly = true; }
   if (data.monitor) conn.monitor = true; // record server metrics every minute
   if (data.requireApproval) conn.requireApproval = true; // dangerous statements from shared users need an owner's approval
   applyNetwork(conn, data);
@@ -216,6 +220,9 @@ function updateConnection(key, data) {
     password: data.password ? data.password : existing.password,
     database: data.database ?? existing.database
   };
+  if (existing.engine === 'sqlite') {
+    for (const f of ['sqliteCreate', 'sqliteReadOnly']) if (data[f] !== undefined) { if (data[f]) updated[f] = true; else delete updated[f]; }
+  }
   applyNetwork(updated, data, existing);
   if (data.monitor !== undefined) { if (data.monitor) updated.monitor = true; else delete updated.monitor; }
   if (data.requireApproval !== undefined) { if (data.requireApproval) updated.requireApproval = true; else delete updated.requireApproval; }

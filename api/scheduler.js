@@ -105,7 +105,7 @@ async function runQueryJob(job) {
   const started = Date.now();
   const entry = { username: user.username, source: 'schedule', connKey: conn.key, connLabel: conn.label, database, sql };
   try {
-    if (db.isExportable(sql)) {
+    if (db.isExportable(sql, conn.key)) {
       const dir = jobs.outputDir(job.id);
       fs.mkdirSync(dir, { recursive: true });
       const name = `${stamp()}.csv`;
@@ -241,8 +241,7 @@ async function runHealthJob(job) {
     const t0 = Date.now();
     let err = null;
     try {
-      const pool = db.getPool(c.key);
-      await pool.query({ sql: 'SELECT 1', timeout: 10000 });
+      await db.ping(c.key);
     } catch (e) { err = e.message; }
     const was = prev[c.key];
     next[c.key] = { up: !err, since: was && was.up === !err ? was.since : new Date().toISOString(), error: err || undefined, ms: Date.now() - t0 };

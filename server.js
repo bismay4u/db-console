@@ -21,6 +21,8 @@ const secrets = require('./api/secrets');
 const oidcMod = require('./api/oidc');
 const ldapMod = require('./api/ldap');
 const approvals = require('./api/approvals');
+const engines = require('./api/engines');
+const engineExplore = require('./api/engine-explore');
 const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
@@ -155,8 +157,23 @@ function publicUser(u) {
 // Owner and admins manage a connection (edit, delete, share). Anyone it is
 // shared with may use it (run queries, explore, export, back up, restore),
 // or, when it is shared read-only, only read through it.
+// What is missing or not allowed in a new connection, or null. A SQLite connection names a file on the server,
+// so only administrators may add one.
+function connectionProblem(req, { label, host, user, database, engine }) {
+  if (engine === 'sqlite') {
+    if (!isAdmin(req.user)) return 'Only administrators can add SQLite connections (they open a file on the server)';
+    if (!label || !database) return 'label and the file path are required';
+    if (/^(file|https?):/i.test(database)) return 'Give the path of the file, not a URL';
+    return null;
+  }
+  if (engine && !['mysql', 'postgres'].includes(engine)) return 'Unknown database engine';
+  if (!label || !host || !user || !database) return 'label, host, user and database are required';
+  return null;
+}
+
 function connView(conn, user) {
   const { sharedWith, secretError, ...rest } = conn;
+  rest.engine = conn.engine || 'mysql';
   const hasSecrets = Object.fromEntries(store.SECRET_FIELDS.map((f) => [f, Boolean(conn[f])]));
   for (const f of store.SECRET_FIELDS) delete rest[f];
   const manage = canManage(user, conn);
@@ -298,6 +315,20 @@ app.use('/api/explore/:key', (req, res, next) => {
       error: has.size ? `You don't have permission for this on this connection (needs: ${what})` : 'This connection is shared with you read-only'
     });
   }
+  return next();
+});
+
+// PostgreSQL and SQLite connections have their own, smaller Explore API (api/engine-explore.js).
+app.use('/api/explore/:key', (req, res, next) => {
+  if (!req.user) return next();
+  const conn = store.getConnection(req.params.key);
+  if (!conn || !canUse(req.user, conn) || engines.engineOf(conn) === 'mysql') return next();
+  return engineExplore.handle(req, res, next, conn, { logAction, attachment, parseFilters });
+});
+// The server tools (processes, variables, accounts, health) are MySQL / MariaDB only.
+app.use('/api/server/:key', (req, res, next) => {
+  const conn = req.user && store.getConnection(req.params.key);
+  if (conn && engines.engineOf(conn) !== 'mysql') return res.status(400).json({ error: engines.unsupported(engines.engineOf(conn), 'The server tools are').message });
   return next();
 });
 
@@ -735,12 +766,11 @@ app.get('/api/connections', requireAuth, (req, res) => {
 });
 
 app.post('/api/connections', requireAuth, async (req, res) => {
-  const { label, host, port, user, password, database, passwordFrom } = req.body || {};
-  if (!label || !host || !user || !database) {
-    return res.status(400).json({ error: 'label, host, user and database are required' });
-  }
+  const { label, host, port, user, password, database, passwordFrom, engine, sqliteCreate, sqliteReadOnly } = req.body || {};
+  const problem = connectionProblem(req, { label, host, user, database, engine });
+  if (problem) return res.status(400).json({ error: problem });
   const conn = store.createConnection({
-    label, host, port, user, database,
+    label, host, port, user, database, engine, sqliteCreate, sqliteReadOnly,
     password: resolvePassword(password, passwordFrom, req.user),
     owner: req.user.username,
     ...networkFromBody(req.body, passwordFrom, req.user)
@@ -749,8 +779,9 @@ app.post('/api/connections', requireAuth, async (req, res) => {
 });
 
 app.put('/api/connections/:key', requireAuth, requireManage, (req, res) => {
-  const { label, host, port, user, password, database, monitor, requireApproval } = req.body || {};
-  const updated = store.updateConnection(req.params.key, { label, host, port, user, password, database, monitor, requireApproval, ...networkFromBody(req.body || {}) });
+  const { label, host, port, user, password, database, monitor, requireApproval, sqliteCreate, sqliteReadOnly } = req.body || {};
+  if (req.conn.engine === 'sqlite' && database !== undefined && database !== req.conn.database && !isAdmin(req.user)) return res.status(403).json({ error: 'Only administrators can change the file of a SQLite connection' });
+  const updated = store.updateConnection(req.params.key, { label, host, port, user, password, database, monitor, requireApproval, sqliteCreate, sqliteReadOnly, ...networkFromBody(req.body || {}) });
   if (!updated) return res.status(404).json({ error: 'Connection not found' });
   db.dropPool(req.params.key); // force pool rebuild with new settings
   res.json(connView(updated, req.user));
@@ -786,13 +817,14 @@ app.get('/api/permissions', requireAuth, (req, res) => {
 });
 
 app.post('/api/connections/test', requireAuth, async (req, res) => {
-  const { host, port, user, password, database, passwordFrom } = req.body || {};
-  if (!host || !user || !database) {
-    return res.status(400).json({ error: 'host, user and database are required' });
-  }
+  const { host, port, user, password, database, passwordFrom, engine, sqliteCreate, sqliteReadOnly } = req.body || {};
+  const problem = connectionProblem(req, { label: 'test', host, user, database, engine });
+  if (problem) return res.status(400).json({ error: problem });
   const result = await db.testConnection({
+    engine: ['postgres', 'sqlite'].includes(engine) ? engine : undefined,
+    sqliteCreate: Boolean(sqliteCreate), sqliteReadOnly: Boolean(sqliteReadOnly),
     host,
-    port: Number(port) || 3306,
+    port: Number(port) || (engine === 'postgres' ? 5432 : 3306),
     user,
     password: resolvePassword(password, passwordFrom, req.user),
     database,
@@ -1455,7 +1487,7 @@ app.post('/api/query', requireAuth, async (req, res) => {
       // submitted SQL, since a failed connection returns no per-statement results.
       const stmts = result.statements;
       const failed = stmts.find((s) => !s.ok);
-      const submitted = db.splitStatements(sql);
+      const submitted = db.splitStatementsFor(key, sql);
       const types = [...new Set(submitted.map((s) => querylog.statementType(s)))];
       querylog.record({
         username: req.user.username,
@@ -1643,6 +1675,7 @@ function checkJobAccess(user, job) {
   for (const k of keys) {
     const conn = store.getConnection(k);
     if (!conn || !canUse(user, conn)) throw new Error('No access to that connection');
+    if (engines.engineOf(conn) !== 'mysql' && (job.type === 'analysis' || job.type === 'backup')) throw engines.unsupported(engines.engineOf(conn), job.type === 'backup' ? 'Scheduled backups are' : 'Analysis is');
     const sc = scopeOf(user, conn);
     if (sc && job.type !== 'health') {
       if (job.database && !scopeLib.dbAllowed(sc, job.database)) throw new Error(`You do not have access to the database ${job.database}`);
@@ -1736,6 +1769,7 @@ function diffSides(req, res, needTable) {
   for (const side of [source, target]) {
     const conn = side && store.getConnection(side.key);
     if (!conn || !canUse(req.user, conn)) { res.status(404).json({ error: 'Connection not found' }); return null; }
+    if (engines.engineOf(conn) !== 'mysql') { res.status(400).json({ error: engines.unsupported(engines.engineOf(conn), 'Comparing databases is').message }); return null; }
     if (!side.database || (needTable && !side.table)) { res.status(400).json({ error: needTable ? 'Choose a database and a table on both sides' : 'Choose a database on both sides' }); return null; }
     const sc = scopeOf(req.user, conn);
     if (sc && (!scopeLib.dbAllowed(sc, side.database) || (needTable ? scopeLib.tableHidden(sc, side.database, side.table) : sc.hideTables.length))) {
