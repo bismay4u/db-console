@@ -68,7 +68,7 @@
 
   <div class="alert alert-danger py-2 small" x-show="error" x-text="error" x-cloak></div>
 
-  <form @submit.prevent="submit">
+  <form @submit.prevent="submit" x-show="step === 'password'">
     <div class="mb-3">
       <label class="form-label small fw-medium">Username</label>
       <input type="text" class="form-control" x-model="username" autofocus required>
@@ -82,6 +82,18 @@
       Sign in
     </button>
   </form>
+
+  <form @submit.prevent="submitCode" x-show="step === 'code'" x-cloak>
+    <p class="small text-muted">Enter the 6-digit code from your authenticator app, or one of your recovery codes.</p>
+    <div class="mb-4">
+      <input type="text" class="form-control text-center" style="letter-spacing:.2em; font-size:1.2rem" x-model="code" x-ref="code" autocomplete="one-time-code" inputmode="text" placeholder="123456" required>
+    </div>
+    <button type="submit" class="btn btn-accent w-100" :disabled="loading">
+      <span x-show="loading" class="spinner-border spinner-border-sm me-1"></span>
+      Verify
+    </button>
+    <button type="button" class="btn btn-link btn-sm w-100 mt-2" @click="step = 'password'; code = ''; error = ''">Start over</button>
+  </form>
 </div>
 
 <script>
@@ -89,6 +101,8 @@ function loginForm() {
   return {
     username: '',
     password: '',
+    code: '',
+    step: 'password',
     error: '',
     loading: false,
     async submit() {
@@ -103,9 +117,29 @@ function loginForm() {
         const data = await res.json();
         if (!res.ok) {
           this.error = data.error || 'Login failed';
+        } else if (data.need2fa) {
+          this.step = 'code'; this.password = '';
+          this.$nextTick(() => this.$refs.code && this.$refs.code.focus());
         } else {
           window.location.href = '/';
         }
+      } catch (e) {
+        this.error = 'Network error, please try again';
+      } finally {
+        this.loading = false;
+      }
+    },
+    async submitCode() {
+      this.error = '';
+      this.loading = true;
+      try {
+        const res = await fetch('/api/login/2fa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: this.code }) });
+        const data = await res.json();
+        if (!res.ok) {
+          this.error = data.error || 'Verification failed';
+          if (data.expired) this.step = 'password';
+          this.code = '';
+        } else window.location.href = '/';
       } catch (e) {
         this.error = 'Network error, please try again';
       } finally {

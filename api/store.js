@@ -427,6 +427,17 @@ function updateUser(username, data) {
   return updated;
 }
 
+// Changes fields of a user record that are not part of the sign-in contract (2FA settings, SSO identity…).
+function patchUser(username, fields) {
+  const users = listUsers();
+  const idx = users.findIndex((u) => u.username === username);
+  if (idx === -1) return null;
+  users[idx] = { ...users[idx], ...fields, updatedAt: new Date().toISOString() };
+  for (const k of Object.keys(users[idx])) if (users[idx][k] === undefined) delete users[idx][k];
+  writeJson(USERS_FILE, users);
+  return users[idx];
+}
+
 function touchLastLogin(username) {
   const users = listUsers();
   const user = users.find((u) => u.username === username);
@@ -475,6 +486,7 @@ module.exports = {
   updateUser: locked(updateUser),
   deleteUser: locked(deleteUser),
   touchLastLogin: locked(touchLastLogin),
+  patchUser: locked(patchUser),
   verifyPassword,
   setConnectionSharing: locked(setConnectionSharing),
   listConnections,

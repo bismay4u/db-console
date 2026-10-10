@@ -499,6 +499,9 @@
       </div>
       <span class="role-badge" :class="role === 'admin' && 'admin'" x-text="role"></span>
     </div>
+    <a class="nav-link-custom" @click="openTwoFa()">
+      <i class="bi bi-shield-lock"></i> Two-factor auth <span class="badge rounded-pill badge-soft-success ms-1" x-show="totpEnabled">on</span>
+    </a>
     <a class="nav-link-custom" @click="openPasswordModal">
       <i class="bi bi-key"></i> Change password
     </a>
@@ -2279,6 +2282,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <td class="text-muted-sm" x-text="u.lastLoginAt ? formatTs(u.lastLoginAt) : 'Never'"></td>
                   <td class="text-end text-nowrap">
                     <button class="btn btn-sm btn-outline-soft me-1" title="View activity" @click="viewUserActivity(u.username)"><i class="bi bi-journal-text"></i></button>
+                    <button class="btn btn-sm btn-outline-soft me-1" title="Turn off their two-factor authentication" x-show="u.totpEnabled" @click="resetUserTwoFa(u)"><i class="bi bi-shield-x"></i></button>
+                    <span class="badge rounded-pill badge-soft-success me-1" x-show="u.sso" x-text="u.sso"></span>
                     <button class="btn btn-sm btn-outline-soft me-1" title="Edit" @click="openUserModal(u)"><i class="bi bi-pencil"></i></button>
                     <button class="btn btn-sm btn-ghost-danger" title="Delete" x-show="u.username !== username" @click="removeUser(u)"><i class="bi bi-trash"></i></button>
                   </td>
@@ -2681,6 +2686,57 @@ Separate multiple statements with ; — highlight text to run just that part."
       <button class="btn btn-outline-soft" @click="replaceModal.open = false">Close</button>
       <button class="btn btn-danger" x-show="replaceModal.result && replaceModal.result.preview && replaceModal.result.found.length" @click="applyReplace()" :disabled="replaceModal.running">Replace everything shown</button>
     </div>
+  </div>
+</div>
+
+<!-- ===== Two-factor authentication ===== -->
+<div class="modal-backdrop-custom" x-show="twoFa.open" x-cloak @click.self="!twoFa.forced && (twoFa.open = false)">
+  <div class="modal-panel" style="max-width:520px">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">Two-factor authentication</h2><button class="btn btn-sm btn-outline-soft" x-show="!twoFa.forced" @click="twoFa.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom">
+      <div class="alert alert-warning py-2 small" x-show="twoFa.forced">This server requires two-factor authentication. Set it up to continue.</div>
+      <div class="alert alert-danger py-2 small" x-show="twoFa.error" x-text="twoFa.error"></div>
+
+      <!-- recovery codes, shown once -->
+      <template x-if="twoFa.codes.length">
+        <div>
+          <div class="alert alert-success py-2 small">Two-factor authentication is on. Keep these recovery codes somewhere safe: each works once if you lose your phone. They are not shown again.</div>
+          <pre class="definition-block" style="columns:2" x-text="twoFa.codes.join('\n')"></pre>
+          <button class="btn btn-outline-soft btn-sm" @click="copyText(twoFa.codes.join('\n'))"><i class="bi bi-clipboard me-1"></i>Copy</button>
+        </div>
+      </template>
+
+      <template x-if="!twoFa.codes.length && !twoFa.enabled && !twoFa.secret">
+        <div>
+          <p class="small">Sign-in will ask for a 6-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password…) in addition to your password.</p>
+          <button class="btn btn-accent" @click="startTwoFa()" :disabled="twoFa.busy">Set it up</button>
+        </div>
+      </template>
+      <template x-if="!twoFa.codes.length && !twoFa.enabled && twoFa.secret">
+        <div>
+          <p class="small mb-2">1. Scan this with your authenticator app (or type the key in).</p>
+          <div class="text-center mb-2"><img :src="twoFa.qr" alt="QR code" style="width:180px;height:180px" x-show="twoFa.qr"></div>
+          <div class="text-center mb-3"><code class="user-select-all" x-text="twoFa.secret"></code></div>
+          <p class="small mb-1">2. Enter the code the app shows now.</p>
+          <div class="d-flex gap-2"><input class="form-control" style="max-width:10rem; letter-spacing:.2em" x-model="twoFa.code" placeholder="123456" inputmode="numeric" @keydown.enter="enableTwoFa()"><button class="btn btn-accent" @click="enableTwoFa()" :disabled="twoFa.busy">Turn on</button></div>
+        </div>
+      </template>
+      <template x-if="!twoFa.codes.length && twoFa.enabled">
+        <div>
+          <p class="small"><i class="bi bi-shield-check text-success me-1"></i>Two-factor authentication is <strong>on</strong>. <span x-text="twoFa.recoveryLeft + ' recovery code(s) left.'"></span></p>
+          <div class="mb-3">
+            <label class="form-label small fw-medium">Current code from your app</label>
+            <input class="form-control" style="max-width:10rem; letter-spacing:.2em" x-model="twoFa.code" placeholder="123456" inputmode="numeric">
+          </div>
+          <button class="btn btn-outline-soft btn-sm me-2" @click="newRecoveryCodes()" :disabled="twoFa.busy || !twoFa.code">New recovery codes</button>
+          <div class="mt-3" x-show="!twoFa.required && !twoFa.sso">
+            <label class="form-label small fw-medium">To turn it off, also enter your password</label>
+            <div class="d-flex gap-2"><input type="password" class="form-control" style="max-width:14rem" x-model="twoFa.password" autocomplete="current-password"><button class="btn btn-ghost-danger btn-sm" @click="disableTwoFa()" :disabled="twoFa.busy || !twoFa.code || !twoFa.password">Turn off</button></div>
+          </div>
+        </div>
+      </template>
+    </div>
+    <div class="modal-footer-custom" x-show="twoFa.codes.length"><button class="btn btn-accent" @click="twoFa.open = false; twoFa.codes = []; twoFa.forced = false">I have saved them</button></div>
   </div>
 </div>
 
@@ -4381,6 +4437,8 @@ function app() {
     relatedModal: { open: false, loading: false, error: '', data: null, where: null },
     profileModal: { open: false, loading: false, error: '', data: null, column: '' },
     replaceModal: { open: false, find: '', replace: '', running: false, error: '', result: null },
+    totpEnabled: false,
+    twoFa: { open: false, forced: false, enabled: false, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false },
     dismissModal: { open: false, finding: null, reason: '', saving: false },
     applyModal: { open: false, finding: null, sql: '', message: '', destructive: false, denied: '', error: '', running: false },
     jobs: [], jobsLoading: false, jobsTimer: null, notifyInfo: null,
@@ -4522,6 +4580,8 @@ function app() {
       this.displayName = sess.displayName;
       this.role = sess.role;
       this.usingDefaultPassword = sess.usingDefaultPassword;
+      this.totpEnabled = Boolean(sess.totpEnabled);
+      if (sess.needs2faSetup) this.openTwoFa(true);
       try {
         // Older versions kept one history for everyone using this browser.
         localStorage.removeItem('dbconsole_history');
@@ -5425,6 +5485,57 @@ function app() {
       this.activeTab = 'runner';
       this.$nextTick(() => { if (sqlCm) sqlCm.setValue(f.fix); });
     },
+    // ---- Two-factor authentication ----
+    async openTwoFa(forced = false) {
+      this.twoFa = { open: true, forced, enabled: false, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false };
+      try {
+        const st = await this.apiJson('GET', '/api/2fa');
+        Object.assign(this.twoFa, { enabled: st.enabled, required: st.required, recoveryLeft: st.recoveryLeft, sso: Boolean(st.sso) });
+        if (!st.enabled && forced) await this.startTwoFa();
+      } catch (e) { this.twoFa.error = e.message; }
+    },
+    async startTwoFa() {
+      const t = this.twoFa;
+      t.busy = true; t.error = '';
+      try {
+        const r = await this.apiJson('POST', '/api/2fa/setup');
+        t.secret = r.secret;
+        try {
+          await this.loadScriptOnce('https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js');
+          const qr = window.qrcode(0, 'M'); qr.addData(r.uri); qr.make();
+          t.qr = qr.createDataURL(5, 2);
+        } catch (e) { t.qr = ''; } // the key can be typed in
+      } catch (e) { t.error = e.message; } finally { t.busy = false; }
+    },
+    async enableTwoFa() {
+      const t = this.twoFa;
+      t.busy = true; t.error = '';
+      try {
+        const r = await this.apiJson('POST', '/api/2fa/enable', { code: t.code });
+        t.codes = r.recoveryCodes; t.enabled = true; t.secret = ''; t.code = '';
+        this.totpEnabled = true;
+      } catch (e) { t.error = e.message; } finally { t.busy = false; }
+    },
+    async newRecoveryCodes() {
+      const t = this.twoFa;
+      t.busy = true; t.error = '';
+      try { const r = await this.apiJson('POST', '/api/2fa/recovery-codes', { code: t.code }); t.codes = r.recoveryCodes; t.code = ''; } catch (e) { t.error = e.message; } finally { t.busy = false; }
+    },
+    async disableTwoFa() {
+      const t = this.twoFa;
+      t.busy = true; t.error = '';
+      try {
+        await this.apiJson('POST', '/api/2fa/disable', { password: t.password, code: t.code });
+        this.totpEnabled = false; t.open = false;
+        this.showToast('Two-factor authentication is off');
+      } catch (e) { t.error = e.message; } finally { t.busy = false; }
+    },
+    async resetUserTwoFa(u) {
+      const ok = await this.askConfirm('Turn off two-factor authentication?', `${u.displayName || u.username} will sign in with just a password until they set it up again.`, { confirmLabel: 'Turn off', danger: true });
+      if (!ok) return;
+      try { await this.apiJson('DELETE', `/api/users/${encodeURIComponent(u.username)}/2fa`); await this.loadUsers(); this.showToast('Two-factor authentication reset'); } catch (e) { this.showToast(e.message, 'error'); }
+    },
+
     // ---- Compare databases / tables ----
     async openCompare() {
       this.overviewTab = 'compare';
@@ -7867,7 +7978,7 @@ function app() {
     },
     authCsvUrl() { return '/api/auth-log.csv?' + this.authFilterParams(); },
     authEventLabel(ev) {
-      return { login_ok: 'Signed in', login_failed: 'Failed', login_locked: 'Locked out', logout: 'Signed out', password_changed: 'Password changed', ip_blocked: 'Blocked address' }[ev] || ev;
+      return { login_ok: 'Signed in', login_failed: 'Failed', login_locked: 'Locked out', logout: 'Signed out', password_changed: 'Password changed', ip_blocked: 'Blocked address', login_2fa_required: 'Waiting for 2FA code', recovery_code_used: 'Recovery code used', '2fa_enabled': '2FA turned on', '2fa_disabled': '2FA turned off', '2fa_reset': '2FA reset by admin' }[ev] || ev;
     },
     authEventClass(ev) {
       return ['login_failed', 'login_locked', 'ip_blocked'].includes(ev) ? 'badge-soft-danger' : (ev === 'login_ok' ? 'badge-soft-success' : '');

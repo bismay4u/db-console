@@ -16,6 +16,8 @@ const cron = require('./api/cron');
 const insight = require('./api/insight');
 const diff = require('./api/diff');
 const metrics = require('./api/metrics');
+const totp = require('./api/totp');
+const secrets = require('./api/secrets');
 const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
@@ -139,7 +141,9 @@ function publicUser(u) {
     disabled: Boolean(u.disabled),
     createdAt: u.createdAt,
     updatedAt: u.updatedAt,
-    lastLoginAt: u.lastLoginAt
+    lastLoginAt: u.lastLoginAt,
+    totpEnabled: Boolean(u.totp && u.totp.enabled),
+    sso: u.sso || undefined
   };
 }
 
@@ -317,17 +321,64 @@ app.post('/api/login', (req, res) => {
     recordLoginAttempt(req, username, false);
     return res.status(401).json({ error: 'Invalid username or password' });
   }
+  // Second factor: the password alone does not sign in. The half-finished sign-in lives in the session for 5 minutes.
+  if (user.totp && user.totp.enabled) {
+    return req.session.regenerate((err) => {
+      if (err) return res.status(500).json({ error: 'Could not start session' });
+      req.session.pending2fa = { username: user.username, at: Date.now(), defaultPassword: password === DEFAULT_ADMIN_PASSWORD };
+      authlog.record({ ...who, username: user.username, event: 'login_2fa_required', detail: 'password accepted, waiting for the code' });
+      return res.json({ need2fa: true });
+    });
+  }
   recordLoginAttempt(req, username, true);
-  authlog.record({ ...who, username: user.username, event: 'login_ok' });
+  return completeLogin(req, res, user, { defaultPassword: password === DEFAULT_ADMIN_PASSWORD, method: 'password' });
+});
+
+// Starts the signed-in session. Shared by every way of signing in (password, 2FA, SSO, LDAP).
+function completeLogin(req, res, user, { defaultPassword = false, method = 'password', redirect = null } = {}) {
+  authlog.record({ username: user.username, ip: req.ip, agent: req.get('user-agent'), event: 'login_ok', detail: method === 'password' ? undefined : `via ${method}` });
   req.session.regenerate((err) => {
     if (err) return res.status(500).json({ error: 'Could not start session' });
     req.session.authenticated = true;
     req.session.username = user.username;
     req.session.sessionVersion = user.sessionVersion || 1;
-    req.session.defaultPassword = password === DEFAULT_ADMIN_PASSWORD;
+    req.session.defaultPassword = defaultPassword;
     store.touchLastLogin(user.username);
-    return res.json({ ok: true });
+    return redirect ? res.redirect(redirect) : res.json({ ok: true });
   });
+}
+
+// Step two of a password sign-in: an authenticator code, or a recovery code.
+app.post('/api/login/2fa', (req, res) => {
+  const pending = req.session && req.session.pending2fa;
+  const who = { ip: req.ip, agent: req.get('user-agent') };
+  if (!pending || Date.now() - pending.at > 5 * 60 * 1000) return res.status(401).json({ error: 'Your sign-in expired — enter your password again', expired: true });
+  const retryAfter = loginRetryAfter(req, pending.username);
+  if (retryAfter) {
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfter / 60)} minute(s).` });
+  }
+  const user = store.getUser(pending.username);
+  const code = String((req.body || {}).code || '').trim();
+  const fail = (detail) => {
+    authlog.record({ ...who, username: pending.username, event: 'login_failed', detail });
+    recordLoginAttempt(req, pending.username, false);
+    return res.status(401).json({ error: 'That code is not right' });
+  };
+  if (!user || user.disabled || !user.totp || !user.totp.enabled) return fail('2FA not available');
+  let secret;
+  try { secret = secrets.decrypt(user.totp.secret); } catch (e) { return res.status(500).json({ error: 'The 2FA secret cannot be read (the encryption key changed?). Ask an administrator to reset your 2FA.' }); }
+  const step = totp.verify(secret, code, { lastStep: user.totp.lastStep || 0 });
+  if (step !== null) {
+    store.patchUser(user.username, { totp: { ...user.totp, lastStep: step } });
+  } else {
+    const rest = totp.useRecoveryCode(user.totp.recovery, code);
+    if (!rest) return fail('wrong 2FA code');
+    store.patchUser(user.username, { totp: { ...user.totp, recovery: rest } });
+    authlog.record({ ...who, username: user.username, event: 'recovery_code_used', detail: `${rest.length} left` });
+  }
+  recordLoginAttempt(req, pending.username, true);
+  return completeLogin(req, res, user, { defaultPassword: pending.defaultPassword, method: '2FA' });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -344,8 +395,75 @@ app.get('/api/session', (req, res) => {
     username: req.user.username,
     displayName: req.user.displayName,
     role: req.user.role,
-    usingDefaultPassword: Boolean(req.session.defaultPassword)
+    usingDefaultPassword: Boolean(req.session.defaultPassword),
+    totpEnabled: Boolean(req.user.totp && req.user.totp.enabled),
+    needs2faSetup: REQUIRE_2FA && !(req.user.totp && req.user.totp.enabled)
   });
+});
+
+// --- Two-factor authentication (own account) ---
+const REQUIRE_2FA = /^(1|true|yes)$/i.test(String(process.env.REQUIRE_2FA ?? config.require2fa ?? ''));
+const TOTP_ISSUER = 'DB Console';
+
+// With require2fa on, a user without 2FA can only set it up (and sign out) until they have.
+app.use('/api', (req, res, next) => {
+  if (!REQUIRE_2FA || !req.user || (req.user.totp && req.user.totp.enabled)) return next();
+  if (/^\/(session|logout|login|2fa)/.test(req.path)) return next();
+  return res.status(403).json({ error: 'Two-factor authentication is required: set it up first', needs2faSetup: true });
+});
+
+app.get('/api/2fa', requireAuth, (req, res) => {
+  const t = req.user.totp;
+  res.json({ enabled: Boolean(t && t.enabled), required: REQUIRE_2FA, sso: Boolean(req.user.sso), recoveryLeft: t && t.enabled ? (t.recovery || []).length : 0, enabledAt: t && t.enabledAt });
+});
+// Step 1: a fresh secret (kept in the session only until it is confirmed).
+app.post('/api/2fa/setup', requireAuth, (req, res) => {
+  if (req.user.totp && req.user.totp.enabled) return res.status(400).json({ error: 'Two-factor authentication is already on' });
+  const secret = totp.newSecret();
+  req.session.pendingTotp = { secret, at: Date.now() };
+  res.json({ secret, uri: totp.uri(req.user.username, TOTP_ISSUER, secret) });
+});
+// Step 2: prove the app shows the right codes, then it is on. The recovery codes are shown once.
+app.post('/api/2fa/enable', requireAuth, (req, res) => {
+  const pending = req.session.pendingTotp;
+  if (!pending || Date.now() - pending.at > 15 * 60 * 1000) return res.status(400).json({ error: 'Start again: the setup expired' });
+  const step = totp.verify(pending.secret, (req.body || {}).code);
+  if (step === null) return res.status(400).json({ error: 'That code is not right — check the time on your phone and try the next code' });
+  const { codes, hashes } = totp.newRecoveryCodes();
+  store.patchUser(req.user.username, { totp: { enabled: true, secret: secrets.encrypt(pending.secret), lastStep: step, recovery: hashes, enabledAt: new Date().toISOString() } });
+  delete req.session.pendingTotp;
+  authlog.record({ username: req.user.username, ip: req.ip, agent: req.get('user-agent'), event: '2fa_enabled' });
+  res.json({ ok: true, recoveryCodes: codes });
+});
+app.post('/api/2fa/disable', requireAuth, (req, res) => {
+  if (!req.user.totp || !req.user.totp.enabled) return res.status(400).json({ error: 'Two-factor authentication is not on' });
+  if (REQUIRE_2FA) return res.status(400).json({ error: 'Two-factor authentication is required on this server' });
+  const { password, code } = req.body || {};
+  if (!req.user.sso && !store.verifyPassword(password, req.user.passwordHash)) return res.status(400).json({ error: 'Your password is not right' });
+  let secret;
+  try { secret = secrets.decrypt(req.user.totp.secret); } catch (e) { secret = ''; }
+  if (totp.verify(secret, code, { lastStep: req.user.totp.lastStep || 0 }) === null && !totp.useRecoveryCode(req.user.totp.recovery, code)) return res.status(400).json({ error: 'That code is not right' });
+  store.patchUser(req.user.username, { totp: undefined });
+  authlog.record({ username: req.user.username, ip: req.ip, agent: req.get('user-agent'), event: '2fa_disabled' });
+  res.json({ ok: true });
+});
+app.post('/api/2fa/recovery-codes', requireAuth, (req, res) => {
+  const t = req.user.totp;
+  if (!t || !t.enabled) return res.status(400).json({ error: 'Two-factor authentication is not on' });
+  let secret;
+  try { secret = secrets.decrypt(t.secret); } catch (e) { secret = ''; }
+  if (totp.verify(secret, (req.body || {}).code, { lastStep: t.lastStep || 0 }) === null) return res.status(400).json({ error: 'That code is not right' });
+  const { codes, hashes } = totp.newRecoveryCodes();
+  store.patchUser(req.user.username, { totp: { ...t, recovery: hashes } });
+  res.json({ ok: true, recoveryCodes: codes });
+});
+// An administrator turns 2FA off for someone who lost their phone and their recovery codes.
+app.delete('/api/users/:username/2fa', requireAdmin, (req, res) => {
+  const target = store.getUser(req.params.username);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  store.patchUser(target.username, { totp: undefined });
+  authlog.record({ username: target.username, ip: req.ip, agent: req.get('user-agent'), event: '2fa_reset', detail: `by ${req.user.username}` });
+  res.json({ ok: true });
 });
 
 // --- Own account ---

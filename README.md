@@ -340,6 +340,7 @@ DB Console supports multiple users, each with their own login.
 * Passwords are stored as salted `scrypt` hashes
 * Admins create, edit, disable and delete users
 * Each user can change their own password
+* **Two-factor authentication** (TOTP — Google Authenticator, Microsoft Authenticator, Authy, 1Password…): each user turns it on under *Two-factor auth* in the sidebar by scanning a QR code and confirming a code; sign-in then asks for the 6-digit code after the password. Ten one-time **recovery codes** are shown once (new ones can be generated; each works once). A code works only once; wrong codes count towards the sign-in lockout; the secret is stored encrypted. An admin can turn 2FA off for someone who lost both phone and codes (*Users* → shield icon). Set `REQUIRE_2FA=1` (or `require2fa: true` in `config.js`) to make it mandatory: users without it can only set it up until they have
 * Changing a user's password, role or status signs that user out everywhere
 * Deleting a user transfers their connections and saved queries to the admin who deleted them
 * The app always keeps at least one enabled admin
