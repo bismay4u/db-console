@@ -1100,6 +1100,7 @@ db-console/
 ├── api/
 │   ├── db.js             # MySQL pools, queries, explore, CSV, export/restore
 │   ├── schema.js         # databases, tables, columns, foreign keys, objects, diagram
+│   ├── appconfig.js      # loads config.js (or CONFIG_PATH, or config_sample.js)
 │   ├── importer.js       # streaming CSV / TSV import
 │   ├── analyzer.js       # database health check: built-in and custom rules
 │   ├── permissions.js    # what a shared user may do; statement and route requirements
@@ -1262,6 +1263,18 @@ For development, you can use a Node.js process manager such as:
 npm install -g nodemon
 nodemon server.js
 ```
+
+## Tests
+
+```bash
+export TEST_DB_HOST=127.0.0.1 TEST_DB_PORT=3306 TEST_DB_USER=root TEST_DB_PASS=secret
+npm test            # unit tests + API tests against a real MariaDB (about 40 s)
+npm run test:verbose
+```
+
+Each test file starts its own copy of the app on a free port with a throwaway data directory and config, then drives it over HTTP; it seeds the databases it needs, so files don't depend on each other. The tests **create and drop databases** (`shop`, `diag`, `objt`, `bulk`, `big`, `anom`, …), so point them at a throwaway MariaDB server: they refuse to run if the server holds databases they don't own (override with `TEST_FORCE=1`). They need the `mysql` command-line client, and MariaDB's `seq_*` tables (MariaDB 10.x; MySQL 8 is not covered yet). `TEST_BIG_ROWS` (default 200,000) sets the size of the large table used by the streaming export / import / cancel tests.
+
+GitHub Actions runs the same suite on every push (`.github/workflows/test.yml`).
 
 ---
 

@@ -21,7 +21,7 @@ const APP_ROOT = path.join(__dirname, '..');
 function resolveDataDir() {
   if (process.env.DATA_DIR) return path.resolve(process.env.DATA_DIR);
   try {
-    const config = require('../config');
+    const config = require('./appconfig');
     if (config.dataDir) return path.resolve(APP_ROOT, config.dataDir);
   } catch (e) {
     // no config.js yet

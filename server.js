@@ -3,7 +3,7 @@ const path = require('path');
 const express = require('express');
 const session = require('express-session');
 
-const config = require('./config');
+const config = require('./api/appconfig');
 const store = require('./api/store');
 const db = require('./api/db');
 const querylog = require('./api/querylog');

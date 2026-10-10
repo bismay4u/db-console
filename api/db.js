@@ -164,8 +164,15 @@ class SqlStatementStream {
         i++; continue;
       }
       const inQuote = this.inSingle || this.inDouble || this.inBacktick;
+      // "-- " (dash dash, then whitespace) and "#" start a comment that runs to the end of the line.
+      // "--" without the space is not a comment in MySQL ("SELECT 5--3" is 8).
       if (!inQuote && ch === '-' && next === '-') {
-        this.inLineComment = true; i += 2; continue;
+        const third = this.buffer[i + 2];
+        if (third === undefined && !final) break; // wait for the character after "--"
+        if (third === undefined || /\s/.test(third)) { this.inLineComment = true; i += 2; continue; }
+      }
+      if (!inQuote && ch === '#') {
+        this.inLineComment = true; i++; continue;
       }
       if (!inQuote && ch === '/' && next === '*') {
         this.inBlockComment = true; i += 2; continue;
