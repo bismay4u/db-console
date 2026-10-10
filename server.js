@@ -18,6 +18,8 @@ const diff = require('./api/diff');
 const metrics = require('./api/metrics');
 const totp = require('./api/totp');
 const secrets = require('./api/secrets');
+const oidcMod = require('./api/oidc');
+const ldapMod = require('./api/ldap');
 const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
@@ -302,7 +304,7 @@ function recordLoginAttempt(req, username, ok) {
 }
 
 // --- Auth routes ---
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { username, password } = req.body || {};
   const who = { username: String(username || '').slice(0, 64), ip: req.ip, agent: req.get('user-agent') };
   const retryAfter = loginRetryAfter(req, username);
@@ -312,10 +314,30 @@ app.post('/api/login', (req, res) => {
     return res.status(429).json({ error: `Too many failed sign-in attempts. Try again in ${Math.ceil(retryAfter / 60)} minute(s).` });
   }
 
-  const user = store.getUser(String(username || ''));
-  // Always verify (against a dummy hash for unknown users) so response
-  // time doesn't reveal which usernames exist.
-  const valid = store.verifyPassword(password, user ? user.passwordHash : null);
+  const local = store.getUser(String(username || ''));
+  let user = local;
+  let valid;
+  if (ldapClient && (!local || local.sso === 'ldap')) {
+    // A directory account (or a name no local account has): the directory checks the password.
+    // A local account is never handed to the directory, so a directory user cannot take over a local name.
+    valid = false;
+    try {
+      const found = await ldapClient.authenticate(username, password);
+      if (found) {
+        valid = true;
+        user = provisionLdapUser(found);
+      }
+    } catch (e) {
+      authlog.record({ ...who, event: 'login_failed', detail: `LDAP: ${e.message}`.slice(0, 160) });
+      recordLoginAttempt(req, username, false);
+      return res.status(e.refused ? 401 : 503).json({ error: e.refused ? e.message : 'The directory server could not be reached' });
+    }
+    if (!valid) user = null;
+  } else {
+    // Always verify (against a dummy hash for unknown users) so response
+    // time doesn't reveal which usernames exist.
+    valid = store.verifyPassword(password, user ? user.passwordHash : null) && !(user && user.sso);
+  }
   if (!user || !valid || user.disabled) {
     authlog.record({ ...who, event: 'login_failed', detail: !user ? 'unknown user' : user.disabled ? 'account disabled' : 'wrong password' });
     recordLoginAttempt(req, username, false);
@@ -400,6 +422,82 @@ app.get('/api/session', (req, res) => {
     needs2faSetup: REQUIRE_2FA && !(req.user.totp && req.user.totp.enabled)
   });
 });
+
+// --- Directory sign-in (LDAP / Active Directory) ---
+const ldapSettings = ldapMod.load(config);
+const ldapClient = ldapSettings.enabled ? ldapMod.create(ldapSettings) : null;
+
+// The local user for a directory account, created on first sign-in when allowed. The directory entry (its DN)
+// is the identity; the admin role follows the admin group on every sign-in.
+function provisionLdapUser(found) {
+  const subject = `ldap|${found.dn.toLowerCase()}`;
+  let user = store.listUsers().find((u) => u.ssoSub === subject);
+  const role = found.admin ? 'admin' : (store.ROLES.includes(ldapSettings.defaultRole) ? ldapSettings.defaultRole : 'user');
+  if (!user) {
+    if (!ldapSettings.autoCreate) { const e = new Error('You have no account here yet — ask an administrator to let you in'); e.refused = true; throw e; }
+    user = store.createExternalUser({ preferred: found.username, displayName: found.name, role, sso: 'ldap', ssoSub: subject, email: found.email });
+  } else if (ldapSettings.adminGroupDn && user.role !== role && (user.role === 'admin' || role === 'admin')) {
+    user = store.updateUser(user.username, { role });
+  }
+  return user;
+}
+
+// --- Single sign-on (OpenID Connect) ---
+const oidcSettings = oidcMod.load(config);
+const oidcClient = oidcSettings.enabled ? oidcMod.create(oidcSettings) : null;
+
+// What the login page needs to know before anyone is signed in.
+app.get('/api/auth-config', (req, res) => {
+  res.json({ oidc: oidcClient ? { label: oidcSettings.label } : null, ldap: ldapClient ? { label: ldapSettings.label } : null });
+});
+
+const oidcRedirectUri = (req) => oidcSettings.redirectUri || `${req.protocol}://${req.get('host')}/auth/oidc/callback`;
+const loginError = (res, message) => res.redirect('/login?error=' + encodeURIComponent(message));
+
+app.get('/auth/oidc/login', async (req, res) => {
+  if (!oidcClient) return loginError(res, 'Single sign-on is not set up');
+  try {
+    const { url, saved } = await oidcClient.start(oidcRedirectUri(req));
+    req.session.oidc = saved;
+    return req.session.save(() => res.redirect(url));
+  } catch (e) { return loginError(res, `Could not reach the sign-in provider: ${e.message}`); }
+});
+
+app.get('/auth/oidc/callback', async (req, res) => {
+  const who = { ip: req.ip, agent: req.get('user-agent') };
+  if (!oidcClient) return loginError(res, 'Single sign-on is not set up');
+  const retryAfter = loginRetryAfter(req, '*sso');
+  if (retryAfter) return loginError(res, 'Too many failed sign-in attempts. Try again later.');
+  const saved = req.session.oidc;
+  delete req.session.oidc;
+  try {
+    const profile = await oidcClient.finish(req.query, saved);
+    const user = provisionSsoUser(profile);
+    recordLoginAttempt(req, '*sso', true);
+    return completeLogin(req, res, user, { method: 'SSO', redirect: '/' });
+  } catch (e) {
+    authlog.record({ ...who, username: '(sso)', event: 'login_failed', detail: `SSO: ${e.message}` });
+    recordLoginAttempt(req, '*sso', false);
+    return loginError(res, e.message);
+  }
+});
+
+// The local user for an identity the provider has vouched for, created on first sign-in when allowed.
+function provisionSsoUser(profile) {
+  const domain = profile.email.split('@')[1];
+  if (oidcSettings.allowedDomains.length && !oidcSettings.allowedDomains.includes(domain)) throw new Error(`Accounts at ${domain} may not sign in here`);
+  const subject = `oidc|${oidcSettings.issuer}|${profile.sub}`;
+  let user = store.listUsers().find((u) => u.ssoSub === subject);
+  if (!user) {
+    if (!oidcSettings.autoCreate) throw new Error('You have no account here yet — ask an administrator to let you in');
+    const role = oidcSettings.adminEmails.includes(profile.email) ? 'admin' : (store.ROLES.includes(oidcSettings.defaultRole) ? oidcSettings.defaultRole : 'user');
+    user = store.createExternalUser({ preferred: profile.email.split('@')[0], displayName: profile.name, role, sso: 'oidc', ssoSub: subject, email: profile.email });
+  } else if (user.email !== profile.email) {
+    user = store.patchUser(user.username, { email: profile.email });
+  }
+  if (user.disabled) throw new Error('This account is disabled');
+  return user;
+}
 
 // --- Two-factor authentication (own account) ---
 const REQUIRE_2FA = /^(1|true|yes)$/i.test(String(process.env.REQUIRE_2FA ?? config.require2fa ?? ''));

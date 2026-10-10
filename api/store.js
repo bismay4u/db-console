@@ -11,8 +11,8 @@
 // cluster workers can share these files safely.
 
 const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
+const path = require('path');
 const { DATA_DIR, FILE_MODE, ensureDir, readJson, writeJson, withLock } = require('./datadir');
 const perms = require('./permissions');
 const secrets = require('./secrets');
@@ -396,6 +396,19 @@ function createUser(data) {
   return user;
 }
 
+// A user who signs in through SSO/LDAP: no password anyone could know, a free username derived from `preferred`.
+function createExternalUser({ preferred, displayName, role, sso, ssoSub, email }) {
+  const users = listUsers();
+  const clean = (t) => String(t).toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 28) || 'user';
+  let username = clean(preferred);
+  for (let i = 2; users.some((u) => u.username === username); i++) username = `${clean(preferred).slice(0, 25)}${i}`;
+  if (username.length < 2) username += '_';
+  const user = { ...newUserRecord({ username, password: crypto.randomBytes(24).toString('base64url'), role, displayName }), sso, ssoSub, email };
+  users.push(user);
+  writeJson(USERS_FILE, users);
+  return user;
+}
+
 // Applies displayName / role / disabled / password changes. Anything that
 // changes what the user may do (or how they log in) ends their sessions.
 function updateUser(username, data) {
@@ -487,6 +500,7 @@ module.exports = {
   deleteUser: locked(deleteUser),
   touchLastLogin: locked(touchLastLogin),
   patchUser: locked(patchUser),
+  createExternalUser: locked(createExternalUser),
   verifyPassword,
   setConnectionSharing: locked(setConnectionSharing),
   listConnections,

@@ -68,6 +68,11 @@
 
   <div class="alert alert-danger py-2 small" x-show="error" x-text="error" x-cloak></div>
 
+  <div x-show="step === 'password' && sso" x-cloak class="mb-3">
+    <a href="/auth/oidc/login" class="btn btn-outline-secondary w-100"><i class="bi bi-box-arrow-in-right me-1"></i>Sign in with <span x-text="sso && sso.label"></span></a>
+    <div class="text-center text-muted small my-3">or with a password</div>
+  </div>
+
   <form @submit.prevent="submit" x-show="step === 'password'">
     <div class="mb-3">
       <label class="form-label small fw-medium">Username</label>
@@ -82,6 +87,7 @@
       Sign in
     </button>
   </form>
+  <div class="text-muted small text-center mt-3" x-show="ldap && step === 'password'" x-cloak>Directory users: sign in with your <span x-text="ldap && ldap.label"></span> username and password.</div>
 
   <form @submit.prevent="submitCode" x-show="step === 'code'" x-cloak>
     <p class="small text-muted">Enter the 6-digit code from your authenticator app, or one of your recovery codes.</p>
@@ -101,10 +107,17 @@ function loginForm() {
   return {
     username: '',
     password: '',
+    sso: null,
+    ldap: null,
     code: '',
     step: 'password',
     error: '',
     loading: false,
+    async init() {
+      const q = new URLSearchParams(location.search);
+      if (q.get('error')) this.error = q.get('error');
+      try { const cfg = await (await fetch('/api/auth-config')).json(); this.sso = cfg.oidc; this.ldap = cfg.ldap; } catch (e) { /* password sign-in still works */ }
+    },
     async submit() {
       this.error = '';
       this.loading = true;
