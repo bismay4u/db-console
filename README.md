@@ -8,6 +8,10 @@ It provides an easy-to-use web interface for exploring databases, viewing and ed
 
 It is especially useful for **client environments, small servers, support teams, development environments, field deployments, and troubleshooting scenarios** where a portable database console is more practical than a full-featured administration platform.
 
+![DB Console — Query Runner](docs/screenshots/query-runner.png)
+
+*The Query Runner: run SQL against one or several connections, with highlighting and autocomplete. [More screenshots below](#screenshots).*
+
 ---
 
 ## Why DB Console?
@@ -40,6 +44,20 @@ The application stores its configuration in simple JSON files and can run as a s
 * Create and restore database backups
 * Package the tool with an application or solution deployment
 * Run as a temporary diagnostic/support utility
+
+---
+
+## Screenshots
+
+Taken from a demo shop database (MariaDB) — nothing here is real data.
+
+| | |
+|---|---|
+| ![Explore: browse and edit rows](docs/screenshots/explore-data.png)<br>**Explore** — browse, sort, filter and edit table data with clicks | ![Explore: table structure](docs/screenshots/explore-structure.png)<br>**Structure** — columns, keys, foreign keys and the table DDL |
+| ![Schema diagram](docs/screenshots/diagram.png)<br>**Diagram** — tables and their foreign keys, draggable | ![Database analysis](docs/screenshots/analysis.png)<br>**Analysis** — missing primary keys and indexes, and other anomalies, with the SQL to fix them |
+| ![Share a connection with per-user permissions](docs/screenshots/sharing.png)<br>**Sharing** — give each person exactly the permissions they need | ![Export a database](docs/screenshots/export.png)<br>**Export** — structure, data or both, as SQL, CSV or TSV; built for large databases |
+
+<p align="center"><img src="docs/screenshots/login.png" alt="Sign in" width="420"></p>
 
 ---
 

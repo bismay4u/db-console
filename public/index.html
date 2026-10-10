@@ -1055,7 +1055,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                           <template x-for="sv in ['error', 'warning', 'info']" :key="sv">
                             <button class="sev-chip" :class="[analysis.sev.includes(sv) && 'on', 'sev-chip-' + sv]" @click="toggleAnalysisSeverity(sv)">
                               <span class="sev-dot" :class="'sev-' + sv" style="margin:0"></span>
-                              <span x-text="analysis.result.summary[sv]"></span> <span class="text-capitalize" x-text="sv === 'info' ? 'info' : sv + 's'"></span>
+                              <span x-text="analysis.result.summary[sv]"></span> <span class="text-capitalize" x-text="sv === 'info' || analysis.result.summary[sv] === 1 ? sv : sv + 's'"></span>
                             </button>
                           </template>
                           <select class="form-select form-select-sm" style="width:auto" x-model="analysis.category" x-show="analysisCategories().length > 1">
@@ -1064,8 +1064,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                           </select>
                           <input type="search" class="form-control form-control-sm" style="width:200px" placeholder="Filter…" x-model="analysis.q">
                           <div class="tab-switch ms-auto" style="width:auto">
-                            <button class="tab-btn" :class="analysis.group === 'table' && 'active'" @click="analysis.group = 'table'">By table</button>
-                            <button class="tab-btn" :class="analysis.group === 'rule' && 'active'" @click="analysis.group = 'rule'">By rule</button>
+                            <button class="tab-btn text-nowrap" :class="analysis.group === 'table' && 'active'" @click="analysis.group = 'table'">By table</button>
+                            <button class="tab-btn text-nowrap" :class="analysis.group === 'rule' && 'active'" @click="analysis.group = 'rule'">By rule</button>
                           </div>
                         </div>
                         <div class="alert alert-success py-2 small mx-3" x-show="analysis.result.summary.total === 0">
