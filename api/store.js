@@ -124,6 +124,25 @@ function slugify(text) {
 
 // Fields of a connection that are encrypted in connections.json (see secrets.js).
 const SECRET_FIELDS = ['password', 'sshPassword', 'sshPrivateKey', 'sshPassphrase', 'sslKey'];
+// Network options: TLS (sslMode: '' | 'on' encrypts without checking the server,
+// 'verify' also checks its certificate; sslCa/sslCert/sslKey are PEM text) and an SSH tunnel.
+const NETWORK_FIELDS = ['sslMode', 'sslCa', 'sslCert', 'sslKey', 'sshHost', 'sshPort', 'sshUser', 'sshPassword', 'sshPrivateKey', 'sshPassphrase', 'sshHostKey'];
+
+// Applies the network options in `data` onto a connection record. A blank
+// secret means "unchanged"; clearing sshHost removes the whole tunnel setup.
+function applyNetwork(target, data, existing = {}) {
+  for (const f of NETWORK_FIELDS) {
+    const v = data[f];
+    if (v === undefined) { if (existing[f] !== undefined) target[f] = existing[f]; continue; }
+    if (SECRET_FIELDS.includes(f)) target[f] = v ? v : (existing[f] || '');
+    else target[f] = typeof v === 'string' ? v.trim() : v;
+  }
+  if (target.sshPort !== undefined) target.sshPort = Number(target.sshPort) || 22;
+  if (!['', 'on', 'verify'].includes(target.sslMode || '')) target.sslMode = '';
+  if (!target.sshHost) for (const f of ['sshHost', 'sshPort', 'sshUser', 'sshPassword', 'sshPrivateKey', 'sshPassphrase', 'sshHostKey']) delete target[f];
+  if (!target.sslMode) for (const f of ['sslMode', 'sslCa', 'sslCert', 'sslKey']) delete target[f];
+  return target;
+}
 
 // Connections with their secrets decrypted. A secret that can't be decrypted
 // (the key changed) is left empty and the connection flagged, so one broken
@@ -171,6 +190,7 @@ function createConnection(data) {
     owner: data.owner,
     sharedWith: []
   };
+  applyNetwork(conn, data);
 
   conns.push(conn);
   saveConnections(conns);
@@ -193,6 +213,7 @@ function updateConnection(key, data) {
     password: data.password ? data.password : existing.password,
     database: data.database ?? existing.database
   };
+  applyNetwork(updated, data, existing);
 
   conns[idx] = updated;
   saveConnections(conns);
@@ -442,6 +463,7 @@ const locked = (fn) => (...args) => withLock(() => fn(...args));
 module.exports = {
   DATA_DIR,
   SECRET_FIELDS,
+  NETWORK_FIELDS,
   ROLES,
   ensureStore: locked(ensureStore),
   listUsers,

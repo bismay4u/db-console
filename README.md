@@ -179,6 +179,8 @@ Manage Database connections directly from the web interface.
 * Store multiple database environments
 * Connection-specific settings
 * Passwords are never returned to the browser after being saved
+* **TLS** per connection (encrypt, or encrypt and verify the server certificate, with an optional private CA and client certificate)
+* **SSH tunnel** per connection, for databases reachable only through a bastion host: password or private-key login (with passphrase), optional host-key fingerprint pinning (`SHA256:…`, as `ssh-keygen -lf` prints it). The database host/port in the form are then resolved from the SSH server. Uploads, exports and streaming downloads use the tunnel too. SSH passwords, keys and the TLS client key are stored encrypted
 * Every connection has an owner
 * Share a connection with specific users, or with everyone
 * Shared users can use a connection but cannot see its password, edit, delete or re-share it

@@ -161,7 +161,7 @@ function connView(conn, user) {
   return {
     ...rest,
     hasPassword: hasSecrets.password,
-    hasSshPassword: hasSecrets.sshPassword, hasSshPrivateKey: hasSecrets.sshPrivateKey,
+    hasSshPassword: hasSecrets.sshPassword, hasSshPrivateKey: hasSecrets.sshPrivateKey, hasSshPassphrase: hasSecrets.sshPassphrase, hasSslKey: hasSecrets.sslKey,
     secretError: secretError || undefined,
     canManage: manage,
     sharedWith: manage ? shared : undefined,
@@ -186,6 +186,18 @@ function resolvePassword(password, passwordFrom, user) {
     if (source && canManage(user, source)) return source.password || '';
   }
   return '';
+}
+
+// The connection form's network options (TLS, SSH tunnel). Secrets left blank
+// are copied from `passwordFrom` when the user manages that connection.
+function networkFromBody(body, passwordFrom, user) {
+  const out = {};
+  for (const f of store.NETWORK_FIELDS) if (body[f] !== undefined) out[f] = body[f];
+  const source = passwordFrom ? store.getConnection(passwordFrom) : null;
+  if (source && canManage(user, source)) {
+    for (const f of store.SECRET_FIELDS) if (f !== 'password' && !out[f] && source[f] && !(f.startsWith('ssh') && body.sshHost === '')) out[f] = source[f];
+  }
+  return out;
 }
 
 // Every route with a :key parameter refers to a connection the current user
@@ -448,14 +460,15 @@ app.post('/api/connections', requireAuth, async (req, res) => {
   const conn = store.createConnection({
     label, host, port, user, database,
     password: resolvePassword(password, passwordFrom, req.user),
-    owner: req.user.username
+    owner: req.user.username,
+    ...networkFromBody(req.body, passwordFrom, req.user)
   });
   res.status(201).json(connView(conn, req.user));
 });
 
 app.put('/api/connections/:key', requireAuth, requireManage, (req, res) => {
   const { label, host, port, user, password, database } = req.body || {};
-  const updated = store.updateConnection(req.params.key, { label, host, port, user, password, database });
+  const updated = store.updateConnection(req.params.key, { label, host, port, user, password, database, ...networkFromBody(req.body || {}) });
   if (!updated) return res.status(404).json({ error: 'Connection not found' });
   db.dropPool(req.params.key); // force pool rebuild with new settings
   res.json(connView(updated, req.user));
@@ -500,7 +513,8 @@ app.post('/api/connections/test', requireAuth, async (req, res) => {
     port: Number(port) || 3306,
     user,
     password: resolvePassword(password, passwordFrom, req.user),
-    database
+    database,
+    ...networkFromBody(req.body, passwordFrom, req.user)
   });
   res.json(result);
 });

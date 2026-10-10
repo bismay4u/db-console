@@ -5,6 +5,7 @@
 const mysql = require('mysql2/promise');
 const mysqlUtil = require('mysql2'); // for safe identifier escaping (escapeId)
 const store = require('./store');
+const tunnel = require('./tunnel');
 const permissions = require('./permissions');
 const fs = require('fs');
 const os = require('os');
@@ -17,8 +18,21 @@ const { Transform, pipeline } = require('stream');
 // key -> { configStr, pool }
 const poolCache = new Map();
 
+// TLS options for mysql2 from the connection's sslMode / PEM fields.
+function sslConfig(conn) {
+  if (!conn.sslMode) return undefined;
+  const ssl = { rejectUnauthorized: conn.sslMode === 'verify' };
+  if (conn.sslCa) ssl.ca = conn.sslCa;
+  if (conn.sslCert) ssl.cert = conn.sslCert;
+  if (conn.sslKey) ssl.key = conn.sslKey;
+  return ssl;
+}
+
 function poolConfig(conn) {
   return {
+    ...(sslConfig(conn) ? { ssl: sslConfig(conn) } : {}),
+    // Through an SSH tunnel the stream comes from the tunnel.
+    ...(conn.sshHost ? { stream: () => tunnel.createStream(conn.key, conn) } : {}),
     host: conn.host,
     port: conn.port,
     user: conn.user,
@@ -46,7 +60,7 @@ function getPool(key) {
   if (conn.secretError) throw new Error(conn.secretError);
 
   // Only settings that affect the pool count; sharing/ownership changes don't.
-  const configStr = JSON.stringify(poolConfig(conn));
+  const configStr = JSON.stringify([poolConfig(conn), conn.sshHost, conn.sshPort, conn.sshUser, conn.sshPassword, conn.sshPrivateKey, conn.sshPassphrase, conn.sshHostKey]);
   const cached = poolCache.get(key);
   if (cached && cached.configStr === configStr) {
     return cached.pool;
@@ -67,12 +81,15 @@ function dropPool(key) {
     cached.pool.end().catch(() => {});
     poolCache.delete(key);
   }
+  tunnel.release(key);
 }
 
 async function closeAllPools() {
   const pools = [...poolCache.values()].map((c) => c.pool);
+  const keys = [...poolCache.keys()];
   poolCache.clear();
   await Promise.allSettled(pools.map((p) => p.end()));
+  keys.forEach((k) => tunnel.release(k));
 }
 
 // A dedicated (non-pool) connection for streaming a large result. It gets an
@@ -392,7 +409,9 @@ async function killQuery(key, thread, sqlStart) {
 
 // Test an arbitrary connection config (used for "Test connection" in the UI,
 // both for unsaved forms and for existing saved connections).
-async function testConnection(conn) {
+async function testConnection(saved) {
+  // A throwaway tunnel key, so testing never tears down the live tunnel of a saved connection.
+  const conn = { ...saved, key: 'test:' + crypto.randomBytes(6).toString('hex') };
   let connection;
   try {
     connection = await mysql.createConnection(poolConfig(conn));
@@ -402,6 +421,7 @@ async function testConnection(conn) {
     return { ok: false, error: err.message };
   } finally {
     if (connection) await connection.end().catch(() => {});
+    if (conn.sshHost) tunnel.release(conn.key);
   }
 }
 
