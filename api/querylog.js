@@ -117,6 +117,11 @@ function applyFilters(entries, f = {}) {
   });
 }
 
+// Every matching entry, oldest first.
+function filtered(filters = {}) {
+  return applyFilters(readAll(), filters);
+}
+
 // Newest first, paginated.
 function query(filters = {}, { limit = 100, offset = 0 } = {}) {
   const matched = applyFilters(readAll(), filters).reverse();
@@ -194,4 +199,4 @@ function analytics(filters = {}, days = 30) {
   };
 }
 
-module.exports = { record, query, analytics, statementType };
+module.exports = { record, query, filtered, analytics, statementType };

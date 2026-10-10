@@ -15,6 +15,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DATA_DIR, FILE_MODE, ensureDir, readJson, writeJson, withLock } = require('./datadir');
 const perms = require('./permissions');
+const secrets = require('./secrets');
 
 const CONNECTIONS_FILE = path.join(DATA_DIR, 'connections.json');
 const QUERIES_FILE = path.join(DATA_DIR, 'queries.json');
@@ -47,7 +48,7 @@ function ensureStore() {
     } catch (e) {
       // no config seed available, that's fine
     }
-    writeJson(CONNECTIONS_FILE, seed);
+    saveConnections(seed);
   }
 
   if (!fs.existsSync(QUERIES_FILE)) {
@@ -72,12 +73,20 @@ function ensureStore() {
   }
 
   migrateOwnership();
+  encryptStoredSecrets();
 
   // Files from older versions were created world-readable; they hold
   // database passwords and password hashes.
   for (const file of [CONNECTIONS_FILE, QUERIES_FILE, USERS_FILE]) {
     try { fs.chmodSync(file, FILE_MODE); } catch (e) { /* e.g. not supported on Windows */ }
   }
+}
+
+// Passwords saved by older versions are plain text: encrypt them once.
+function encryptStoredSecrets() {
+  const raw = readJson(CONNECTIONS_FILE);
+  const plain = raw.some((c) => SECRET_FIELDS.some((f) => c[f] && !secrets.isEncrypted(c[f])));
+  if (plain) saveConnections(listConnections());
 }
 
 // Connections and saved queries created before multi-user support have no
@@ -92,7 +101,7 @@ function migrateOwnership() {
     if (!c.owner) { c.owner = admin.username; changed = true; }
     if (!Array.isArray(c.sharedWith)) { c.sharedWith = []; changed = true; }
   }
-  if (changed) writeJson(CONNECTIONS_FILE, conns);
+  if (changed) saveConnections(conns);
 
   const queries = listQueries();
   changed = false;
@@ -113,8 +122,29 @@ function slugify(text) {
 
 // ---------- Connections ----------
 
+// Fields of a connection that are encrypted in connections.json (see secrets.js).
+const SECRET_FIELDS = ['password', 'sshPassword', 'sshPrivateKey', 'sshPassphrase', 'sslKey'];
+
+// Connections with their secrets decrypted. A secret that can't be decrypted
+// (the key changed) is left empty and the connection flagged, so one broken
+// value doesn't take the whole app down.
 function listConnections() {
-  return readJson(CONNECTIONS_FILE);
+  return readJson(CONNECTIONS_FILE).map((c) => {
+    const out = { ...c };
+    for (const f of SECRET_FIELDS) {
+      if (!secrets.isEncrypted(out[f])) continue;
+      try { out[f] = secrets.decrypt(out[f]); } catch (e) { out[f] = ''; out.secretError = e.message; }
+    }
+    return out;
+  });
+}
+
+function saveConnections(conns) {
+  writeJson(CONNECTIONS_FILE, conns.map((c) => {
+    const { secretError, ...rest } = c; // never persisted
+    for (const f of SECRET_FIELDS) if (rest[f]) rest[f] = secrets.encrypt(rest[f]);
+    return rest;
+  }));
 }
 
 function getConnection(key) {
@@ -143,7 +173,7 @@ function createConnection(data) {
   };
 
   conns.push(conn);
-  writeJson(CONNECTIONS_FILE, conns);
+  saveConnections(conns);
   return conn;
 }
 
@@ -165,7 +195,7 @@ function updateConnection(key, data) {
   };
 
   conns[idx] = updated;
-  writeJson(CONNECTIONS_FILE, conns);
+  saveConnections(conns);
   return updated;
 }
 
@@ -194,7 +224,7 @@ function setConnectionSharing(key, sharedWith, permissions, readOnly) {
   const next = { ...current, sharedWith: list, sharePermissions: map };
   delete next.readOnlyShare; // replaced by sharePermissions
   conns[idx] = next;
-  writeJson(CONNECTIONS_FILE, conns);
+  saveConnections(conns);
   return conns[idx];
 }
 
@@ -209,7 +239,7 @@ function deleteConnection(key) {
   const conns = listConnections();
   const next = conns.filter((c) => c.key !== key);
   const changed = next.length !== conns.length;
-  if (changed) writeJson(CONNECTIONS_FILE, next);
+  if (changed) saveConnections(next);
   return changed;
 }
 
@@ -395,7 +425,7 @@ function deleteUser(username, transferTo) {
     owner: c.owner === username ? transferTo : c.owner,
     sharedWith: (c.sharedWith || []).filter((u) => u !== username)
   }));
-  writeJson(CONNECTIONS_FILE, conns);
+  saveConnections(conns);
 
   const queries = listQueries().map((q) => ({
     ...q,
@@ -411,6 +441,7 @@ const locked = (fn) => (...args) => withLock(() => fn(...args));
 
 module.exports = {
   DATA_DIR,
+  SECRET_FIELDS,
   ROLES,
   ensureStore: locked(ensureStore),
   listUsers,

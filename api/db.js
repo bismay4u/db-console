@@ -43,6 +43,7 @@ function getPool(key) {
   if (!conn) {
     throw new Error(`Unknown connection: ${key}`);
   }
+  if (conn.secretError) throw new Error(conn.secretError);
 
   // Only settings that affect the pool count; sharing/ownership changes don't.
   const configStr = JSON.stringify(poolConfig(conn));

@@ -539,6 +539,10 @@ Connections and saved queries created before multi-user support are assigned to 
 | `PORT`                      | `3000`   | HTTP port |
 | `DATA_DIR` / `dataDir`      | `./data` | Where connections, users, sessions and the query log are stored |
 | `TRUST_PROXY` / `trustProxy`| off      | Set to `1` behind a reverse proxy, so client IPs (rate limiting) and HTTPS (secure cookies) are detected from `X-Forwarded-*` |
+| `DBC_ENCRYPTION_KEY` / `encryptionKey` | generated | Passphrase for encrypting saved connection secrets (see below). Without it a key file `data/.secret.key` is created |
+| `ALLOWED_IPS` / `allowedIps` | off     | Only these addresses / CIDR ranges may reach the app (comma-separated, or an array in `config.js`); everyone else gets 403. `/health` stays open |
+| `SESSION_MINUTES` / `sessionMinutes` | `240` | Longest a sign-in lasts |
+| `IDLE_MINUTES` / `idleMinutes` | off   | Sign out after this many minutes without activity |
 
 ### Database Connections
 
@@ -953,24 +957,25 @@ Possible deployment approaches include:
 
 ### 1. Database credentials
 
-The current implementation stores database passwords in:
+Passwords (and SSH / TLS keys) of saved connections are encrypted at rest in
+`data/connections.json` with AES-256-GCM. Passwords saved by older versions
+are encrypted automatically on the next start.
 
-```text
-data/connections.json
-```
+The key comes from `DBC_ENCRYPTION_KEY` (or `encryptionKey` in `config.js`);
+otherwise a random key is generated into `data/.secret.key` (mode 600). With
+only the key file, a leaked `connections.json` (a backup, a copy) is useless,
+but someone who can read the whole data directory can still decrypt. Setting
+`DBC_ENCRYPTION_KEY` keeps the key out of the data directory. **Keep the key:**
+if it changes, affected connections are flagged and must have their passwords
+re-entered.
 
-in plaintext.
+Also protect the data directory with filesystem permissions. For stricter needs
+consider environment variables, a cloud secret manager or Vault.
 
-Protect this file using filesystem permissions.
-
-For production deployments, consider replacing the storage layer with:
-
-* Encrypted credentials
-* Environment variables
-* OS-level secret storage
-* Cloud secret managers
-* HashiCorp Vault
-* Other secrets-management solutions
+Every sign-in, failed attempt, lockout, sign-out, password change and
+blocked address is recorded; admins see them (with a 24-hour failed-login
+summary and CSV download) under **Users → Sign-in activity**. The Query Log
+can also be downloaded as CSV with the current filters, for audits.
 
 ---
 

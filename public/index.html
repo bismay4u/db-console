@@ -1616,6 +1616,7 @@ Separate multiple statements with ; — highlight text to run just that part."
             <label class="text-muted-sm d-block mb-1">Search</label>
             <input type="search" class="form-control form-control-sm" placeholder="SQL, error or connection…" x-model="logFilters.q" @input.debounce.400ms="loadLogs(true)">
           </div>
+          <a class="btn btn-outline-soft btn-sm" :href="logCsvUrl()" title="Download every matching entry as CSV (for audits)"><i class="bi bi-download me-1"></i>CSV</a>
           <button class="btn btn-outline-soft btn-sm" @click="resetLogFilters" title="Reset filters"><i class="bi bi-x-circle"></i></button>
           <button class="btn btn-outline-soft btn-sm" @click="loadLogs()" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
         </div>
@@ -1795,7 +1796,78 @@ Separate multiple statements with ; — highlight text to run just that part."
 
     <!-- ================= USERS (admin) ================= -->
     <template x-if="activeTab === 'users' && isAdmin()">
-      <div class="card-surface">
+      <div>
+      <div class="tab-switch mb-2" style="width:auto">
+        <button class="tab-btn text-nowrap" :class="usersView === 'users' && 'active'" @click="usersView = 'users'">Users</button>
+        <button class="tab-btn text-nowrap" :class="usersView === 'signins' && 'active'" @click="usersView = 'signins'; loadAuthLog(true)">Sign-in activity</button>
+      </div>
+
+      <!-- Sign-in activity and the failed-login report -->
+      <div x-show="usersView === 'signins'">
+        <div class="card-surface p-3 mb-2" x-show="authLog.summary">
+          <div class="d-flex flex-wrap align-items-center gap-3">
+            <div class="section-title mb-0">Last 24 hours</div>
+            <span class="badge rounded-pill badge-soft-success" x-text="(authLog.summary ? authLog.summary.successful : 0) + ' signed in'"></span>
+            <span class="badge rounded-pill badge-soft-danger" x-text="(authLog.summary ? authLog.summary.failed : 0) + ' failed'"></span>
+            <span class="badge rounded-pill badge-soft-danger" x-text="(authLog.summary ? authLog.summary.locked : 0) + ' locked out'"></span>
+            <span class="badge rounded-pill badge-soft-danger" x-show="authLog.summary && authLog.summary.blocked" x-text="(authLog.summary ? authLog.summary.blocked : 0) + ' blocked by the IP allow-list'"></span>
+          </div>
+          <div class="row g-3 mt-1" x-show="authLog.summary && (authLog.summary.topFailedIps.length || authLog.summary.topFailedUsers.length)">
+            <div class="col-md-6" x-show="authLog.summary && authLog.summary.topFailedIps.length">
+              <div class="text-muted-sm mb-1">Most failed attempts, by address</div>
+              <template x-for="t in (authLog.summary ? authLog.summary.topFailedIps : [])" :key="t.name">
+                <div class="small"><a href="#" class="text-decoration-none" @click.prevent="authLog.q = t.name; loadAuthLog(true)" x-text="t.name"></a> <span class="text-muted-sm" x-text="'× ' + t.count"></span></div>
+              </template>
+            </div>
+            <div class="col-md-6" x-show="authLog.summary && authLog.summary.topFailedUsers.length">
+              <div class="text-muted-sm mb-1">Most failed attempts, by user name</div>
+              <template x-for="t in (authLog.summary ? authLog.summary.topFailedUsers : [])" :key="t.name">
+                <div class="small"><a href="#" class="text-decoration-none" @click.prevent="authLog.q = t.name; loadAuthLog(true)" x-text="t.name"></a> <span class="text-muted-sm" x-text="'× ' + t.count"></span></div>
+              </template>
+            </div>
+          </div>
+        </div>
+        <div class="card-surface">
+          <div class="d-flex flex-wrap align-items-center gap-2 px-3 py-2" style="border-bottom:1px solid var(--border)">
+            <select class="form-select form-select-sm" style="width:auto" x-model="authLog.event" @change="loadAuthLog(true)">
+              <option value="">All events</option><option value="login_ok">Signed in</option><option value="login_failed">Failed</option><option value="login_locked">Locked out</option>
+              <option value="logout">Signed out</option><option value="password_changed">Password changed</option><option value="ip_blocked">Blocked address</option>
+            </select>
+            <input type="search" class="form-control form-control-sm" style="width:220px" placeholder="User, address…" x-model="authLog.q" @input.debounce.400ms="loadAuthLog(true)">
+            <span class="text-muted-sm" x-text="authLog.total + ' event(s)'"></span>
+            <div class="ms-auto d-flex align-items-center gap-2">
+              <template x-if="authLog.total > authLog.size">
+                <div class="d-flex align-items-center gap-1">
+                  <button class="btn btn-outline-soft btn-sm" :disabled="authLog.page === 1" @click="authLog.page--; loadAuthLog()"><i class="bi bi-chevron-left"></i></button>
+                  <span class="text-muted-sm" x-text="authLog.page + ' / ' + Math.ceil(authLog.total / authLog.size)"></span>
+                  <button class="btn btn-outline-soft btn-sm" :disabled="authLog.page * authLog.size >= authLog.total" @click="authLog.page++; loadAuthLog()"><i class="bi bi-chevron-right"></i></button>
+                </div>
+              </template>
+              <a class="btn btn-outline-soft btn-sm" :href="authCsvUrl()"><i class="bi bi-download me-1"></i>CSV</a>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-modern mb-0">
+              <thead><tr><th>Time</th><th>Event</th><th>User</th><th>Address</th><th>Details</th><th>Browser</th></tr></thead>
+              <tbody>
+                <template x-for="(e, i) in authLog.entries" :key="e.ts + i">
+                  <tr>
+                    <td class="text-muted-sm text-nowrap" x-text="formatTs(e.ts)"></td>
+                    <td><span class="badge rounded-pill" :class="authEventClass(e.event)" x-text="authEventLabel(e.event)"></span></td>
+                    <td x-text="e.username || ''"></td>
+                    <td class="text-muted-sm" x-text="e.ip || ''"></td>
+                    <td class="text-muted-sm" x-text="e.detail || ''"></td>
+                    <td class="text-muted-sm text-truncate" style="max-width:240px" :title="e.agent" x-text="e.agent || ''"></td>
+                  </tr>
+                </template>
+                <tr x-show="!authLog.entries.length"><td colspan="6" class="text-center text-muted-sm py-4">No events.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-surface" x-show="usersView === 'users'">
         <div class="table-responsive">
           <table class="table table-modern mb-0">
             <thead>
@@ -1822,6 +1894,7 @@ Separate multiple statements with ; — highlight text to run just that part."
             </tbody>
           </table>
         </div>
+      </div>
       </div>
     </template>
 
@@ -3399,6 +3472,8 @@ function app() {
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
     shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], perms: {}, open_: {}, saving: false, error: '' },
     permissionList: [], permissionPresets: [],
+    usersView: 'users',
+    authLog: { entries: [], total: 0, summary: null, page: 1, size: 50, event: '', q: '', loading: false },
     downloadModal: { open: false, key: '', label: '', database: '', sql: '', format: 'csv', gzip: false, bom: true, nulls: 'empty', stripLimit: false, hasLimit: false, limitText: '', maxRows: '' },
     analysis: { running: false, error: '', result: null, conn: '', db: '', sev: ['error', 'warning', 'info'], category: '', q: '', group: 'table', open: {} },
     rulesModal: { open: false, loading: false, error: '', builtin: [], custom: [], expanded: {} },
@@ -6031,14 +6106,22 @@ function app() {
     },
 
     // ---- Query log ----
+    logFilterParams() {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(this.logFilters)) if (v) params.set(k, v);
+      if (this.logFilters.from) params.set('from', new Date(this.logFilters.from + 'T00:00:00').toISOString());
+      if (this.logFilters.to) params.set('to', new Date(new Date(this.logFilters.to + 'T00:00:00').getTime() + 86400000).toISOString());
+      return params;
+    },
+    logCsvUrl() {
+      return '/api/logs/export.csv?' + this.logFilterParams();
+    },
     async loadLogs(resetPage = false) {
       if (resetPage) this.logPage = 1;
       this.logsLoading = true;
       try {
-        const params = new URLSearchParams({ limit: this.logPageSize, offset: (this.logPage - 1) * this.logPageSize });
-        for (const [k, v] of Object.entries(this.logFilters)) if (v) params.set(k, v);
-        if (this.logFilters.from) params.set('from', new Date(this.logFilters.from + 'T00:00:00').toISOString());
-        if (this.logFilters.to) params.set('to', new Date(new Date(this.logFilters.to + 'T00:00:00').getTime() + 86400000).toISOString());
+        const params = this.logFilterParams();
+        params.set('limit', this.logPageSize); params.set('offset', (this.logPage - 1) * this.logPageSize);
         const res = await fetch('/api/logs?' + params);
         const data = await res.json();
         if (!res.ok) { this.showToast(data.error || 'Failed to load log', 'error'); return; }
@@ -6101,6 +6184,29 @@ function app() {
     },
 
     // ---- Users (admin) ----
+    authFilterParams() {
+      const p = new URLSearchParams();
+      if (this.authLog.event) p.set('event', this.authLog.event);
+      if (this.authLog.q) p.set('q', this.authLog.q);
+      return p;
+    },
+    authCsvUrl() { return '/api/auth-log.csv?' + this.authFilterParams(); },
+    authEventLabel(ev) {
+      return { login_ok: 'Signed in', login_failed: 'Failed', login_locked: 'Locked out', logout: 'Signed out', password_changed: 'Password changed', ip_blocked: 'Blocked address' }[ev] || ev;
+    },
+    authEventClass(ev) {
+      return ['login_failed', 'login_locked', 'ip_blocked'].includes(ev) ? 'badge-soft-danger' : (ev === 'login_ok' ? 'badge-soft-success' : '');
+    },
+    async loadAuthLog(reset = false) {
+      if (reset) this.authLog.page = 1;
+      this.authLog.loading = true;
+      try {
+        const p = this.authFilterParams();
+        p.set('limit', this.authLog.size); p.set('offset', (this.authLog.page - 1) * this.authLog.size);
+        const data = await this.apiJson('GET', '/api/auth-log?' + p);
+        Object.assign(this.authLog, { entries: data.entries, total: data.total, summary: data.summary });
+      } catch (e) { this.showToast(e.message, 'error'); } finally { this.authLog.loading = false; }
+    },
     async loadUsers() {
       const res = await fetch('/api/users');
       if (res.ok) this.users = await res.json();

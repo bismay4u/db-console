@@ -14,6 +14,8 @@ const importer = require('./api/importer');
 const perms = require('./api/permissions');
 const analyzer = require('./api/analyzer');
 const runs = require('./api/runs');
+const netguard = require('./api/netguard');
+const authlog = require('./api/authlog');
 const FileSessionStore = require('./api/sessionstore');
 const { DATA_DIR, readJson, writeJson, withLock } = require('./api/datadir');
 
@@ -27,6 +29,21 @@ const DEFAULT_SESSION_SECRET = 'replace-this-with-a-random-string';
 // X-Forwarded-* headers.
 const trustProxy = process.env.TRUST_PROXY ?? config.trustProxy;
 if (trustProxy) app.set('trust proxy', trustProxy === 'true' || trustProxy === '1' ? 1 : trustProxy);
+
+// IP allow-list (ALLOWED_IPS or `allowedIps` in config.js): everyone else gets 403.
+const ipGuard = netguard.create(process.env.ALLOWED_IPS || config.allowedIps || []);
+if (ipGuard.active) {
+  app.use((req, res, next) => {
+    if (ipGuard.allows(req.ip) || req.path === '/health') return next();
+    authlog.record({ event: 'ip_blocked', ip: req.ip, detail: `${req.method} ${req.path}`.slice(0, 120), agent: req.get('user-agent') });
+    return res.status(403).type('text/plain').send('Access from your address is not allowed.');
+  });
+}
+
+// Sessions: SESSION_MINUTES (or `sessionMinutes`) is how long a sign-in lasts at most (default 240);
+// IDLE_MINUTES (or `idleMinutes`) signs out after that long without activity (default: off).
+const SESSION_MINUTES = Number(process.env.SESSION_MINUTES || config.sessionMinutes) || 240;
+const IDLE_MINUTES = Number(process.env.IDLE_MINUTES || config.idleMinutes) || 0;
 
 // Large enough for long SQL in the Query Runner and big bulk edits. File
 // uploads (import, restore) are streamed as raw bodies and don't go through
@@ -46,10 +63,23 @@ app.use(
       httpOnly: true,
       sameSite: 'lax',
       secure: 'auto', // Secure flag whenever the request came in over HTTPS
-      maxAge: 1000 * 60 * 60 * 4 // 4 hours
+      maxAge: 1000 * 60 * SESSION_MINUTES
     }
   })
 );
+
+// Idle timeout: a session unused for IDLE_MINUTES is ended.
+app.use((req, res, next) => {
+  const s = req.session;
+  if (IDLE_MINUTES && s && s.authenticated) {
+    const now = Date.now();
+    if (s.lastSeen && now - s.lastSeen > IDLE_MINUTES * 60000) {
+      return s.destroy(() => next());
+    }
+    if (!s.lastSeen || now - s.lastSeen > 30000) s.lastSeen = now; // not on every request: that would rewrite the session file each time
+  }
+  return next();
+});
 
 // --- Current user ---
 // Re-read on every request so that deleting or disabling a user, changing
@@ -123,12 +153,16 @@ function canUse(user, conn) {
 }
 
 function connView(conn, user) {
-  const { password, sharedWith, ...rest } = conn;
+  const { sharedWith, secretError, ...rest } = conn;
+  const hasSecrets = Object.fromEntries(store.SECRET_FIELDS.map((f) => [f, Boolean(conn[f])]));
+  for (const f of store.SECRET_FIELDS) delete rest[f];
   const manage = canManage(user, conn);
   const shared = sharedWith || [];
   return {
     ...rest,
-    hasPassword: Boolean(password),
+    hasPassword: hasSecrets.password,
+    hasSshPassword: hasSecrets.sshPassword, hasSshPrivateKey: hasSecrets.sshPrivateKey,
+    secretError: secretError || undefined,
     canManage: manage,
     sharedWith: manage ? shared : undefined,
     permissions: permissionsOf(user, conn),
@@ -259,8 +293,10 @@ function recordLoginAttempt(req, username, ok) {
 // --- Auth routes ---
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body || {};
+  const who = { username: String(username || '').slice(0, 64), ip: req.ip, agent: req.get('user-agent') };
   const retryAfter = loginRetryAfter(req, username);
   if (retryAfter) {
+    authlog.record({ ...who, event: 'login_locked', detail: `blocked for ${Math.ceil(retryAfter / 60)} more minute(s)` });
     res.setHeader('Retry-After', String(retryAfter));
     return res.status(429).json({ error: `Too many failed sign-in attempts. Try again in ${Math.ceil(retryAfter / 60)} minute(s).` });
   }
@@ -270,10 +306,12 @@ app.post('/api/login', (req, res) => {
   // time doesn't reveal which usernames exist.
   const valid = store.verifyPassword(password, user ? user.passwordHash : null);
   if (!user || !valid || user.disabled) {
+    authlog.record({ ...who, event: 'login_failed', detail: !user ? 'unknown user' : user.disabled ? 'account disabled' : 'wrong password' });
     recordLoginAttempt(req, username, false);
     return res.status(401).json({ error: 'Invalid username or password' });
   }
   recordLoginAttempt(req, username, true);
+  authlog.record({ ...who, username: user.username, event: 'login_ok' });
   req.session.regenerate((err) => {
     if (err) return res.status(500).json({ error: 'Could not start session' });
     req.session.authenticated = true;
@@ -286,6 +324,7 @@ app.post('/api/login', (req, res) => {
 });
 
 app.post('/api/logout', (req, res) => {
+  if (req.user) authlog.record({ event: 'logout', username: req.user.username, ip: req.ip, agent: req.get('user-agent') });
   req.session.destroy(() => {
     res.json({ ok: true });
   });
@@ -312,6 +351,7 @@ app.post('/api/account/password', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'New password must be at least 8 characters' });
   }
   const updated = store.updateUser(req.user.username, { password: newPassword });
+  authlog.record({ event: 'password_changed', username: req.user.username, ip: req.ip, agent: req.get('user-agent') });
   // Other sessions of this user are ended; keep this one signed in.
   req.session.sessionVersion = updated.sessionVersion;
   req.session.defaultPassword = newPassword === DEFAULT_ADMIN_PASSWORD;
@@ -1118,6 +1158,43 @@ function logFilters(req) {
 
 app.get('/api/logs', requireAuth, (req, res) => {
   res.json(querylog.query(logFilters(req), { limit: req.query.limit, offset: req.query.offset }));
+});
+
+// ---- CSV helpers for log exports ----
+const csvCell = (v) => {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+function sendCsv(res, filename, header, rows) {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  attachment(res, filename);
+  res.write('\uFEFF' + header.map(csvCell).join(',') + '\r\n');
+  let chunk = '';
+  for (const r of rows) {
+    chunk += r.map(csvCell).join(',') + '\r\n';
+    if (chunk.length > 64 * 1024) { res.write(chunk); chunk = ''; }
+  }
+  res.end(chunk);
+}
+const stamp = () => new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+
+// The same filters as /api/logs, every matching entry, as CSV (for audits).
+app.get('/api/logs/export.csv', requireAuth, (req, res) => {
+  const entries = querylog.filtered(logFilters(req)).reverse();
+  sendCsv(res, `query-log-${stamp()}.csv`,
+    ['time', 'user', 'source', 'connection', 'database', 'type', 'ok', 'error', 'duration_ms', 'rows', 'affected_rows', 'sql'],
+    entries.map((e) => [e.ts, e.username, e.source, e.connLabel || e.connKey, e.database, e.type, e.ok ? 'yes' : 'no', e.error, e.durationMs, e.rowCount, e.affectedRows, e.sql]));
+});
+
+// Sign-in activity and the failed-login report (admins).
+const authFilters = (req) => ({ event: req.query.event || undefined, username: req.query.user || undefined, ip: req.query.ip || undefined, q: req.query.q || undefined, from: req.query.from || undefined, to: req.query.to || undefined });
+app.get('/api/auth-log', requireAdmin, (req, res) => {
+  res.json({ ...authlog.query(authFilters(req), { limit: req.query.limit, offset: req.query.offset }), summary: authlog.summary(req.query.hours) });
+});
+app.get('/api/auth-log.csv', requireAdmin, (req, res) => {
+  const entries = authlog.filter(authlog.readAll(), authFilters(req)).reverse();
+  sendCsv(res, `sign-in-activity-${stamp()}.csv`, ['time', 'event', 'user', 'ip', 'detail', 'browser'], entries.map((e) => [e.ts, e.event, e.username, e.ip, e.detail, e.agent]));
 });
 
 app.get('/api/analytics', requireAuth, (req, res) => {
