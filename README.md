@@ -159,6 +159,12 @@ Features include:
 * Results are paged in the browser; at most 10,000 rows are shown per statement (with the real total) — it is only a preview
 * **Download…** on a result saves **every row**, however many: the statement is run again on the server and streamed straight into a CSV or TSV file (optionally gzipped), so results of lakhs or millions of rows need no browser or server memory. If the query ends in a `LIMIT n` used as a preview, tick "Ignore the LIMIT" to get the whole result set; or stop after N rows, choose how `NULL` is written, and add a byte-order mark for Excel. It runs in a `READ ONLY` transaction, only for statements that return rows, and is written to the query log
 * `CALL` shows the procedure's first result set
+* **Query parameters.** Write `{{name}}` (or `{{name=default}}`) in the SQL and fill the values in the panel that appears. Values are sent to the server and become escaped literals — numbers stay numbers, `null` is NULL, anything else is quoted; inside a quoted string (`LIKE '%{{q}}%'`) the value is escaped but not quoted. A value can never add a statement. The query log and the results show the SQL that actually ran. Saved queries keep their placeholders
+* **Format** tidies the SQL (the selection, or everything; placeholders survive) and **Snippets** inserts ready-made statements (joins, duplicates, table sizes, indexes, running queries, …)
+* **Result tabs** — every run keeps its own tab (the last 10), so you can compare against an earlier result
+* **Chart** on a result with numeric columns: bars, line, pie or doughnut, any column for the labels, one or more for the values (first 500 rows)
+* **Compare results** when a run covered two or more connections: shows the rows that exist on only one side (and how many are identical), matching on the columns both results share. Limited to the rows the page holds (10,000 per statement)
+* **History** keeps your last 300 runs (per user, in this browser) with search and an OK / error filter
 * Saved SQL queries
 * Load saved queries directly into Query Runner
 * `USE database_name` switches a connection's current database; it is shown in the connection list and kept for your next runs (per user, in your browser) until you run `USE` again or click the reset button next to it

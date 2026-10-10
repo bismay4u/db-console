@@ -16,6 +16,8 @@
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/sql-hint.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sql-formatter@15.4.5/dist/sql-formatter.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.js"></script>
 <style>
   :root{
     --bg:#f6f7f9;
@@ -149,6 +151,9 @@
   .db-reset{ padding:.05rem .3rem; font-size:.75rem; line-height:1; color:var(--muted); border:1px solid transparent; flex-shrink:0; }
   .db-reset:hover{ color:var(--accent); border-color:#d7dafc; background:#fff; }
 
+  .run-tab{ display:flex; align-items:center; gap:.4rem; border:1px solid var(--border); border-radius:8px; padding:.2rem .5rem; font-size:.78rem; cursor:pointer; background:#fff; }
+  .run-tab.active{ border-color:var(--accent, #4f46e5); box-shadow:0 0 0 1px var(--accent, #4f46e5) inset; }
+  .run-tab .bi-x:hover{ color:#dc2626; }
   .stmt-block{ border:1px solid var(--border); border-radius:9px; padding:.5rem .65rem; background:#fbfbfc; }
   .stmt-block code.sql-preview{ background:transparent; padding:0; }
   .selection-badge{
@@ -602,13 +607,20 @@
 
             <template x-if="leftTab === 'history'">
               <div>
+                <div class="d-flex gap-1 mb-2" x-show="history.length">
+                  <input type="search" class="form-control form-control-sm" placeholder="Search history…" x-model="historyQuery" @input="historyShown = 50">
+                  <select class="form-select form-select-sm" style="width:auto" x-model="historyFilter" @change="historyShown = 50">
+                    <option value="all">All</option><option value="ok">OK</option><option value="err">Errors</option>
+                  </select>
+                </div>
                 <div class="d-flex justify-content-between align-items-center mb-2" x-show="history.length">
-                  <span class="text-muted-sm">Last <span x-text="history.length"></span> run(s)</span>
+                  <span class="text-muted-sm"><span x-text="historyView().length"></span> of <span x-text="history.length"></span> run(s)</span>
                   <button class="btn btn-link btn-sm p-0 text-decoration-none" style="font-size:.78rem" @click="clearHistory">Clear all</button>
                 </div>
                 <div class="text-muted-sm" x-show="history.length === 0">No queries run yet.</div>
+                <div class="text-muted-sm" x-show="history.length && historyView().length === 0">Nothing matches.</div>
                 <div class="d-flex flex-column gap-1" style="max-height:320px; overflow-y:auto;">
-                  <template x-for="h in history" :key="h.id">
+                  <template x-for="h in historyView().slice(0, historyShown)" :key="h.id">
                     <div class="d-flex align-items-start justify-content-between px-2 py-1 rounded-2 saved-query-row" @click="sql = h.sql">
                       <div class="text-truncate me-2">
                         <div class="d-flex align-items-center gap-1 mb-1">
@@ -624,6 +636,7 @@
                       </div>
                     </div>
                   </template>
+                  <button class="btn btn-link btn-sm text-decoration-none" x-show="historyView().length > historyShown" @click="historyShown += 50">Show more…</button>
                 </div>
               </div>
             </template>
@@ -658,12 +671,97 @@ Separate multiple statements with ; — highlight text to run just that part."
               <button class="btn btn-outline-danger btn-sm" x-show="running" x-cloak @click="stopQuery()" :disabled="!!stopping" title="Stop the statement that is running (KILL QUERY)">
                 <span x-show="stopping" class="spinner-border spinner-border-sm me-1"></span><i class="bi bi-stop-circle me-1" x-show="!stopping"></i>Stop
               </button>
+              <button class="btn btn-outline-soft btn-sm" @click="formatSql()" title="Tidy the SQL (the selection, or everything)">
+                <i class="bi bi-text-indent-left me-1"></i>Format
+              </button>
+              <div class="dropdown" x-data="{ open: false }" @click.outside="open = false">
+                <button class="btn btn-outline-soft btn-sm" @click="open = !open" title="Insert a ready-made statement"><i class="bi bi-code-square me-1"></i>Snippets</button>
+                <ul class="dropdown-menu" :class="open && 'show'" style="max-height:340px; overflow-y:auto">
+                  <template x-for="sn in snippets" :key="sn.name">
+                    <li><a class="dropdown-item small" href="#" @click.prevent="insertSnippet(sn.sql); open = false" x-text="sn.name"></a></li>
+                  </template>
+                </ul>
+              </div>
               <span class="selection-badge" x-show="hasSelection()">
                 <i class="bi bi-cursor-text"></i> Running selection
               </span>
               <span class="text-muted-sm">Ctrl/Cmd + Enter to run</span>
               <span class="text-danger small" x-show="topError" x-text="topError"></span>
             </div>
+          </div>
+
+          <!-- Query parameters: {{name}} or {{name=default}} in the SQL -->
+          <div class="card-surface p-2 mb-2" x-show="sqlParams().length">
+            <div class="section-title mb-1"><i class="bi bi-braces me-1"></i>Parameters</div>
+            <div class="row g-2">
+              <template x-for="p in sqlParams()" :key="p.name">
+                <div class="col-md-4 col-sm-6">
+                  <label class="form-label small mb-0" x-text="p.name"></label>
+                  <input type="text" class="form-control form-control-sm" x-model="paramValues[p.name]" :placeholder="p.default !== undefined ? 'default: ' + p.default : 'value'"
+                         @keydown.enter.prevent="runQuery()">
+                </div>
+              </template>
+            </div>
+            <div class="text-muted-sm mt-1">Values are sent as escaped literals: numbers stay numbers, <code>null</code> is NULL, anything else is quoted.</div>
+          </div>
+
+          <!-- Result tabs: every run keeps its own tab -->
+          <div class="d-flex align-items-center gap-1 mb-2 flex-wrap" x-show="runTabs.length > 1">
+            <template x-for="t in runTabs" :key="t.id">
+              <div class="run-tab" :class="t.id === activeRunTab && 'active'" @click="selectRunTab(t.id)" :title="t.sql">
+                <span class="text-truncate" style="max-width:150px" x-text="t.title"></span>
+                <span class="text-muted-sm" x-text="new Date(t.at).toLocaleTimeString()"></span>
+                <i class="bi bi-x" @click.stop="closeRunTab(t.id)" title="Close this result"></i>
+              </div>
+            </template>
+            <button class="btn btn-link btn-sm text-decoration-none" @click="runTabs = []; activeRunTab = null; results = []">Close all</button>
+          </div>
+
+          <!-- Compare the same statement across the connections it ran on -->
+          <div class="card-surface p-2 mb-2" x-show="results.length >= 2">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <button class="btn btn-outline-soft btn-sm" @click="toggleCompare()"><i class="bi bi-intersect me-1"></i>Compare results</button>
+              <span class="text-muted-sm" x-show="!compare.open">Spot the rows that differ between the connections this ran on.</span>
+              <template x-if="compare.open">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                  <select class="form-select form-select-sm" style="width:auto" x-model="compare.a"><template x-for="r in results" :key="r.key"><option :value="r.key" x-text="labelFor(r.key)"></option></template></select>
+                  <span class="text-muted-sm">vs</span>
+                  <select class="form-select form-select-sm" style="width:auto" x-model="compare.b"><template x-for="r in results" :key="r.key"><option :value="r.key" x-text="labelFor(r.key)"></option></template></select>
+                  <select class="form-select form-select-sm" style="width:auto" x-model.number="compare.stmt" x-show="compareStatementCount() > 1">
+                    <template x-for="i in compareStatementCount()" :key="i"><option :value="i - 1" x-text="'Statement ' + i"></option></template>
+                  </select>
+                  <button class="btn btn-accent btn-sm" @click="runCompare()">Compare</button>
+                </div>
+              </template>
+            </div>
+            <template x-if="compare.open && compare.outcome">
+              <div class="mt-2">
+                <div class="alert alert-danger py-1 small mb-0" x-show="compare.outcome.error" x-text="compare.outcome.error"></div>
+                <template x-if="!compare.outcome.error">
+                  <div>
+                    <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                      <span class="badge rounded-pill badge-soft-success" x-text="compare.outcome.same.toLocaleString() + ' identical row(s)'"></span>
+                      <span class="badge rounded-pill" :class="compare.outcome.onlyA.length ? 'badge-soft-danger' : 'badge-soft-success'" x-text="compare.outcome.countA.toLocaleString() + ' only in ' + labelFor(compare.outcome.a)"></span>
+                      <span class="badge rounded-pill" :class="compare.outcome.onlyB.length ? 'badge-soft-danger' : 'badge-soft-success'" x-text="compare.outcome.countB.toLocaleString() + ' only in ' + labelFor(compare.outcome.b)"></span>
+                      <span class="text-muted-sm" x-show="compare.outcome.note" x-text="compare.outcome.note"></span>
+                    </div>
+                    <div class="row g-2">
+                      <template x-for="side in [['a', compare.outcome.onlyA], ['b', compare.outcome.onlyB]]" :key="side[0]">
+                        <div class="col-lg-6" x-show="side[1].length">
+                          <div class="text-muted-sm mb-1" x-text="'Only in ' + labelFor(compare.outcome[side[0]]) + (side[1].length < (side[0] === 'a' ? compare.outcome.countA : compare.outcome.countB) ? ' (first ' + side[1].length + ')' : '')"></div>
+                          <div class="table-responsive" style="max-height:260px">
+                            <table class="table table-modern mb-0">
+                              <thead><tr><template x-for="c in compare.outcome.columns" :key="c"><th x-text="c"></th></template></tr></thead>
+                              <tbody><template x-for="(row, i) in side[1]" :key="i"><tr><template x-for="c in compare.outcome.columns" :key="c"><td :class="row[c] === null && 'cell-null'" x-text="displayCell(row[c])"></td></template></tr></template></tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
           </div>
 
           <template x-for="r in results" :key="r.key">
@@ -722,10 +820,32 @@ Separate multiple statements with ; — highlight text to run just that part."
                             <span class="text-muted-sm" x-text="'Page ' + (s.page || 1) + ' / ' + Math.ceil(s.rows.length / resultPageSize)"></span>
                             <button class="btn btn-outline-soft btn-sm" style="padding:.05rem .4rem" :disabled="(s.page || 1) >= Math.ceil(s.rows.length / resultPageSize)" @click="s.page = (s.page || 1) + 1"><i class="bi bi-chevron-right"></i></button>
                           </div>
+                          <button class="btn btn-outline-soft btn-sm" style="padding:.1rem .5rem; font-size:.72rem" x-show="numericColumns(s).length" @click="toggleChart(s)" title="Plot this result">
+                            <i class="bi bi-bar-chart-line me-1"></i>Chart
+                          </button>
                           <button class="btn btn-outline-soft btn-sm" style="padding:.1rem .5rem; font-size:.72rem" @click="openDownload(r, s)" title="Download the full result as CSV or TSV, however many rows it has">
                             <i class="bi bi-download me-1"></i>Download…
                           </button>
                         </div>
+                        <template x-if="s.chart">
+                          <div class="border rounded-2 p-2 mb-2">
+                            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                              <select class="form-select form-select-sm" style="width:auto" x-model="s.chart.type">
+                                <option value="bar">Bars</option><option value="line">Line</option><option value="pie">Pie</option><option value="doughnut">Doughnut</option>
+                              </select>
+                              <span class="text-muted-sm">Labels</span>
+                              <select class="form-select form-select-sm" style="width:auto" x-model="s.chart.x">
+                                <template x-for="c in s.columns" :key="c"><option :value="c" x-text="c"></option></template>
+                              </select>
+                              <span class="text-muted-sm">Values</span>
+                              <template x-for="c in numericColumns(s)" :key="c">
+                                <label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" :checked="s.chart.ys.includes(c)" @change="toggleChartY(s, c)"><span x-text="c"></span></label>
+                              </template>
+                              <span class="text-muted-sm ms-auto" x-show="s.rows.length > 500">first 500 rows plotted</span>
+                            </div>
+                            <div style="height:280px; position:relative"><canvas x-effect="drawChart($el, s)"></canvas></div>
+                          </div>
+                        </template>
                         <div class="table-responsive" style="max-height:320px;">
                           <table class="table table-modern mb-0">
                             <thead>
@@ -3507,6 +3627,7 @@ Separate multiple statements with ; — highlight text to run just that part."
 // The CodeMirror instance lives outside Alpine's reactive state (Alpine
 // would wrap it in a proxy, which CodeMirror doesn't survive).
 let sqlCm = null;
+const numericColCache = new WeakMap(); // statement result -> its numeric columns (not reactive)
 let routeQueue = Promise.resolve(); // see applyRoute()
 
 function app() {
@@ -3531,6 +3652,25 @@ function app() {
     sqlHintTables: null,
     sqlHintKey: '',
     resultPageSize: 100,
+    historyQuery: '', historyFilter: 'all', historyShown: 50,
+    paramValues: {},
+    runTabs: [], activeRunTab: null, runTabSeq: 0,
+    compare: { open: false, a: '', b: '', stmt: 0, outcome: null },
+    snippets: [
+      { name: 'Select with filter', sql: 'SELECT *\nFROM table_name\nWHERE column_name = {{value}}\nLIMIT 100;\n' },
+      { name: 'Join two tables', sql: 'SELECT a.*, b.*\nFROM table_a a\nJOIN table_b b ON b.a_id = a.id\nLIMIT 100;\n' },
+      { name: 'Count by value', sql: 'SELECT column_name, COUNT(*) AS n\nFROM table_name\nGROUP BY column_name\nORDER BY n DESC;\n' },
+      { name: 'Find duplicates', sql: 'SELECT column_name, COUNT(*) AS copies\nFROM table_name\nGROUP BY column_name\nHAVING COUNT(*) > 1\nORDER BY copies DESC;\n' },
+      { name: 'Rows in a date range', sql: "SELECT *\nFROM table_name\nWHERE created_at >= {{from=2024-01-01}} AND created_at < {{to=2025-01-01}}\nORDER BY created_at\nLIMIT 100;\n" },
+      { name: 'Update rows (with parameters)', sql: 'UPDATE table_name\nSET column_name = {{new_value}}\nWHERE id = {{id}};\n' },
+      { name: 'Insert a row', sql: "INSERT INTO table_name (column_a, column_b)\nVALUES ({{a}}, {{b}});\n" },
+      { name: 'Create table', sql: 'CREATE TABLE table_name (\n  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,\n  name VARCHAR(255) NOT NULL,\n  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n' },
+      { name: 'Table sizes in this database', sql: 'SELECT table_name, table_rows,\n       ROUND((data_length + index_length) / 1024 / 1024, 2) AS size_mb\nFROM information_schema.tables\nWHERE table_schema = DATABASE()\nORDER BY size_mb DESC;\n' },
+      { name: 'Columns of a table', sql: "SELECT column_name, column_type, is_nullable, column_default, column_key\nFROM information_schema.columns\nWHERE table_schema = DATABASE() AND table_name = {{table}}\nORDER BY ordinal_position;\n" },
+      { name: 'Indexes of a table', sql: 'SHOW INDEX FROM table_name;\n' },
+      { name: 'Running queries', sql: 'SHOW FULL PROCESSLIST;\n' },
+      { name: 'Foreign keys referencing a table', sql: "SELECT table_name, column_name, constraint_name\nFROM information_schema.key_column_usage\nWHERE referenced_table_schema = DATABASE() AND referenced_table_name = {{table}};\n" }
+    ],
     runId: '', stopping: false,
     running: false,
     results: [],
@@ -3675,6 +3815,7 @@ function app() {
         // Older versions kept one history for everyone using this browser.
         localStorage.removeItem('dbconsole_history');
         this.history = JSON.parse(localStorage.getItem(this.historyKey()) || '[]');
+        this.paramValues = JSON.parse(localStorage.getItem('dbconsole_params:' + this.username) || '{}');
       } catch (e) {
         this.history = [];
       }
@@ -4062,15 +4203,28 @@ function app() {
     historyKey() {
       return 'dbconsole_history:' + this.username;
     },
+    // Up to 300 runs are kept on this device; very long statements are cut so they can't fill the browser's storage.
     pushHistory(sql, dbLabels, ok) {
-      const entry = { id: Date.now() + Math.random(), sql, dbLabels, ok, timestamp: new Date().toISOString() };
+      const entry = { id: Date.now() + Math.random(), sql: sql.length > 20000 ? sql.slice(0, 20000) + ' …' : sql, dbLabels, ok, timestamp: new Date().toISOString() };
       this.history.unshift(entry);
-      if (this.history.length > 50) this.history = this.history.slice(0, 50);
-      localStorage.setItem(this.historyKey(), JSON.stringify(this.history));
+      if (this.history.length > 300) this.history = this.history.slice(0, 300);
+      this.saveHistory();
+    },
+    saveHistory() {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try { localStorage.setItem(this.historyKey(), JSON.stringify(this.history)); return; } catch (e) {
+          this.history = this.history.slice(0, Math.floor(this.history.length / 2)); // storage full: drop the oldest half
+        }
+      }
     },
     removeHistoryEntry(id) {
       this.history = this.history.filter(h => h.id !== id);
-      localStorage.setItem(this.historyKey(), JSON.stringify(this.history));
+      this.saveHistory();
+    },
+    historyView() {
+      const q = this.historyQuery.trim().toLowerCase();
+      return this.history.filter(h => (this.historyFilter === 'all' || (this.historyFilter === 'ok') === Boolean(h.ok))
+        && (!q || h.sql.toLowerCase().includes(q) || (h.dbLabels || []).join(' ').toLowerCase().includes(q)));
     },
     async clearHistory() {
       const ok = await this.askConfirm('Clear run history?', 'This removes all locally stored run history on this device.', { confirmLabel: 'Clear', danger: true });
@@ -4134,7 +4288,7 @@ function app() {
       try {
         const res = await fetch('/api/query', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dbKeys: this.selectedKeys, sql: sqlToRun, databases: startDbs, explain, runId })
+          body: JSON.stringify({ dbKeys: this.selectedKeys, sql: sqlToRun, databases: startDbs, explain, runId, params: this.currentParams(sqlToRun) })
         });
         const data = await res.json();
         if (!res.ok) {
@@ -4146,7 +4300,7 @@ function app() {
             // A USE in this run carries over to the next one.
             if (typeof r.currentDatabase === 'string') this.setCurrentDb(r.key, r.currentDatabase);
           }
-          this.results = data.results;
+          this.addRunTab(sqlToRun, data.results);
           this.pushHistory(sqlToRun, dbLabelsUsed, data.results.every(r => r.ok));
         }
       } catch (e) {
@@ -4155,6 +4309,155 @@ function app() {
       } finally {
         this.running = false; this.stopping = false; this.runId = "";
       }
+    },
+
+    // ---- Query parameters: {{name}} / {{name=default}} ----
+    paramsIn(sql) {
+      const clean = String(sql).replace(/\/\*[\s\S]*?\*\//g, '').replace(/(--[ \t][^\n]*|#[^\n]*)/g, '');
+      const found = new Map();
+      for (const m of clean.matchAll(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=([^}]*))?\}\}/g)) {
+        if (!found.has(m[1])) found.set(m[1], { name: m[1], default: m[2] === undefined ? undefined : m[2].trim() });
+        else if (found.get(m[1]).default === undefined && m[2] !== undefined) found.get(m[1]).default = m[2].trim();
+      }
+      return [...found.values()];
+    },
+    sqlParams() { return this.paramsIn(this.activeSql()); },
+    currentParams(sql) {
+      const out = {};
+      for (const p of this.paramsIn(sql)) if (this.paramValues[p.name] !== undefined && this.paramValues[p.name] !== '') out[p.name] = this.paramValues[p.name];
+      try { localStorage.setItem('dbconsole_params:' + this.username, JSON.stringify(this.paramValues)); } catch (e) { /* ignore */ }
+      return out;
+    },
+
+    // ---- Formatter and snippets ----
+    formatSql() {
+      if (!window.sqlFormatter) { this.showToast('The formatter could not be loaded', 'error'); return; }
+      const selected = this.hasSelection();
+      let out;
+      try {
+        out = window.sqlFormatter.format(this.activeSql(), { language: 'mariadb', tabWidth: 2, keywordCase: 'upper', paramTypes: { custom: [{ regex: '\\{\\{[^}]*\\}\\}' }] } });
+      } catch (e) { this.showToast('Could not format: ' + e.message.split('\n')[0], 'error'); return; }
+      if (sqlCm) { if (selected) sqlCm.replaceSelection(out); else sqlCm.setValue(out); } else this.sql = out;
+    },
+    insertSnippet(text) {
+      if (sqlCm) { sqlCm.replaceSelection(text); sqlCm.focus(); }
+      else this.sql = (this.sql ? this.sql.replace(/\s*$/, '\n\n') : '') + text;
+    },
+
+    // ---- Result tabs ----
+    addRunTab(sql, results) {
+      const id = ++this.runTabSeq;
+      this.runTabs.push({ id, title: sql.replace(/\s+/g, ' ').trim().slice(0, 40), sql: sql.slice(0, 500), at: Date.now(), results });
+      if (this.runTabs.length > 10) this.runTabs.shift();
+      this.activeRunTab = id; this.results = results;
+      this.compare.outcome = null;
+    },
+    selectRunTab(id) {
+      const t = this.runTabs.find(x => x.id === id);
+      if (!t) return;
+      this.activeRunTab = id; this.results = t.results; this.compare.outcome = null;
+    },
+    closeRunTab(id) {
+      const idx = this.runTabs.findIndex(x => x.id === id);
+      if (idx === -1) return;
+      this.runTabs.splice(idx, 1);
+      if (this.activeRunTab === id) {
+        const next = this.runTabs[Math.min(idx, this.runTabs.length - 1)];
+        if (next) this.selectRunTab(next.id); else { this.activeRunTab = null; this.results = []; }
+      }
+    },
+
+    // ---- Charts ----
+    numericColumns(s) {
+      const raw = Alpine.raw(s);
+      if (!numericColCache.has(raw)) {
+        const rows = raw.rows || [];
+        numericColCache.set(raw, (raw.columns || []).filter(c => {
+          let seen = 0;
+          for (let i = 0; i < rows.length && i < 200; i++) {
+            const v = rows[i][c];
+            if (v === null || v === undefined || v === '') continue;
+            if (typeof v === 'number' || (typeof v === 'string' && /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v))) seen++; else return false;
+          }
+          return seen > 0;
+        }));
+      }
+      return numericColCache.get(raw);
+    },
+    toggleChart(s) {
+      if (s.chart) { s.chart = null; return; }
+      const nums = this.numericColumns(s);
+      const x = s.columns.find(c => !nums.includes(c)) || s.columns[0];
+      s.chart = { type: 'bar', x, ys: nums.filter(c => c !== x).slice(0, 1).concat(nums.includes(x) && nums.length === 1 ? [x] : []) };
+      if (!s.chart.ys.length) s.chart.ys = [nums[0]];
+    },
+    toggleChartY(s, c) {
+      const ys = s.chart.ys;
+      s.chart.ys = ys.includes(c) ? ys.filter(y => y !== c) : [...ys, c];
+    },
+    drawChart(canvas, s) {
+      const cfg = s.chart;
+      if (!cfg || !window.Chart) return;
+      const type = cfg.type, x = cfg.x, ys = cfg.ys.slice();
+      const rows = (Alpine.raw(s).rows || []).slice(0, 500);
+      const labels = rows.map(r => (r[x] === null || r[x] === undefined) ? '(null)' : String(r[x]));
+      const palette = ['#4f46e5', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#64748b', '#ec4899'];
+      const round = type === 'pie' || type === 'doughnut';
+      const datasets = (round ? ys.slice(0, 1) : ys).map((y, i) => ({
+        label: y,
+        data: rows.map(r => { const n = Number(r[y]); return Number.isFinite(n) ? n : null; }),
+        backgroundColor: round ? rows.map((_, j) => palette[j % palette.length]) : palette[i % palette.length] + (type === 'line' ? '33' : 'cc'),
+        borderColor: palette[i % palette.length], borderWidth: type === 'line' ? 2 : 1, tension: .25, pointRadius: rows.length > 100 ? 0 : 3
+      }));
+      const prev = window.Chart.getChart(canvas);
+      if (prev) prev.destroy();
+      new window.Chart(canvas, {
+        type, data: { labels, datasets },
+        options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: round || datasets.length > 1 } } }
+      });
+    },
+
+    // ---- Compare results from two connections ----
+    toggleCompare() {
+      this.compare.open = !this.compare.open;
+      if (this.compare.open) {
+        this.compare.a = this.results[0].key; this.compare.b = (this.results[1] || this.results[0]).key;
+        this.compare.stmt = 0; this.compare.outcome = null;
+      }
+    },
+    compareStatementCount() {
+      const r = this.results.find(x => x.key === this.compare.a);
+      return r ? (r.statements || []).length : 0;
+    },
+    runCompare() {
+      const c = this.compare;
+      const side = (key) => (this.results.find(r => r.key === key) || {}).statements?.[c.stmt];
+      const sa = side(c.a), sb = side(c.b);
+      const fail = (error) => { c.outcome = { error }; };
+      if (c.a === c.b) return fail('Pick two different connections.');
+      if (!sa || !sb || sa.type !== 'rows' || sb.type !== 'rows') return fail('Both sides need a statement that returned rows.');
+      const columns = sa.columns.filter(col => sb.columns.includes(col));
+      if (!columns.length) return fail('The two results have no column in common.');
+      const ra = Alpine.raw(sa).rows, rb = Alpine.raw(sb).rows;
+      const keyOf = (row) => JSON.stringify(columns.map(col => row[col]));
+      const countsB = new Map();
+      for (const row of rb) { const k = keyOf(row); countsB.set(k, (countsB.get(k) || 0) + 1); }
+      const onlyA = []; let same = 0, countA = 0;
+      for (const row of ra) {
+        const k = keyOf(row); const n = countsB.get(k) || 0;
+        if (n > 0) { countsB.set(k, n - 1); same++; } else { countA++; if (onlyA.length < 200) onlyA.push(row); }
+      }
+      const onlyB = []; let countB = 0;
+      const leftover = new Map(countsB);
+      for (const row of rb) {
+        const k = keyOf(row); const n = leftover.get(k) || 0;
+        if (n > 0) { leftover.set(k, n - 1); countB++; if (onlyB.length < 200) onlyB.push(row); }
+      }
+      const notes = [];
+      if (sa.truncated || sb.truncated) notes.push('Only the rows shown in the page are compared (results are capped).');
+      const extra = [...sa.columns.filter(col => !columns.includes(col)), ...sb.columns.filter(col => !columns.includes(col))];
+      if (extra.length) notes.push('Compared on the shared columns; not compared: ' + extra.join(', ') + '.');
+      c.outcome = { a: c.a, b: c.b, columns, same, onlyA, onlyB, countA, countB, note: notes.join(' ') };
     },
 
     // Stops the statement(s) the current run is executing (KILL QUERY on each connection).

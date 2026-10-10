@@ -8,6 +8,7 @@ const config = require('./api/appconfig');
 const store = require('./api/store');
 const db = require('./api/db');
 const querylog = require('./api/querylog');
+const params = require('./api/params');
 const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
@@ -1082,7 +1083,8 @@ app.post('/api/explore/:key/:database/restore', requireAuth, async (req, res) =>
 app.post('/api/query', requireAuth, async (req, res) => {
   // databases: { [connKey]: dbName } — where each connection currently is
   // in the Query Runner (after an earlier USE); defaults to its database.
-  const { dbKeys, sql, databases, explain, runId } = req.body || {};
+  const { dbKeys, databases, explain, runId } = req.body || {};
+  let sql = (req.body || {}).sql;
 
   if (!Array.isArray(dbKeys) || dbKeys.length === 0) {
     return res.status(400).json({ error: 'dbKeys must be a non-empty array' });
@@ -1090,6 +1092,8 @@ app.post('/api/query', requireAuth, async (req, res) => {
   if (!sql || typeof sql !== 'string' || !sql.trim()) {
     return res.status(400).json({ error: 'sql must be a non-empty string' });
   }
+  // {{name}} placeholders become escaped literals; the log and the results show the SQL that actually ran.
+  try { sql = params.apply(sql, (req.body || {}).params || {}); } catch (err) { return res.status(400).json({ error: err.message }); }
 
   const conns = dbKeys.map((key) => store.getConnection(key));
   const denied = dbKeys.filter((key, i) => !conns[i] || !canUse(req.user, conns[i]));
