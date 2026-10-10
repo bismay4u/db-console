@@ -258,7 +258,7 @@ const EXPLAINABLE_RE = /^(select|with|update|delete|insert|replace|table)\b/i;
 // read run inside a READ ONLY transaction, on a connection that is thrown
 // away afterwards, so a stored function that writes, or a WITH … DELETE,
 // still fails for a user who may not write.
-async function runQuery(key, sqlText, { database, explain = false, allowed = null } = {}) {
+async function runQuery(key, sqlText, { database, explain = false, allowed = null, track = null } = {}) {
   let statements = splitStatements(sqlText);
   if (statements.length === 0) {
     throw new Error('No SQL statement to execute');
@@ -280,6 +280,7 @@ async function runQuery(key, sqlText, { database, explain = false, allowed = nul
   const pool = getPool(key);
   const defaultDb = store.getConnection(key).database;
   const conn = await pool.getConnection();
+  if (track) track.thread(conn.connection.threadId);
   const results = [];
   let ok = true;
   let discard = restricted || statements.some(leavesSessionState);
@@ -300,6 +301,7 @@ async function runQuery(key, sqlText, { database, explain = false, allowed = nul
 
     for (const stmt of ok ? statements : []) {
       const start = Date.now();
+      if (track) track.statement(stmt);
       // For restricted users, a statement that only reads can't write by
       // accident (a function with side effects, a writing CTE).
       const guarded = restricted && !mayCallAnything && permissions.statementNeeds(stmt) === 'read' && !/^\s*use\b/i.test(stripLeadingComments(stmt));
@@ -363,6 +365,7 @@ async function runQuery(key, sqlText, { database, explain = false, allowed = nul
       discard = true; // connection is broken, or can't be reset
     }
   } finally {
+    if (track) track.done(); // before the connection can be handed to someone else
     // destroy() closes the connection, which also rolls back any
     // transaction left open; the pool opens a fresh one when needed.
     if (discard) conn.destroy();
@@ -370,6 +373,20 @@ async function runQuery(key, sqlText, { database, explain = false, allowed = nul
   }
 
   return { ok, statements: results, currentDatabase };
+}
+
+// KILL QUERY for a thread, but only while it is still running the statement
+// that starts with `sqlStart`: pooled connections are reused, and the thread
+// may meanwhile belong to another user's query. Returns 1 if it was stopped.
+async function killQuery(key, thread, sqlStart) {
+  const n = Number(thread);
+  if (!Number.isInteger(n) || n <= 0) throw new Error('Invalid thread id');
+  const pool = getPool(key);
+  const [rows] = await pool.query('SELECT INFO FROM information_schema.PROCESSLIST WHERE ID = ? AND COMMAND = ?', [n, 'Query']);
+  const info = rows[0] && rows[0].INFO;
+  if (!info || !sqlStart || !String(info).startsWith(String(sqlStart).slice(0, 100))) return 0;
+  await pool.query(`KILL QUERY ${n}`);
+  return 1;
 }
 
 // Test an arbitrary connection config (used for "Test connection" in the UI,
@@ -395,6 +412,7 @@ module.exports = {
   splitStatements,
   SqlStatementStream,
   runQuery,
+  killQuery,
   testConnection,
   listDatabases,
   listTables,

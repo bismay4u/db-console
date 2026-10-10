@@ -655,6 +655,9 @@ Separate multiple statements with ; — highlight text to run just that part."
                       title="Show the execution plan (EXPLAIN) without running the statements">
                 <i class="bi bi-diagram-3 me-1"></i>Explain
               </button>
+              <button class="btn btn-outline-danger btn-sm" x-show="running" x-cloak @click="stopQuery()" :disabled="!!stopping" title="Stop the statement that is running (KILL QUERY)">
+                <span x-show="stopping" class="spinner-border spinner-border-sm me-1"></span><i class="bi bi-stop-circle me-1" x-show="!stopping"></i>Stop
+              </button>
               <span class="selection-badge" x-show="hasSelection()">
                 <i class="bi bi-cursor-text"></i> Running selection
               </span>
@@ -3385,6 +3388,7 @@ function app() {
     sqlHintTables: null,
     sqlHintKey: '',
     resultPageSize: 100,
+    runId: '', stopping: false,
     running: false,
     results: [],
     topError: '',
@@ -3979,11 +3983,13 @@ function app() {
 
       const dbLabelsUsed = this.selectedConnections().map(c => c.label);
       const startDbs = Object.fromEntries(this.selectedConnections().map(c => [c.key, this.currentDb(c)]));
-      this.running = true; this.topError = ''; this.results = [];
+      this.running = true; this.stopping = false; this.topError = ''; this.results = [];
+      const runId = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+      this.runId = runId;
       try {
         const res = await fetch('/api/query', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dbKeys: this.selectedKeys, sql: sqlToRun, databases: startDbs, explain })
+          body: JSON.stringify({ dbKeys: this.selectedKeys, sql: sqlToRun, databases: startDbs, explain, runId })
         });
         const data = await res.json();
         if (!res.ok) {
@@ -4002,7 +4008,20 @@ function app() {
         this.topError = 'Network error, please try again';
         this.pushHistory(sqlToRun, dbLabelsUsed, false);
       } finally {
-        this.running = false;
+        this.running = false; this.stopping = false; this.runId = "";
+      }
+    },
+
+    // Stops the statement(s) the current run is executing (KILL QUERY on each connection).
+    async stopQuery() {
+      if (!this.running || !this.runId) return;
+      this.stopping = true;
+      try {
+        const data = await this.apiJson('POST', '/api/query/cancel', { runId: this.runId });
+        if (!data.stopped) this.showToast('Nothing to stop — it may have just finished');
+      } catch (e) {
+        this.showToast(e.message, 'error');
+        this.stopping = false;
       }
     },
 

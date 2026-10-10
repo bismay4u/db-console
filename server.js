@@ -13,6 +13,7 @@ const serverAdmin = require('./api/serveradmin');
 const importer = require('./api/importer');
 const perms = require('./api/permissions');
 const analyzer = require('./api/analyzer');
+const runs = require('./api/runs');
 const FileSessionStore = require('./api/sessionstore');
 const { DATA_DIR, readJson, writeJson, withLock } = require('./api/datadir');
 
@@ -1017,7 +1018,7 @@ app.post('/api/explore/:key/:database/restore', requireAuth, async (req, res) =>
 app.post('/api/query', requireAuth, async (req, res) => {
   // databases: { [connKey]: dbName } — where each connection currently is
   // in the Query Runner (after an earlier USE); defaults to its database.
-  const { dbKeys, sql, databases, explain } = req.body || {};
+  const { dbKeys, sql, databases, explain, runId } = req.body || {};
 
   if (!Array.isArray(dbKeys) || dbKeys.length === 0) {
     return res.status(400).json({ error: 'dbKeys must be a non-empty array' });
@@ -1037,12 +1038,16 @@ app.post('/api/query', requireAuth, async (req, res) => {
     return typeof d === 'string' && d ? d : conns[i].database;
   };
 
+  // A run with an id can be stopped from the Stop button (see /api/query/cancel).
+  const run = runs.begin(runId, req.user.username);
+
   const results = await Promise.all(
     dbKeys.map(async (key, i) => {
       let result;
       try {
         const { ok, statements, currentDatabase } = await db.runQuery(key, sql, {
-          database: startDb(key, i), explain: Boolean(explain), allowed: restrictionsFor(req.user, conns[i])
+          database: startDb(key, i), explain: Boolean(explain), allowed: restrictionsFor(req.user, conns[i]),
+          track: run ? run.track(key) : null
         });
         result = { key, ok, statements, currentDatabase };
       } catch (err) {
@@ -1074,7 +1079,25 @@ app.post('/api/query', requireAuth, async (req, res) => {
     })
   );
 
+  if (run) run.end();
   res.json({ results });
+});
+
+// Stop a run that is still executing: KILL QUERY on each connection running one of its statements.
+app.post('/api/query/cancel', requireAuth, async (req, res) => {
+  const run = runs.read((req.body || {}).runId);
+  if (!run) return res.status(404).json({ error: 'That query is no longer running' });
+  if (run.username !== req.user.username && !isAdmin(req.user)) return res.status(403).json({ error: 'That query belongs to someone else' });
+  let stopped = 0;
+  for (const [key, c] of Object.entries(run.conns || {})) {
+    const conn = store.getConnection(key);
+    const thread = Number(c.thread);
+    if (!conn || !canUse(req.user, conn) || !Number.isInteger(thread) || thread <= 0) continue;
+    try {
+      stopped += await db.killQuery(key, thread, c.sql);
+    } catch (err) { /* the query finished in the meantime */ }
+  }
+  return res.json({ stopped });
 });
 
 // --- Query log & analytics ---

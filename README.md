@@ -153,6 +153,7 @@ Features include:
 * Result rows
 * Affected-row counts
 * Error reporting, and the server's warnings for a statement that produced any
+* **Stop** (shown while a run is executing) cancels the running statement with `KILL QUERY`; it only ever stops the statement that run started, never another user's query on a reused pooled connection. Works across PM2 cluster workers
 * **Explain** (next to **Run**) shows the execution plan of SELECT / UPDATE / DELETE / INSERT statements without running them
 * Asks for confirmation before running `DROP`, `TRUNCATE`, `DELETE`, or an `UPDATE` / `DELETE` without a `WHERE` anywhere in the batch (comments and text inside strings are ignored), and before a `SELECT` with no `LIMIT`
 * Results are paged in the browser; at most 10,000 rows are shown per statement (with the real total) — it is only a preview
@@ -843,7 +844,8 @@ POST /api/query/export      # application/x-www-form-urlencoded
 A refused or failing statement returns `400` JSON before any file starts.
 
 ```http
-POST /api/query
+POST /api/query            # optional "runId" makes the run stoppable
+POST /api/query/cancel     # { runId } → KILL QUERY on that run's statements
 ```
 
 Example request:
