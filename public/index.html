@@ -1037,6 +1037,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                       </button>
                       <button class="tab-btn" :class="overviewTab==='search' && 'active'" @click="overviewTab='search'">Search</button>
                       <button class="tab-btn" :class="overviewTab==='diagram' && 'active'" @click="openDiagram()">Diagram</button>
+                      <button class="tab-btn" :class="overviewTab==='compare' && 'active'" @click="openCompare()">Compare</button>
                       <button class="tab-btn" :class="overviewTab==='analysis' && 'active'" @click="openAnalysis()">
                         Analysis <span class="tab-count" :class="analysisBadgeClass()" x-show="analysisHere() && analysis.result" x-text="analysis.result ? analysis.result.summary.total : ''"></span>
                       </button>
@@ -1266,6 +1267,116 @@ Separate multiple statements with ; — highlight text to run just that part."
                         </div>
                       </div>
                     </template>
+                  </div>
+                </template>
+
+                <!-- Compare two databases or tables -->
+                <template x-if="overviewTab === 'compare'">
+                  <div class="card-surface p-3">
+                    <div class="d-flex flex-wrap align-items-end gap-2 mb-2">
+                      <div>
+                        <div class="text-muted-sm">Source — the model to copy</div>
+                        <div class="d-flex gap-1">
+                          <select class="form-select form-select-sm" style="width:auto" x-model="dbDiff.srcKey" @change="diffSideChanged('src')"><template x-for="c in connections" :key="c.key"><option :value="c.key" x-text="c.label"></option></template></select>
+                          <select class="form-select form-select-sm" style="width:auto" x-model="dbDiff.srcDb" @change="diffDbChanged('src')"><template x-for="d in dbDiff.srcDbs" :key="d"><option :value="d" x-text="d"></option></template></select>
+                        </div>
+                      </div>
+                      <button class="btn btn-outline-soft btn-sm" title="Swap source and target" @click="swapDiff()"><i class="bi bi-arrow-left-right"></i></button>
+                      <div>
+                        <div class="text-muted-sm">Target — gets changed</div>
+                        <div class="d-flex gap-1">
+                          <select class="form-select form-select-sm" style="width:auto" x-model="dbDiff.tgtKey" @change="diffSideChanged('tgt')"><template x-for="c in connections" :key="c.key"><option :value="c.key" x-text="c.label"></option></template></select>
+                          <select class="form-select form-select-sm" style="width:auto" x-model="dbDiff.tgtDb" @change="diffDbChanged('tgt')"><template x-for="d in dbDiff.tgtDbs" :key="d"><option :value="d" x-text="d"></option></template></select>
+                        </div>
+                      </div>
+                      <div class="tab-switch ms-auto" style="width:auto">
+                        <button class="tab-btn" :class="dbDiff.mode === 'schema' && 'active'" @click="dbDiff.mode = 'schema'; dbDiff.error = ''">Structure</button>
+                        <button class="tab-btn" :class="dbDiff.mode === 'data' && 'active'" @click="dbDiff.mode = 'data'; dbDiff.error = ''; loadDiffTables()">Data</button>
+                      </div>
+                    </div>
+                    <div class="alert alert-danger py-2 small" x-show="dbDiff.error" style="white-space:pre-wrap" x-text="dbDiff.error"></div>
+
+                    <!-- structure -->
+                    <div x-show="dbDiff.mode === 'schema'">
+                      <div class="d-flex align-items-center gap-3 mb-2 flex-wrap">
+                        <button class="btn btn-accent btn-sm" @click="runSchemaDiff()" :disabled="dbDiff.loading || !dbDiff.srcDb || !dbDiff.tgtDb"><span x-show="dbDiff.loading" class="spinner-border spinner-border-sm me-1"></span>Compare structure</button>
+                        <label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" x-model="dbDiff.drops"> include things that exist only in the target (drops)</label>
+                      </div>
+                      <template x-if="dbDiff.schema">
+                        <div>
+                          <div class="alert alert-success py-2 small" x-show="!dbDiff.schema.items.length"><i class="bi bi-check-circle me-1"></i>The structures are identical.</div>
+                          <div x-show="dbDiff.schema.items.length">
+                            <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+                              <span class="small"><strong x-text="dbDiff.schema.items.length"></strong> difference(s)<span x-show="dbDiff.schema.summary.destructive"> · <span class="text-danger" x-text="dbDiff.schema.summary.destructive + ' would remove something'"></span></span></span>
+                              <a href="#" class="small text-decoration-none" @click.prevent="diffSelect('safe')">Select safe ones</a><a href="#" class="small text-decoration-none" @click.prevent="diffSelect('all')">All</a><a href="#" class="small text-decoration-none" @click.prevent="diffSelect('none')">None</a>
+                              <div class="ms-auto d-flex gap-2">
+                                <button class="btn btn-outline-soft btn-sm" @click="viewDiffScript()" :disabled="!diffSelectedIds().length"><i class="bi bi-file-earmark-code me-1"></i>View script</button>
+                                <button class="perm-alter btn btn-danger btn-sm" @click="applySchemaDiff()" :disabled="!diffSelectedIds().length || dbDiff.applying"><span x-show="dbDiff.applying" class="spinner-border spinner-border-sm me-1"></span>Apply to target…</button>
+                              </div>
+                            </div>
+                            <template x-for="it in dbDiff.schema.items" :key="it.id">
+                              <label class="d-flex align-items-start gap-2 py-1 px-2 rounded-2 saved-query-row" style="cursor:pointer">
+                                <input type="checkbox" class="form-check-input mt-1" :checked="dbDiff.selected[it.id]" @change="dbDiff.selected[it.id] = $event.target.checked">
+                                <span class="badge rounded-pill" :class="it.destructive ? 'badge-soft-danger' : (it.action === 'create' ? 'badge-soft-success' : '')" style="min-width:4.2rem" x-text="it.action"></span>
+                                <span class="small flex-grow-1"><span x-text="it.description"></span>
+                                  <span class="text-muted-sm d-block font-monospace" style="white-space:pre-wrap; word-break:break-all" x-show="it.detail" x-text="it.detail"></span></span>
+                              </label>
+                            </template>
+                            <div class="text-muted-sm mt-2">A renamed column or table shows as a drop plus a create, which would lose its data — rename it in the table editor instead. Partitioning is not scripted.</div>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+
+                    <!-- data -->
+                    <div x-show="dbDiff.mode === 'data'">
+                      <div class="row g-2 mb-2">
+                        <div class="col-md-3"><label class="form-label small mb-0">Source table</label>
+                          <select class="form-select form-select-sm" x-model="dbDiff.srcTable" @change="if (!dbDiff.tgtTables.includes(dbDiff.tgtTable)) dbDiff.tgtTable = dbDiff.tgtTables.includes(dbDiff.srcTable) ? dbDiff.srcTable : dbDiff.tgtTable">
+                            <template x-for="t in dbDiff.srcTables" :key="t"><option :value="t" x-text="t"></option></template></select></div>
+                        <div class="col-md-3"><label class="form-label small mb-0">Target table</label>
+                          <select class="form-select form-select-sm" x-model="dbDiff.tgtTable"><template x-for="t in dbDiff.tgtTables" :key="t"><option :value="t" x-text="t"></option></template></select></div>
+                        <div class="col-md-3"><label class="form-label small mb-0">Key columns <span class="text-muted-sm">(blank = primary key)</span></label>
+                          <input class="form-control form-control-sm" x-model="dbDiff.keyColumns" placeholder="id"></div>
+                        <div class="col-md-3"><label class="form-label small mb-0">Only rows where <span class="text-muted-sm">(optional SQL)</span></label>
+                          <input class="form-control form-control-sm" x-model="dbDiff.where" placeholder="created_at > '2025-01-01'"></div>
+                      </div>
+                      <button class="btn btn-accent btn-sm mb-2" @click="runDataDiff()" :disabled="dbDiff.loading || !dbDiff.srcTable || !dbDiff.tgtTable"><span x-show="dbDiff.loading" class="spinner-border spinner-border-sm me-1"></span>Compare data</button>
+                      <template x-if="dbDiff.data">
+                        <div>
+                          <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                            <span class="badge rounded-pill badge-soft-success" x-text="dbDiff.data.counts.same.toLocaleString() + ' identical'"></span>
+                            <span class="badge rounded-pill" :class="dbDiff.data.counts.changed ? 'badge-soft-danger' : 'badge-soft-success'" x-text="dbDiff.data.counts.changed.toLocaleString() + ' changed'"></span>
+                            <span class="badge rounded-pill" :class="dbDiff.data.counts.onlySource ? 'badge-soft-danger' : 'badge-soft-success'" x-text="dbDiff.data.counts.onlySource.toLocaleString() + ' only in source'"></span>
+                            <span class="badge rounded-pill" :class="dbDiff.data.counts.onlyTarget ? 'badge-soft-danger' : 'badge-soft-success'" x-text="dbDiff.data.counts.onlyTarget.toLocaleString() + ' only in target'"></span>
+                            <span class="text-muted-sm" x-text="'matched on ' + dbDiff.data.keyColumns.join(', ') + '; ' + dbDiff.data.columns.length + ' column(s) compared'"></span>
+                          </div>
+                          <div class="text-muted-sm mb-2" x-show="dbDiff.data.notCompared.length" x-text="'Not compared (missing on the other side or generated): ' + dbDiff.data.notCompared.join(', ')"></div>
+                          <div class="alert alert-warning py-2 small" x-show="dbDiff.data.scriptTruncated">More than 5,000 rows differ, so the script and Apply cover only the first 5,000 of each kind.</div>
+                          <template x-if="dbDiff.data.changed.length">
+                            <div class="mb-3"><div class="section-title mb-1">Changed (first <span x-text="dbDiff.data.changed.length"></span>)</div>
+                              <div class="table-responsive" style="max-height:260px"><table class="table table-modern mb-0">
+                                <thead><tr><th>Key</th><th>Column</th><th>Source</th><th>Target</th></tr></thead>
+                                <tbody><template x-for="c in dbDiff.data.changed" :key="JSON.stringify(c.key)"><template x-for="col in c.columns" :key="col"><tr>
+                                  <td class="text-muted-sm" x-text="Object.values(c.key).join(', ')"></td><td x-text="col"></td>
+                                  <td class="text-success" x-text="displayCell(c.source[col])"></td><td class="text-danger" x-text="displayCell(c.target[col])"></td></tr></template></template></tbody></table></div></div>
+                          </template>
+                          <template x-for="side in [['onlySource', 'Only in source'], ['onlyTarget', 'Only in target']]" :key="side[0]">
+                            <div class="mb-3" x-show="dbDiff.data[side[0]].length"><div class="section-title mb-1" x-text="side[1] + ' (first ' + dbDiff.data[side[0]].length + ')'"></div>
+                              <div class="table-responsive" style="max-height:220px"><table class="table table-modern mb-0">
+                                <thead><tr><template x-for="c in dbDiff.data.columns" :key="c"><th x-text="c"></th></template></tr></thead>
+                                <tbody><template x-for="(row, i) in dbDiff.data[side[0]]" :key="i"><tr><template x-for="c in dbDiff.data.columns" :key="c"><td :class="row[c] === null && 'cell-null'" x-text="displayCell(row[c])"></td></template></tr></template></tbody></table></div></div>
+                          </template>
+                          <div class="d-flex align-items-center gap-3 flex-wrap" x-show="dbDiff.data.counts.changed + dbDiff.data.counts.onlySource + dbDiff.data.counts.onlyTarget > 0">
+                            <label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" x-model="dbDiff.actions.insert"> insert the missing rows</label>
+                            <label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" x-model="dbDiff.actions.update"> update the changed rows</label>
+                            <label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" x-model="dbDiff.actions.delete"> <span class="text-danger">delete the extra rows</span></label>
+                            <button class="btn btn-outline-soft btn-sm ms-auto" @click="dbDiff.scriptModal = { open: true, text: dbDiff.data.script, kind: 'data' }"><i class="bi bi-file-earmark-code me-1"></i>View script</button>
+                            <button class="perm-update btn btn-danger btn-sm" @click="applyDataDiff()" :disabled="dbDiff.applying || !(dbDiff.actions.insert || dbDiff.actions.update || dbDiff.actions.delete)"><span x-show="dbDiff.applying" class="spinner-border spinner-border-sm me-1"></span>Apply to target…</button>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
                   </div>
                 </template>
 
@@ -2365,6 +2476,19 @@ Separate multiple statements with ; — highlight text to run just that part."
         <span x-show="connModal.saving" class="spinner-border spinner-border-sm me-1"></span>
         Save
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Diff script ===== -->
+<div class="modal-backdrop-custom" x-show="dbDiff.scriptModal.open" x-cloak @click.self="dbDiff.scriptModal.open = false">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">Migration script</h2><button class="btn btn-sm btn-outline-soft" @click="dbDiff.scriptModal.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom"><pre class="definition-block mb-0" style="white-space:pre-wrap; max-height:55vh; overflow:auto" x-text="dbDiff.scriptModal.text"></pre></div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="copyText(dbDiff.scriptModal.text)"><i class="bi bi-clipboard me-1"></i>Copy</button>
+      <button class="btn btn-outline-soft" @click="downloadBlob(new Blob([dbDiff.scriptModal.text], { type: 'application/sql' }), 'migration-' + dbDiff.tgtDb + '.sql')"><i class="bi bi-download me-1"></i>Download .sql</button>
+      <button class="btn btn-accent" @click="openDiffScriptInRunner()"><i class="bi bi-terminal me-1"></i>Open in Query Runner</button>
     </div>
   </div>
 </div>
@@ -4182,6 +4306,8 @@ function app() {
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
     shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], perms: {}, open_: {}, saving: false, error: '' },
     permissionList: [], permissionPresets: [],
+    dbDiff: { mode: 'schema', srcKey: '', srcDb: '', srcDbs: [], tgtKey: '', tgtDb: '', tgtDbs: [], drops: true, loading: false, applying: false, error: '', schema: null, selected: {},
+      srcTable: '', tgtTable: '', srcTables: [], tgtTables: [], keyColumns: '', where: '', data: null, actions: { insert: true, update: true, delete: false }, scriptModal: { open: false, text: '', kind: 'schema' } },
     relatedModal: { open: false, loading: false, error: '', data: null, where: null },
     profileModal: { open: false, loading: false, error: '', data: null, column: '' },
     replaceModal: { open: false, find: '', replace: '', running: false, error: '', result: null },
@@ -5228,6 +5354,105 @@ function app() {
       this.activeTab = 'runner';
       this.$nextTick(() => { if (sqlCm) sqlCm.setValue(f.fix); });
     },
+    // ---- Compare databases / tables ----
+    async openCompare() {
+      this.overviewTab = 'compare';
+      const d = this.dbDiff;
+      if (!d.srcKey || d.srcKey !== this.exploreConnKey || d.srcDb !== this.exploreDatabase) {
+        Object.assign(d, { srcKey: this.exploreConnKey, srcDb: this.exploreDatabase, schema: null, data: null, error: '' });
+        if (!d.tgtKey) { d.tgtKey = this.exploreConnKey; d.tgtDb = ''; }
+        await this.loadDiffDbs('src');
+        await this.loadDiffDbs('tgt');
+        if (!d.tgtDb) d.tgtDb = d.tgtDbs.find((x) => x !== d.srcDb || d.tgtKey !== d.srcKey) || '';
+      }
+    },
+    async loadDiffDbs(side) {
+      const d = this.dbDiff;
+      try {
+        const list = await this.apiJson('GET', `/api/explore/${d[side + 'Key']}/databases`);
+        d[side + 'Dbs'] = list;
+        if (!list.includes(d[side + 'Db'])) d[side + 'Db'] = '';
+      } catch (e) { d.error = e.message; }
+    },
+    async diffSideChanged(side) { this.dbDiff[side + 'Db'] = ''; this.dbDiff.schema = null; this.dbDiff.data = null; await this.loadDiffDbs(side); },
+    diffDbChanged(side) { this.dbDiff.schema = null; this.dbDiff.data = null; if (this.dbDiff.mode === 'data') this.loadDiffTables(); },
+    async swapDiff() {
+      const d = this.dbDiff;
+      Object.assign(d, { srcKey: d.tgtKey, srcDb: d.tgtDb, srcDbs: d.tgtDbs, tgtKey: d.srcKey, tgtDb: d.srcDb, tgtDbs: d.srcDbs, srcTable: d.tgtTable, tgtTable: d.srcTable, srcTables: d.tgtTables, tgtTables: d.srcTables, schema: null, data: null });
+    },
+    async loadDiffTables() {
+      const d = this.dbDiff;
+      const get = async (key, db) => (key && db ? (await this.apiJson('GET', `/api/explore/${key}/${encodeURIComponent(db)}/objects`)).tables.filter(t => !/view/i.test(t.type || '')).map(t => t.name) : []);
+      try {
+        [d.srcTables, d.tgtTables] = await Promise.all([get(d.srcKey, d.srcDb), get(d.tgtKey, d.tgtDb)]);
+        if (!d.srcTables.includes(d.srcTable)) d.srcTable = this.exploreTable && d.srcTables.includes(this.exploreTable) ? this.exploreTable : (d.srcTables[0] || '');
+        if (!d.tgtTables.includes(d.tgtTable)) d.tgtTable = d.tgtTables.includes(d.srcTable) ? d.srcTable : (d.tgtTables[0] || '');
+      } catch (e) { d.error = e.message; }
+    },
+    diffSides() { const d = this.dbDiff; return { source: { key: d.srcKey, database: d.srcDb }, target: { key: d.tgtKey, database: d.tgtDb } }; },
+    async runSchemaDiff() {
+      const d = this.dbDiff;
+      d.loading = true; d.error = ''; d.schema = null;
+      try {
+        d.schema = await this.apiJson('POST', '/api/diff/schema', { ...this.diffSides(), drops: d.drops });
+        this.diffSelect('safe');
+      } catch (e) { d.error = e.message; } finally { d.loading = false; }
+    },
+    diffSelect(how) {
+      const sel = {};
+      for (const it of this.dbDiff.schema.items) sel[it.id] = !it.manual && (how === 'all' || (how === 'safe' && !it.destructive));
+      this.dbDiff.selected = sel;
+    },
+    diffSelectedIds() { return this.dbDiff.schema ? this.dbDiff.schema.items.filter(i => this.dbDiff.selected[i.id]).map(i => i.id) : []; },
+    async viewDiffScript() {
+      const d = this.dbDiff;
+      try {
+        const r = await this.apiJson('POST', '/api/diff/schema', { ...this.diffSides(), drops: d.drops, ids: this.diffSelectedIds() });
+        d.scriptModal = { open: true, text: r.script || '-- nothing selected', kind: 'schema' };
+      } catch (e) { d.error = e.message; }
+    },
+    openDiffScriptInRunner() {
+      const d = this.dbDiff;
+      this.dbDiff.scriptModal.open = false;
+      this.selectedKeys = [d.tgtKey];
+      this.setCurrentDb(d.tgtKey, d.tgtDb);
+      this.sql = d.scriptModal.text;
+      this.activeTab = 'runner';
+      this.$nextTick(() => { if (sqlCm) sqlCm.setValue(d.scriptModal.text); });
+    },
+    async applySchemaDiff() {
+      const d = this.dbDiff;
+      const ids = this.diffSelectedIds();
+      const bad = d.schema.items.filter(i => ids.includes(i.id) && i.destructive).length;
+      const ok = await this.askConfirm('Change the target database?', `${ids.length} change(s) will be applied to ${d.tgtDb} on ${this.labelFor(d.tgtKey)}${bad ? `, ${bad} of them remove things for good` : ''}. Structure changes cannot be rolled back; take a backup first if the data matters.`, { confirmLabel: 'Apply', danger: true });
+      if (!ok) return;
+      d.applying = true; d.error = '';
+      try {
+        const r = await this.apiJson('POST', '/api/diff/schema/apply', { ...this.diffSides(), drops: d.drops, ids });
+        this.showToast(`Applied ${r.executed} statement(s)`);
+        await this.runSchemaDiff();
+      } catch (e) { d.error = e.message; } finally { d.applying = false; }
+    },
+    dataSides() { const d = this.dbDiff; return { source: { key: d.srcKey, database: d.srcDb, table: d.srcTable }, target: { key: d.tgtKey, database: d.tgtDb, table: d.tgtTable }, keyColumns: d.keyColumns.split(',').map(x => x.trim()).filter(Boolean), where: d.where }; },
+    async runDataDiff() {
+      const d = this.dbDiff;
+      d.loading = true; d.error = ''; d.data = null;
+      try { d.data = await this.apiJson('POST', '/api/diff/data', this.dataSides()); } catch (e) { d.error = e.message; } finally { d.loading = false; }
+    },
+    async applyDataDiff() {
+      const d = this.dbDiff;
+      const a = d.actions;
+      const what = [a.insert && `insert ${d.data.counts.onlySource}`, a.update && `update ${d.data.counts.changed}`, a.delete && `delete ${d.data.counts.onlyTarget}`].filter(Boolean).join(', ');
+      const ok = await this.askConfirm('Change the target table?', `This will ${what} row(s) in ${d.tgtDb}.${d.tgtTable}. It runs as one transaction: an error undoes all of it, but once it succeeds it cannot be undone.`, { confirmLabel: 'Apply', danger: true });
+      if (!ok) return;
+      d.applying = true; d.error = '';
+      try {
+        const r = await this.apiJson('POST', '/api/diff/data/apply', { ...this.dataSides(), actions: { insert: a.insert, update: a.update, delete: a.delete } });
+        this.showToast(`Applied ${r.executed} change(s)`);
+        await this.runDataDiff();
+      } catch (e) { d.error = e.message; } finally { d.applying = false; }
+    },
+
     // ---- JSON in the row editor ----
     jsonish(v) { return typeof v === 'string' && /^\s*[\[{]/.test(v) && /[\]}]\s*$/.test(v); },
     jsonError(v) { try { JSON.parse(v); return ''; } catch (e) { return e.message.replace(/^JSON\.parse: /, '').slice(0, 90); } },

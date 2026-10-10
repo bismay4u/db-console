@@ -105,6 +105,11 @@ Rule settings are stored in `data/analyzer_rules.json`. Open `#/explore/<connect
 * The row editor validates and formats **JSON** (Format / Compact) and has date, date-time and time pickers
 * **Diagram** can be downloaded as **SVG** or **PNG**
 
+**Compare** (the *Compare* tab of a database) — pick a source (the model, the open database by default) and a target (any database on any connection you can use):
+
+* **Structure:** tables, columns, indexes, foreign keys, checks, table options, views, procedures, functions, triggers and events are compared, and every difference is a tick-box. The migration script that makes the target match the source is built from the ticked ones — view it, copy it, download it as `.sql`, open it in the Query Runner, or **Apply** it to the target (checked against your permissions on the target, statement by statement; the SQL is always rebuilt on the server). Things that would remove data (drops) start unticked. Renames show as drop + create; partitioning is reported but not scripted
+* **Data:** compare two tables row by row (matched on the primary key or the key columns you give, optionally limited by a `WHERE`): identical / changed (with the columns that differ) / only in source / only in target, and a sync script. **Apply** inserts the missing rows, updates the changed ones and, only if you tick it, deletes the extra ones — in one transaction. Up to 500,000 rows per side; the script covers the first 5,000 differences of each kind
+
 **Tables**
 
 * **Data** tab: pagination, multi-column sorting (Shift+click a header to add a sort), search across all columns, and Adminer-style filters: column (or any column) + operator (`=`, `≠`, `<`, `>`, contains, starts/ends with, `LIKE`, `REGEXP`, `IN`, `IS NULL`...) + value, combined with AND; applied on the server, and used by CSV export too

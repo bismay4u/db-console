@@ -14,6 +14,7 @@ const scheduler = require('./api/scheduler');
 const notify = require('./api/notify');
 const cron = require('./api/cron');
 const insight = require('./api/insight');
+const diff = require('./api/diff');
 const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
@@ -1341,6 +1342,71 @@ app.post('/api/notify/test', requireAdmin, async (req, res) => {
   if (email) { try { await notify.sendEmail({ to: email, subject: '[DB Console] Test message', text: 'Alerts from DB Console reach this address.' }); out.sent.push('email'); } catch (e) { out.errors.push('email: ' + e.message); } }
   if (webhook) { try { await notify.sendWebhook({ text: '[DB Console] Test message', subject: 'Test message', event: 'test' }); out.sent.push('webhook'); } catch (e) { out.errors.push('webhook: ' + e.message); } }
   res.json(out);
+});
+
+// ---- Compare two databases / two tables ----
+// Both sides must be connections the user can use. Applying needs the permissions on the target, checked
+// statement by statement, and the SQL is always recomputed on the server (the browser sends only item ids).
+function diffSides(req, res, needTable) {
+  const { source, target } = req.body || {};
+  const out = [];
+  for (const side of [source, target]) {
+    const conn = side && store.getConnection(side.key);
+    if (!conn || !canUse(req.user, conn)) { res.status(404).json({ error: 'Connection not found' }); return null; }
+    if (!side.database || (needTable && !side.table)) { res.status(400).json({ error: needTable ? 'Choose a database and a table on both sides' : 'Choose a database on both sides' }); return null; }
+    out.push({ key: side.key, database: String(side.database), table: side.table ? String(side.table) : undefined, conn });
+  }
+  return out;
+}
+const diffTarget = (t) => ({ key: t.key, database: t.database, table: t.table });
+
+app.post('/api/diff/schema', requireAuth, async (req, res) => {
+  const sides = diffSides(req, res, false);
+  if (!sides) return;
+  try {
+    const items = await diff.diffSchema(diffTarget(sides[0]), diffTarget(sides[1]), { drops: req.body.drops !== false });
+    res.json({ items, script: diff.script(Array.isArray(req.body.ids) ? items.filter((i) => req.body.ids.includes(i.id)) : items.filter((i) => !i.destructive)), fullScript: diff.script(items), summary: { total: items.length, destructive: items.filter((i) => i.destructive).length } });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+app.post('/api/diff/schema/apply', requireAuth, async (req, res) => {
+  const sides = diffSides(req, res, false);
+  if (!sides) return;
+  const { ids } = req.body || {};
+  const start = Date.now();
+  try {
+    if (!Array.isArray(ids) || !ids.length) throw new Error('Choose at least one change');
+    const items = (await diff.diffSchema(diffTarget(sides[0]), diffTarget(sides[1]), { drops: req.body.drops !== false })).filter((i) => ids.includes(i.id));
+    if (!items.length) throw new Error('Those changes are gone — the databases changed. Compare again.');
+    const sqlText = diff.script(items);
+    const r = await diff.applySchema(diffTarget(sides[1]), items, { allowed: restrictionsFor(req.user, sides[1].conn) });
+    querylog.record({ username: req.user.username, source: 'schema-diff', connKey: sides[1].key, connLabel: sides[1].conn.label, database: sides[1].database, sql: sqlText, type: 'DDL', ok: true, durationMs: Date.now() - start });
+    res.json(r);
+  } catch (err) {
+    querylog.record({ username: req.user.username, source: 'schema-diff', connKey: sides[1].key, connLabel: sides[1].conn.label, database: sides[1].database, sql: '(schema diff apply)', type: 'DDL', ok: false, error: err.message, durationMs: Date.now() - start });
+    res.status(400).json({ error: err.message });
+  }
+});
+const dataOptions = (b) => ({ keyColumns: b.keyColumns, where: typeof b.where === 'string' && b.where.trim() ? b.where.trim() : undefined, columns: b.columns });
+app.post('/api/diff/data', requireAuth, async (req, res) => {
+  const sides = diffSides(req, res, true);
+  if (!sides) return;
+  try {
+    const r = await diff.diffData(diffTarget(sides[0]), diffTarget(sides[1]), dataOptions(req.body));
+    const { statements, ...rest } = r;
+    res.json({ ...rest, script: [...statements.insert, ...statements.update, ...statements.delete].map((x) => x + ';').join('\n') });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+app.post('/api/diff/data/apply', requireAuth, async (req, res) => {
+  const sides = diffSides(req, res, true);
+  if (!sides) return;
+  const start = Date.now();
+  try {
+    const actions = req.body.actions || {};
+    const d = await diff.diffData(diffTarget(sides[0]), diffTarget(sides[1]), dataOptions(req.body));
+    const r = await diff.applyData(diffTarget(sides[1]), d, actions, { allowed: restrictionsFor(req.user, sides[1].conn) });
+    querylog.record({ username: req.user.username, source: 'data-diff', connKey: sides[1].key, connLabel: sides[1].conn.label, database: sides[1].database, sql: `SYNC ${sides[1].table} (${['insert', 'update', 'delete'].filter((k) => actions[k]).join(', ')})`, type: 'MULTI', ok: true, affectedRows: r.executed, durationMs: Date.now() - start });
+    res.json(r);
+  } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 app.get('/api/analytics', requireAuth, (req, res) => {
