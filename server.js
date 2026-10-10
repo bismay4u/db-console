@@ -6,6 +6,7 @@ const session = require('express-session');
 
 const config = require('./api/appconfig');
 const store = require('./api/store');
+const notes = require('./api/notes');
 const db = require('./api/db');
 const querylog = require('./api/querylog');
 const params = require('./api/params');
@@ -803,6 +804,7 @@ app.delete('/api/connections/:key', requireAuth, requireManage, (req, res) => {
   const removed = store.deleteConnection(req.params.key);
   if (!removed) return res.status(404).json({ error: 'Connection not found' });
   db.dropPool(req.params.key);
+  notes.removeFor({ connKey: req.params.key });
   res.json({ ok: true });
 });
 
@@ -884,6 +886,87 @@ app.put('/api/queries/:id', requireAuth, (req, res) => {
 app.delete('/api/queries/:id', requireAuth, (req, res) => {
   const removed = store.deleteQuery(req.params.id, req.user.username);
   if (!removed) return res.status(404).json({ error: 'Query not found' });
+  notes.removeFor({ queryId: req.params.id });
+  res.json({ ok: true });
+});
+
+// --- Notes ---
+// Table notes: your own, plus the ones others shared with everyone who can open the connection.
+// Query notes: everyone who can see a saved query sees its notes and may add one.
+function noteView(n, user, extra = {}) {
+  return { id: n.id, text: n.text, shared: n.shared, owner: n.owner, mine: n.owner === user.username, createdAt: n.createdAt, updatedAt: n.updatedAt, ...extra };
+}
+function noteTarget(req, res) {
+  const conn = store.getConnection(req.params.key);
+  if (!conn || !canUse(req.user, conn)) { res.status(404).json({ error: 'Connection not found' }); return null; }
+  const { database, table } = req.params;
+  const sc = scopeOf(req.user, conn);
+  if (sc && (!scopeLib.dbAllowed(sc, database) || (table && scopeLib.tableHidden(sc, database, table)))) { res.status(403).json({ error: 'You do not have access to that table' }); return null; }
+  return { conn, sc };
+}
+function visibleQuery(req, res) {
+  const q = store.getQuery(req.params.id);
+  const shared = q && ((q.sharedWith || []).includes('*') || (q.sharedWith || []).includes(req.user.username));
+  if (!q || (q.owner !== req.user.username && !shared)) { res.status(404).json({ error: 'Query not found' }); return null; }
+  return q;
+}
+app.get('/api/notes/tables/:key/:database', requireAuth, (req, res) => {
+  const t = noteTarget(req, res); if (!t) return;
+  const counts = notes.tableCounts(req.params.key, req.params.database, req.user.username);
+  if (t.sc) for (const name of Object.keys(counts)) if (scopeLib.tableHidden(t.sc, req.params.database, name)) delete counts[name];
+  res.json(counts);
+});
+app.get('/api/notes/tables/:key/:database/:table', requireAuth, (req, res) => {
+  if (!noteTarget(req, res)) return;
+  res.json(notes.forTable(req.params.key, req.params.database, req.params.table, req.user.username).map((n) => noteView(n, req.user)));
+});
+app.post('/api/notes/tables/:key/:database/:table', requireAuth, (req, res) => {
+  if (!noteTarget(req, res)) return;
+  try {
+    const n = notes.create({ kind: 'table', connKey: req.params.key, database: req.params.database, table: req.params.table, text: (req.body || {}).text, shared: (req.body || {}).shared, owner: req.user.username });
+    res.status(201).json(noteView(n, req.user));
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+app.get('/api/notes/queries', requireAuth, (req, res) => {
+  const counts = notes.queryCounts();
+  const visible = new Set(store.listVisibleQueries(req.user.username).map((q) => q.id));
+  res.json(Object.fromEntries(Object.entries(counts).filter(([id]) => visible.has(id))));
+});
+app.get('/api/notes/queries/:id', requireAuth, (req, res) => {
+  if (!visibleQuery(req, res)) return;
+  res.json(notes.forQuery(req.params.id).map((n) => noteView(n, req.user)));
+});
+app.post('/api/notes/queries/:id', requireAuth, (req, res) => {
+  if (!visibleQuery(req, res)) return;
+  try { res.status(201).json(noteView(notes.create({ kind: 'query', queryId: req.params.id, text: (req.body || {}).text, owner: req.user.username }), req.user)); } catch (err) { res.status(400).json({ error: err.message }); }
+});
+// Who may change a note: its author; to delete one, also an admin, the owner of the connection, or the owner of the query.
+function noteRights(n, user) {
+  if (n.owner === user.username) return { edit: true, remove: true };
+  if (n.kind === 'table') {
+    const conn = store.getConnection(n.connKey);
+    return { edit: false, remove: Boolean(isAdmin(user) || (conn && canManage(user, conn))) };
+  }
+  const q = store.getQuery(n.queryId);
+  return { edit: false, remove: Boolean(isAdmin(user) || (q && q.owner === user.username)) };
+}
+function noteSeenBy(n, user) {
+  if (n.owner === user.username) return true;
+  if (n.kind === 'table') { const conn = store.getConnection(n.connKey); return Boolean(n.shared && conn && canUse(user, conn)); }
+  const q = store.getQuery(n.queryId);
+  return Boolean(q && (q.owner === user.username || (q.sharedWith || []).includes('*') || (q.sharedWith || []).includes(user.username)));
+}
+app.put('/api/notes/:id', requireAuth, (req, res) => {
+  const n = notes.get(req.params.id);
+  if (!n || !noteSeenBy(n, req.user)) return res.status(404).json({ error: 'Note not found' });
+  if (!noteRights(n, req.user).edit) return res.status(403).json({ error: 'Only the author can change a note' });
+  try { res.json(noteView(notes.update(n.id, { text: (req.body || {}).text, shared: (req.body || {}).shared }), req.user)); } catch (err) { res.status(400).json({ error: err.message }); }
+});
+app.delete('/api/notes/:id', requireAuth, (req, res) => {
+  const n = notes.get(req.params.id);
+  if (!n || !noteSeenBy(n, req.user)) return res.status(404).json({ error: 'Note not found' });
+  if (!noteRights(n, req.user).remove) return res.status(403).json({ error: 'You cannot delete this note' });
+  notes.remove(n.id);
   res.json({ ok: true });
 });
 
@@ -990,6 +1073,32 @@ app.post('/api/query/export', requireAuth, express.urlencoded({ extended: false,
 // ---- Database analysis (Explore → Analyze) ----
 // Anyone with access to the connection can run it (it only reads); the rules
 // are managed by admins.
+// Every database on the connection in one go: one summary line per database (the details are one click away).
+const SYSTEM_DATABASES = new Set(['information_schema', 'mysql', 'performance_schema', 'sys']);
+app.get('/api/explore/:key/databases/analyze', requireAuth, async (req, res) => {
+  const start = Date.now();
+  const sc = scopeOf(req.user, req.conn);
+  if (sc && sc.hideTables.length) return res.status(403).json({ error: 'This is not available while some tables are hidden from you' });
+  try {
+    const names = (await db.listDatabases(req.params.key)).filter((d) => !SYSTEM_DATABASES.has(String(d).toLowerCase()) && (!sc || scopeLib.dbAllowed(sc, d)));
+    if (names.length > 100) return res.status(400).json({ error: `This connection has ${names.length} databases; analyze them one at a time` });
+    const databases = [];
+    for (const name of names) {
+      try {
+        const r = await analyzer.analyze(req.params.key, name);
+        databases.push({ database: name, tables: r.tables, views: r.views, summary: r.summary, rulesRun: r.rulesRun, fixable: r.findings.filter((f) => f.fix).length, dismissed: r.dismissed.length });
+      } catch (err) { databases.push({ database: name, error: err.message }); }
+    }
+    const total = { error: 0, warning: 0, info: 0, total: 0 };
+    for (const d of databases) if (d.summary) for (const k of Object.keys(total)) total[k] += d.summary[k];
+    logAction(req, { source: 'explore', sql: 'ANALYZE ALL DATABASES', type: 'OTHER', ok: true, durationMs: Date.now() - start });
+    res.json({ ranAt: new Date().toISOString(), durationMs: Date.now() - start, databases, summary: total });
+  } catch (err) {
+    logAction(req, { source: 'explore', sql: 'ANALYZE ALL DATABASES', type: 'OTHER', ok: false, error: err.message, durationMs: Date.now() - start });
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/explore/:key/:database/analyze', requireAuth, async (req, res) => {
   const start = Date.now();
   const entry = { source: 'explore', sql: `ANALYZE DATABASE \`${req.params.database}\``, type: 'OTHER' };
@@ -1034,6 +1143,47 @@ app.post('/api/explore/:key/:database/analyze/apply', requireAuth, async (req, r
     querylog.record({ username: req.user.username, source: 'analysis-fix', connKey: key, connLabel: conn.label, database, sql: found.fix, type: querylog.statementType(found.fix), ok: result.ok, error: failed ? failed.error : null, durationMs: Date.now() - start });
     if (!result.ok) return res.status(400).json({ error: failed ? failed.error : 'The fix failed' });
     return res.json({ ok: true, statements: result.statements.length });
+  } catch (err) { return res.status(400).json({ error: err.message }); }
+});
+
+// Several fixes at once. Same rules as a single apply: the SQL comes from a fresh analysis, each statement is checked
+// against the caller's permissions, and nothing runs without confirm:true. Every fix runs on its own: one that fails
+// does not stop the others, and the result says what happened to each.
+app.post('/api/explore/:key/:database/analyze/apply-bulk', requireAuth, async (req, res) => {
+  const { key, database } = req.params;
+  const { items, confirm } = req.body || {};
+  const conn = req.conn;
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Choose at least one finding' });
+  if (items.length > 200) return res.status(400).json({ error: 'Apply at most 200 fixes at a time' });
+  try {
+    const rules = [...new Set(items.map((i) => i && i.rule).filter(Boolean))];
+    const found = (await analyzer.analyze(key, database, { only: rules })).findings;
+    const allowed = restrictionsFor(req.user, conn);
+    const plan = items.map((i) => {
+      const f = found.find((x) => x.rule === (i && i.rule) && x.object === (i && i.object));
+      if (!f) return { rule: i && i.rule, object: i && i.object, skipped: 'Gone — the problem may already be fixed' };
+      if (!f.fix) return { rule: f.rule, object: f.object, message: f.message, skipped: 'No automatic fix' };
+      const statements = db.splitStatements(f.fix);
+      return {
+        rule: f.rule, object: f.object, table: f.table, message: f.message, sql: f.fix, statements: statements.length,
+        destructive: statements.some((s) => /^\s*(drop|truncate|delete|kill)\b/i.test(s)),
+        denied: statements.map((s) => perms.statementDenied(s, allowed)).find(Boolean) || null
+      };
+    });
+    if (!confirm) return res.json({ items: plan });
+    const start = Date.now();
+    const results = [];
+    for (const p of plan) {
+      if (p.skipped || p.denied) { results.push({ rule: p.rule, object: p.object, ok: false, error: p.skipped || p.denied }); continue; }
+      const t0 = Date.now();
+      try {
+        const r = await db.runQuery(key, p.sql, { database, allowed });
+        const failed = r.statements.find((x) => !x.ok);
+        querylog.record({ username: req.user.username, source: 'analysis-fix', connKey: key, connLabel: conn.label, database, sql: p.sql, type: querylog.statementType(p.sql), ok: r.ok, error: failed ? failed.error : null, durationMs: Date.now() - t0 });
+        results.push({ rule: p.rule, object: p.object, ok: r.ok, error: failed ? failed.error : null });
+      } catch (err) { results.push({ rule: p.rule, object: p.object, ok: false, error: err.message }); }
+    }
+    return res.json({ results, applied: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, durationMs: Date.now() - start });
   } catch (err) { return res.status(400).json({ error: err.message }); }
 });
 

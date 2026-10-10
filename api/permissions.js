@@ -126,7 +126,7 @@ function exploreRequirement(method, segments, body = {}, query = {}) {
   // search & replace: a preview only reads
   if (second === 'search-replace') return body.preview === false ? ['update'] : [];
   // applying an analysis fix is checked statement by statement in the route itself
-  if (second === 'analyze' && third === 'apply') return [];
+  if (second === 'analyze' && (third === 'apply' || third === 'apply-bulk')) return [];
   if (segments.length === 3) {
     switch (third) {
       case 'rows': return m === 'POST' ? ['insert'] : m === 'PUT' ? ['update'] : m === 'DELETE' ? ['delete'] : ALL;

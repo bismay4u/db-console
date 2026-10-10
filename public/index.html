@@ -355,6 +355,8 @@
   .no-insert .perm-insert, .no-update .perm-update, .no-delete .perm-delete, .no-create .perm-create, .no-alter .perm-alter,
   .no-index .perm-index, .no-drop .perm-drop, .no-truncate .perm-truncate, .no-restore .perm-restore{ display:none!important; }
   .engine-other .mysql-only{ display:none!important; }
+  .note-card{ border:1px solid var(--border); border-radius:8px; padding:.55rem .7rem; background:var(--card); }
+  .note-text{ white-space:pre-wrap; font-size:.85rem; word-break:break-word; }
   /* shown while at least one of these is allowed */
   .no-alter.no-create.no-truncate.no-drop .perm-ddl{ display:none!important; }
   .no-update.no-delete .perm-rows{ display:none!important; }
@@ -480,6 +482,7 @@
                  :title="t.name + (/VIEW/i.test(t.type) ? ' (view)' : ' — ~' + (t.approxRows ?? 0) + ' rows · ' + (t.engine || 'n/a'))">
               <i class="bi" :class="/VIEW/i.test(t.type) ? 'bi-eye obj-view' : 'bi-table'"></i>
               <span class="obj-name" x-text="t.name"></span>
+              <i class="bi bi-sticky text-muted" x-show="noteCounts[t.name]" :title="noteCounts[t.name] + ' note(s)'" style="font-size:.7rem"></i>
               <span class="obj-meta" x-text="/VIEW/i.test(t.type) ? 'view' : compactCount(t.approxRows)"></span>
             </div>
           </template>
@@ -693,6 +696,7 @@
                           <span x-text="q.name"></span>
                           <i class="bi bi-people text-muted ms-1" x-show="q.sharedWithMe" :title="'Shared with you by ' + userLabel(q.owner)"></i>
                           <i class="bi bi-share text-muted ms-1" x-show="q.canManage && q.isShared" title="You shared this query"></i>
+                          <i class="bi bi-sticky text-muted ms-1" x-show="queryNoteCounts[q.id]" :title="queryNoteCounts[q.id] + ' note(s)'"></i>
                         </div>
                         <code class="sql-preview" style="max-width:190px" x-text="q.sql"></code>
                       </div>
@@ -1006,6 +1010,9 @@ Separate multiple statements with ; — highlight text to run just that part."
           <span class="text-muted-sm" x-show="!exploreConnKey">
             <i class="bi bi-info-circle me-1"></i>Pick a connection to browse its databases.
           </span>
+          <button class="mysql-only btn btn-sm btn-outline-soft" x-show="exploreConnKey" @click="openAllDbs()" title="Check every database on this connection for problems">
+            <i class="bi bi-heart-pulse me-1"></i>Analyze all
+          </button>
           <button class="mysql-only btn btn-sm" :class="exploreServer ? 'btn-accent' : 'btn-outline-soft'" x-show="exploreConnKey && exploreConnCanManage()"
                   @click="openServerView()" title="Process list, variables, status, users & privileges">
             <i class="bi bi-hdd-rack me-1"></i>Server
@@ -1250,7 +1257,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                           <template x-for="t in exploreTables" :key="t.name">
                             <tr :class="overviewSelected.includes(t.name) && 'row-selected'">
                               <td class="perm-ddl"><input type="checkbox" class="form-check-input" :value="t.name" x-model="overviewSelected"></td>
-                              <td><a href="#" class="fw-medium text-decoration-none" @click.prevent="selectExploreTable(t.name)" x-text="t.name"></a></td>
+                              <td><a href="#" class="fw-medium text-decoration-none" @click.prevent="selectExploreTable(t.name)" x-text="t.name"></a> <i class="bi bi-sticky text-muted ms-1" x-show="noteCounts[t.name]" :title="noteCounts[t.name] + ' note(s)'"></i></td>
                               <td class="text-muted-sm" x-text="/VIEW/i.test(t.type) ? 'view' : (t.engine || '')"></td>
                               <td class="text-end" x-text="/VIEW/i.test(t.type) ? '' : '~' + Number(t.approxRows || 0).toLocaleString()"></td>
                               <td class="text-end text-muted-sm" x-text="formatBytes(t.dataLength)"></td>
@@ -1357,6 +1364,11 @@ Separate multiple statements with ; — highlight text to run just that part."
                             <button class="tab-btn text-nowrap" :class="analysis.group === 'rule' && 'active'" @click="analysis.group = 'rule'">By rule</button>
                           </div>
                         </div>
+                        <div class="d-flex flex-wrap align-items-center gap-2 px-3 pb-2" x-show="fixableFiltered().length && !exploreReadOnly()">
+                          <button class="btn btn-outline-soft btn-sm" @click="toggleAllFixable()"><i class="bi bi-check2-square me-1"></i><span x-text="allFixablePicked() ? 'Clear selection' : 'Select all fixable (' + fixableFiltered().length + ')'"></span></button>
+                          <button class="btn btn-accent btn-sm" x-show="pickedCount()" @click="openBulkApply()"><i class="bi bi-lightning-charge me-1"></i>Apply <span x-text="pickedCount()"></span> fix<span x-show="pickedCount() !== 1">es</span>…</button>
+                          <span class="text-muted-sm" x-show="!pickedCount()">Tick findings, or select every one with an automatic fix, to apply them together.</span>
+                        </div>
                         <div class="alert alert-success py-2 small mx-3" x-show="analysis.result.summary.total === 0">
                           <i class="bi bi-check-circle me-1"></i>No anomalies found by <span x-text="analysis.result.rulesRun"></span> rules.
                         </div>
@@ -1373,6 +1385,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                             <template x-for="f in g.items" :key="f.id">
                               <div class="analysis-item">
                                 <div class="d-flex gap-2 align-items-start" :style="(f.fix || f.detail) ? 'cursor:pointer' : ''" @click="(f.fix || f.detail) && (analysis.open[f.id] = !analysis.open[f.id])">
+                                  <input type="checkbox" class="form-check-input mt-1 flex-shrink-0" x-show="fixRunnable(f) && !exploreReadOnly()" :checked="analysis.picked[f.id]" @click.stop="analysis.picked[f.id] = !analysis.picked[f.id]" title="Select to fix in bulk">
                                   <span class="sev-dot" :class="'sev-' + f.severity"></span>
                                   <div class="flex-grow-1" style="min-width:0">
                                     <div class="small" x-text="f.message"></div>
@@ -1594,6 +1607,9 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <button class="tab-btn" :class="exploreView==='structure' && 'active'" @click="exploreView='structure'">Structure</button>
                     <button class="tab-btn" x-show="!exploreIsView()" :class="exploreView==='indexes' && 'active'" @click="exploreView='indexes'">
                       Indexes <span class="tab-count" x-show="exploreIndexes.length" x-text="exploreIndexes.length"></span>
+                    </button>
+                    <button class="tab-btn" :class="exploreView==='notes' && 'active'" @click="openTableNotes()">
+                      Notes <span class="tab-count" x-show="noteCounts[exploreTable]" x-text="noteCounts[exploreTable]"></span>
                     </button>
                   </div>
                 </div>
@@ -1831,6 +1847,51 @@ Separate multiple statements with ; — highlight text to run just that part."
             </div>
 
             <!-- INDEXES VIEW -->
+            <template x-if="exploreTable && exploreView === 'notes'">
+              <div class="card-surface p-3">
+                <div class="alert alert-danger py-2 small" x-show="tableNotes.error" x-text="tableNotes.error"></div>
+                <div class="text-muted-sm mb-2">Notes about <strong x-text="exploreTable"></strong>: what it is for, gotchas, who to ask. Keep one for yourself or share it with everyone who can open this connection.</div>
+                <div class="text-muted-sm" x-show="tableNotes.loading"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+                <div class="text-muted-sm mb-3" x-show="!tableNotes.loading && !tableNotes.list.length">No notes yet.</div>
+                <template x-for="n in tableNotes.list" :key="n.id">
+                  <div class="note-card mb-2">
+                    <template x-if="tableNotes.editId !== n.id">
+                      <div>
+                        <div class="note-text" x-text="n.text"></div>
+                        <div class="text-muted-sm d-flex flex-wrap align-items-center gap-2 mt-1">
+                          <span x-text="n.mine ? 'You' : userLabel(n.owner)"></span>
+                          <span x-text="timeAgo(n.updatedAt)"></span>
+                          <span class="share-chip" :class="n.shared && 'mine'" x-text="n.shared ? 'Shared' : 'Only you'"></span>
+                          <span class="ms-auto">
+                            <button class="btn btn-sm btn-link text-decoration-none py-0" x-show="n.mine" @click="startEditNote(n)">Edit</button>
+                            <button class="btn btn-sm btn-link text-danger text-decoration-none py-0" x-show="n.mine || exploreConnCanManage()" @click="deleteNote(n, 'table')">Delete</button>
+                          </span>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="tableNotes.editId === n.id">
+                      <div>
+                        <textarea class="form-control form-control-sm mb-1" rows="3" x-model="tableNotes.editText"></textarea>
+                        <div class="d-flex align-items-center gap-2">
+                          <label class="form-check-label small"><input type="checkbox" class="form-check-input me-1" x-model="tableNotes.editShared">Share with everyone who can open this connection</label>
+                          <span class="ms-auto">
+                            <button class="btn btn-outline-soft btn-sm" @click="tableNotes.editId = ''">Cancel</button>
+                            <button class="btn btn-accent btn-sm" @click="saveEditNote(n, 'table')">Save</button>
+                          </span>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+                <div class="mt-3" style="border-top:1px solid var(--border); padding-top:.75rem">
+                  <textarea class="form-control form-control-sm mb-1" rows="3" placeholder="Add a note…" x-model="tableNotes.text" @keydown.ctrl.enter="addTableNote()" @keydown.meta.enter="addTableNote()"></textarea>
+                  <div class="d-flex align-items-center gap-2">
+                    <label class="form-check-label small"><input type="checkbox" class="form-check-input me-1" x-model="tableNotes.shared">Share with everyone who can open this connection</label>
+                    <button class="btn btn-accent btn-sm ms-auto" @click="addTableNote()" :disabled="!tableNotes.text.trim() || tableNotes.saving">Add note</button>
+                  </div>
+                </div>
+              </div>
+            </template>
             <template x-if="exploreTable && exploreView === 'indexes' && !exploreIsView()">
               <div class="card-surface">
                 <div class="table-responsive">
@@ -1965,6 +2026,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <button class="btn btn-sm btn-outline-soft me-1" @click="sql = q.sql; activeTab = 'runner'">
                       <i class="bi bi-play"></i> Load
                     </button>
+                    <button class="btn btn-sm btn-outline-soft me-1" title="Notes" @click="openQueryNotes(q)"><i class="bi bi-sticky"></i><span class="ms-1" x-show="queryNoteCounts[q.id]" x-text="queryNoteCounts[q.id]"></span></button>
                     <template x-if="q.canManage">
                       <span>
                         <button class="btn btn-sm btn-outline-soft me-1" title="Share" @click="openShareModal(q, 'query')"><i class="bi bi-share"></i></button>
@@ -3870,6 +3932,128 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
+<!-- ===== Analysis: apply several fixes ===== -->
+<div class="modal-backdrop-custom" x-show="bulkModal.open" x-cloak @click.self="!bulkModal.running && (bulkModal.open = false)">
+  <div class="modal-panel" style="max-width:760px">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold" x-text="bulkModal.results ? 'Fixes applied' : 'Apply these fixes?'"></h2><button class="btn btn-sm btn-outline-soft" :disabled="bulkModal.running" @click="bulkModal.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="bulkModal.error" x-text="bulkModal.error"></div>
+      <div class="text-muted-sm mb-2" x-show="bulkModal.loading"><span class="spinner-border spinner-border-sm me-1"></span>Preparing…</div>
+      <div class="text-muted-sm mb-2" x-show="!bulkModal.loading && !bulkModal.results">They run one after another on <strong x-text="labelFor(exploreConnKey)"></strong> / <strong x-text="exploreDatabase"></strong>. A fix that fails does not stop the others.</div>
+      <div class="alert alert-warning py-2 small" x-show="!bulkModal.results && bulkModal.items.some(i => i.destructive)"><i class="bi bi-exclamation-triangle me-1"></i>Some of these end sessions or remove things and cannot be undone.</div>
+      <div class="alert alert-warning py-2 small" x-show="!bulkModal.results && !bulkModal.loading">Schema changes can lock a large table while they run. Take a backup first if the data matters.</div>
+      <div class="alert py-2 small" :class="bulkModal.results && bulkModal.results.failed ? 'alert-warning' : 'alert-success'" x-show="bulkModal.results"
+           x-text="bulkModal.results ? bulkModal.results.applied + ' applied' + (bulkModal.results.failed ? ', ' + bulkModal.results.failed + ' failed' : '') + '.' : ''"></div>
+      <div style="max-height:380px; overflow:auto">
+        <template x-for="(it, i) in bulkModal.items" :key="i">
+          <div class="note-card mb-1">
+            <div class="d-flex align-items-start gap-2">
+              <div class="flex-grow-1" style="min-width:0">
+                <div class="small" x-text="it.message || it.object"></div>
+                <pre class="definition-block mb-0 mt-1" style="white-space:pre-wrap; font-size:.72rem" x-show="it.sql" x-text="it.sql"></pre>
+                <div class="text-danger small mt-1" x-show="it.skipped || it.denied" x-text="it.skipped || it.denied"></div>
+                <div class="text-danger small mt-1" x-show="bulkModal.results && bulkModal.results.results[i] && !bulkModal.results.results[i].ok" x-text="bulkModal.results && bulkModal.results.results[i] ? bulkModal.results.results[i].error : ''"></div>
+              </div>
+              <span class="badge rounded-pill badge-soft-danger" x-show="it.destructive && !bulkModal.results">destructive</span>
+              <i class="bi bi-check-circle text-success" x-show="bulkModal.results && bulkModal.results.results[i] && bulkModal.results.results[i].ok"></i>
+              <i class="bi bi-x-circle text-danger" x-show="bulkModal.results && bulkModal.results.results[i] && !bulkModal.results.results[i].ok"></i>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" :disabled="bulkModal.running" @click="bulkModal.open = false" x-text="bulkModal.results ? 'Close' : 'Cancel'"></button>
+      <button class="btn" :class="bulkModal.items.some(i => i.destructive) ? 'btn-danger' : 'btn-accent'" x-show="!bulkModal.results" @click="confirmBulkApply()" :disabled="bulkModal.running || bulkModal.loading || !bulkModal.items.some(i => i.sql && !i.denied && !i.skipped)">
+        <span x-show="bulkModal.running" class="spinner-border spinner-border-sm me-1"></span>Run <span x-text="bulkModal.items.filter(i => i.sql && !i.denied && !i.skipped).length"></span> fix<span x-show="bulkModal.items.filter(i => i.sql && !i.denied && !i.skipped).length !== 1">es</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Analysis: every database on the connection ===== -->
+<div class="modal-backdrop-custom" x-show="allDbs.open" x-cloak @click.self="allDbs.open = false">
+  <div class="modal-panel" style="max-width:760px">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">Analyze all databases · <span x-text="labelFor(exploreConnKey)"></span></h2><button class="btn btn-sm btn-outline-soft" @click="allDbs.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="allDbs.error" x-text="allDbs.error"></div>
+      <div class="text-muted-sm" x-show="allDbs.running"><span class="spinner-border spinner-border-sm me-1"></span>Checking every database… this can take a while on a big server.</div>
+      <template x-if="allDbs.result">
+        <div>
+          <div class="d-flex flex-wrap align-items-center gap-3 mb-2 small">
+            <span><span class="sev-dot sev-error"></span><span x-text="allDbs.result.summary.error"></span> errors</span>
+            <span><span class="sev-dot sev-warning"></span><span x-text="allDbs.result.summary.warning"></span> warnings</span>
+            <span><span class="sev-dot sev-info"></span><span x-text="allDbs.result.summary.info"></span> info</span>
+            <span class="text-muted-sm ms-auto" x-text="allDbs.result.databases.length + ' databases in ' + (allDbs.result.durationMs / 1000).toFixed(1) + ' s'"></span>
+          </div>
+          <table class="table table-modern mb-0">
+            <thead><tr><th>Database</th><th class="text-end">Tables</th><th class="text-end">Errors</th><th class="text-end">Warnings</th><th class="text-end">Info</th><th class="text-end">Fixable</th><th></th></tr></thead>
+            <tbody>
+              <template x-for="d in allDbs.result.databases" :key="d.database">
+                <tr>
+                  <td class="fw-medium" x-text="d.database"></td>
+                  <template x-if="d.summary">
+                    <td class="text-end" x-text="d.tables + (d.views ? ' + ' + d.views + ' views' : '')"></td>
+                  </template>
+                  <template x-if="d.summary"><td class="text-end" :class="d.summary.error && 'text-danger fw-semibold'" x-text="d.summary.error"></td></template>
+                  <template x-if="d.summary"><td class="text-end" :class="d.summary.warning && 'text-warning fw-semibold'" x-text="d.summary.warning"></td></template>
+                  <template x-if="d.summary"><td class="text-end" x-text="d.summary.info"></td></template>
+                  <template x-if="d.summary"><td class="text-end" x-text="d.fixable"></td></template>
+                  <template x-if="!d.summary"><td colspan="5" class="text-danger small" x-text="d.error"></td></template>
+                  <td class="text-end"><button class="btn btn-sm btn-outline-soft" :disabled="!d.summary" @click="openAllDbsEntry(d.database)">Open</button></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </template>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="allDbs.open = false">Close</button>
+      <button class="btn btn-accent" @click="runAllDbs()" :disabled="allDbs.running"><i class="bi bi-arrow-repeat me-1"></i>Run again</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Saved query notes ===== -->
+<div class="modal-backdrop-custom" x-show="queryNotes.open" x-cloak @click.self="queryNotes.open = false">
+  <div class="modal-panel" style="max-width:600px">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">Notes · <span x-text="queryNotes.name"></span></h2><button class="btn btn-sm btn-outline-soft" @click="queryNotes.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="queryNotes.error" x-text="queryNotes.error"></div>
+      <div class="text-muted-sm mb-2">Everyone who can see this query sees its notes, and can add their own.</div>
+      <div class="text-muted-sm mb-2" x-show="queryNotes.loading"><span class="spinner-border spinner-border-sm me-1"></span>Loading…</div>
+      <div class="text-muted-sm mb-2" x-show="!queryNotes.loading && !queryNotes.list.length">No notes yet.</div>
+      <template x-for="n in queryNotes.list" :key="n.id">
+        <div class="note-card mb-2">
+          <template x-if="queryNotes.editId !== n.id">
+            <div>
+              <div class="note-text" x-text="n.text"></div>
+              <div class="text-muted-sm d-flex align-items-center gap-2 mt-1">
+                <span x-text="n.mine ? 'You' : userLabel(n.owner)"></span><span x-text="timeAgo(n.updatedAt)"></span>
+                <span class="ms-auto">
+                  <button class="btn btn-sm btn-link text-decoration-none py-0" x-show="n.mine" @click="queryNotes.editId = n.id; queryNotes.editText = n.text">Edit</button>
+                  <button class="btn btn-sm btn-link text-danger text-decoration-none py-0" x-show="n.mine || queryNotes.canManage" @click="deleteNote(n, 'query')">Delete</button>
+                </span>
+              </div>
+            </div>
+          </template>
+          <template x-if="queryNotes.editId === n.id">
+            <div>
+              <textarea class="form-control form-control-sm mb-1" rows="3" x-model="queryNotes.editText"></textarea>
+              <div class="text-end"><button class="btn btn-outline-soft btn-sm" @click="queryNotes.editId = ''">Cancel</button> <button class="btn btn-accent btn-sm" @click="saveEditNote(n, 'query')">Save</button></div>
+            </div>
+          </template>
+        </div>
+      </template>
+      <div class="mt-3" style="border-top:1px solid var(--border); padding-top:.75rem">
+        <textarea class="form-control form-control-sm mb-1" rows="3" placeholder="Add a note…" x-model="queryNotes.text" @keydown.ctrl.enter="addQueryNote()" @keydown.meta.enter="addQueryNote()"></textarea>
+        <div class="text-end"><button class="btn btn-accent btn-sm" @click="addQueryNote()" :disabled="!queryNotes.text.trim() || queryNotes.saving">Add note</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Explore: Restore Modal ===== -->
 <div class="modal-backdrop-custom" x-show="restoreModal.open" x-cloak @click.self="!restoreModal.running && (restoreModal.open = false)">
   <div class="modal-panel">
@@ -4641,6 +4825,11 @@ function app() {
     totpEnabled: false,
     twoFa: { open: false, forced: false, enabled: false, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false },
     dismissModal: { open: false, finding: null, reason: '', saving: false },
+    noteCounts: {}, queryNoteCounts: {},
+    tableNotes: { list: [], loading: false, error: '', text: '', shared: false, saving: false, editId: '', editText: '', editShared: false },
+    queryNotes: { open: false, id: '', name: '', canManage: false, list: [], loading: false, error: '', text: '', saving: false, editId: '', editText: '' },
+    bulkModal: { open: false, loading: false, running: false, error: '', items: [], results: null },
+    allDbs: { open: false, running: false, error: '', result: null, conn: '' },
     applyModal: { open: false, finding: null, sql: '', message: '', destructive: false, denied: '', error: '', running: false },
     jobs: [], jobsLoading: false, jobsTimer: null, notifyInfo: null,
     jobModal: { open: false, id: null, form: {}, databases: [], error: '', saving: false, preview: [], previewError: '' },
@@ -4654,7 +4843,7 @@ function app() {
     usersView: 'users',
     authLog: { entries: [], total: 0, summary: null, page: 1, size: 50, event: '', q: '', loading: false },
     downloadModal: { open: false, key: '', label: '', database: '', sql: '', format: 'csv', gzip: false, bom: true, nulls: 'empty', stripLimit: false, hasLimit: false, limitText: '', maxRows: '' },
-    analysis: { running: false, error: '', result: null, conn: '', db: '', sev: ['error', 'warning', 'info'], category: '', q: '', group: 'table', open: {} },
+    analysis: { running: false, error: '', result: null, conn: '', db: '', sev: ['error', 'warning', 'info'], category: '', q: '', group: 'table', open: {}, picked: {} },
     rulesModal: { open: false, loading: false, error: '', builtin: [], custom: [], expanded: {} },
     ruleEditor: { open: false, id: null, title: '', description: '', severity: 'warning', category: '', kind: 'sql', sql: '', target: 'table', pattern: '', mode: 'must-match', typePattern: '', exclude: '', enabled: true, error: '', saving: false, test: null, testing: false },
     userModal: { open: false, editing: false, form: {}, saving: false, error: '' },
@@ -4995,6 +5184,7 @@ function app() {
     },
     async loadQueries() {
       this.queries = await fetch('/api/queries').then(r => r.json());
+      this.loadQueryNoteCounts();
     },
     async loadDirectory() {
       this.directory = await fetch('/api/users/directory').then(r => r.json());
@@ -5642,7 +5832,7 @@ function app() {
     },
     async runAnalysis() {
       const conn = this.exploreConnKey, db = this.exploreDatabase;
-      this.analysis = { ...this.analysis, running: true, error: '', open: {} };
+      this.analysis = { ...this.analysis, running: true, error: '', open: {}, picked: {} };
       try {
         const data = await this.apiJson('GET', `${this.exploreBase()}/analyze`);
         if (conn !== this.exploreConnKey || db !== this.exploreDatabase) return;
@@ -6057,6 +6247,112 @@ function app() {
       } catch (e) { m.error = e.message; } finally { m.running = false; }
     },
 
+    // ---- Fixing several findings at once ----
+    pickedCount() { return Object.values(this.analysis.picked).filter(Boolean).length; },
+    fixableFiltered() { return this.analysisFiltered().filter((f) => this.fixRunnable(f)); },
+    allFixablePicked() { const list = this.fixableFiltered(); return list.length > 0 && list.every((f) => this.analysis.picked[f.id]); },
+    toggleAllFixable() {
+      const on = !this.allFixablePicked();
+      const picked = { ...this.analysis.picked };
+      for (const f of this.fixableFiltered()) picked[f.id] = on;
+      this.analysis.picked = picked;
+    },
+    async openBulkApply() {
+      const chosen = this.analysis.result.findings.filter((f) => this.analysis.picked[f.id]);
+      this.bulkModal = { open: true, loading: true, running: false, error: '', items: [], results: null };
+      try {
+        const r = await this.apiJson('POST', `${this.exploreBase()}/analyze/apply-bulk`, { items: chosen.map((f) => ({ rule: f.rule, object: f.object })) });
+        this.bulkModal.items = r.items;
+      } catch (e) { this.bulkModal.error = e.message; } finally { this.bulkModal.loading = false; }
+    },
+    async confirmBulkApply() {
+      const m = this.bulkModal;
+      m.running = true; m.error = '';
+      try {
+        m.results = await this.apiJson('POST', `${this.exploreBase()}/analyze/apply-bulk`, { items: m.items.map((i) => ({ rule: i.rule, object: i.object })), confirm: true });
+        await this.runAnalysis();
+        this.loadExploreTables();
+      } catch (e) { m.error = e.message; } finally { m.running = false; }
+    },
+    // ---- Analysis of every database on a connection ----
+    async openAllDbs() {
+      this.allDbs.open = true;
+      if (this.allDbs.conn !== this.exploreConnKey || !this.allDbs.result) await this.runAllDbs();
+    },
+    async runAllDbs() {
+      const conn = this.exploreConnKey;
+      this.allDbs = { ...this.allDbs, running: true, error: '', conn };
+      try {
+        const r = await this.apiJson('GET', `/api/explore/${conn}/databases/analyze`);
+        if (conn === this.exploreConnKey) this.allDbs.result = r;
+      } catch (e) { this.allDbs.error = e.message; this.allDbs.result = null; } finally { this.allDbs.running = false; }
+    },
+    async openAllDbsEntry(name) {
+      this.allDbs.open = false;
+      if (this.exploreDatabase !== name) { this.exploreDatabase = name; await this.selectExploreDatabase(name); }
+      await this.openAnalysis(true);
+    },
+
+    // ---- Notes ----
+    async loadNoteCounts() {
+      if (!this.exploreConnKey || !this.exploreDatabase) { this.noteCounts = {}; return; }
+      try { this.noteCounts = await this.apiJson('GET', `/api/notes/tables/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}`); } catch (e) { this.noteCounts = {}; }
+    },
+    tableNotesBase() { return `/api/notes/tables/${this.exploreConnKey}/${encodeURIComponent(this.exploreDatabase)}/${encodeURIComponent(this.exploreTable)}`; },
+    async openTableNotes() {
+      this.exploreView = 'notes';
+      this.tableNotes = { ...this.tableNotes, list: [], loading: true, error: '', editId: '' };
+      try { this.tableNotes.list = await this.apiJson('GET', this.tableNotesBase()); } catch (e) { this.tableNotes.error = e.message; } finally { this.tableNotes.loading = false; }
+    },
+    async addTableNote() {
+      const t = this.tableNotes;
+      if (!t.text.trim() || t.saving) return;
+      t.saving = true; t.error = '';
+      try {
+        const n = await this.apiJson('POST', this.tableNotesBase(), { text: t.text, shared: t.shared });
+        t.list.push(n); t.text = '';
+        this.noteCounts = { ...this.noteCounts, [this.exploreTable]: (this.noteCounts[this.exploreTable] || 0) + 1 };
+      } catch (e) { t.error = e.message; } finally { t.saving = false; }
+    },
+    startEditNote(n) { Object.assign(this.tableNotes, { editId: n.id, editText: n.text, editShared: n.shared }); },
+    async saveEditNote(n, kind) {
+      const box = kind === 'table' ? this.tableNotes : this.queryNotes;
+      try {
+        const upd = await this.apiJson('PUT', `/api/notes/${n.id}`, kind === 'table' ? { text: box.editText, shared: box.editShared } : { text: box.editText });
+        const i = box.list.findIndex((x) => x.id === n.id);
+        if (i >= 0) box.list[i] = upd;
+        box.editId = '';
+      } catch (e) { box.error = e.message; }
+    },
+    async deleteNote(n, kind) {
+      const ok = await this.askConfirm('Delete this note?', 'This cannot be undone.', { confirmLabel: 'Delete', danger: true });
+      if (!ok) return;
+      const box = kind === 'table' ? this.tableNotes : this.queryNotes;
+      try {
+        await this.apiJson('DELETE', `/api/notes/${n.id}`);
+        box.list = box.list.filter((x) => x.id !== n.id);
+        if (kind === 'table') this.noteCounts = { ...this.noteCounts, [this.exploreTable]: Math.max(0, (this.noteCounts[this.exploreTable] || 1) - 1) };
+        else this.queryNoteCounts = { ...this.queryNoteCounts, [this.queryNotes.id]: Math.max(0, (this.queryNoteCounts[this.queryNotes.id] || 1) - 1) };
+      } catch (e) { box.error = e.message; }
+    },
+    async loadQueryNoteCounts() {
+      try { this.queryNoteCounts = await this.apiJson('GET', '/api/notes/queries'); } catch (e) { this.queryNoteCounts = {}; }
+    },
+    async openQueryNotes(q) {
+      this.queryNotes = { open: true, id: q.id, name: q.name, canManage: Boolean(q.canManage), list: [], loading: true, error: '', text: '', saving: false, editId: '', editText: '' };
+      try { this.queryNotes.list = await this.apiJson('GET', `/api/notes/queries/${q.id}`); } catch (e) { this.queryNotes.error = e.message; } finally { this.queryNotes.loading = false; }
+    },
+    async addQueryNote() {
+      const t = this.queryNotes;
+      if (!t.text.trim() || t.saving) return;
+      t.saving = true; t.error = '';
+      try {
+        t.list.push(await this.apiJson('POST', `/api/notes/queries/${t.id}`, { text: t.text }));
+        t.text = '';
+        this.queryNoteCounts = { ...this.queryNoteCounts, [t.id]: (this.queryNoteCounts[t.id] || 0) + 1 };
+      } catch (e) { t.error = e.message; } finally { t.saving = false; }
+    },
+
     // ---- Analysis rules ----
     async openRulesModal() {
       this.rulesModal = { ...this.rulesModal, open: true, error: '', expanded: {} };
@@ -6327,6 +6623,7 @@ function app() {
         this.exploreRoutines = data.routines;
         this.exploreTriggers = data.triggers;
         this.exploreEvents = data.events;
+        this.loadNoteCounts();
       } catch (e) {
         this.exploreError = 'Network error, please try again';
       } finally {

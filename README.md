@@ -867,6 +867,16 @@ Every non-`GET` request under `/api/explore/:key` needs the matching permission 
 
 ---
 
+### Fixing findings in bulk, and analyzing every database
+
+* **Bulk fixes** — in the Analysis tab, tick findings that have an automatic fix (or **Select all fixable**, which respects the current filter) and choose **Apply N fixes…**. A preview lists the SQL of each one, marks destructive ones, and shows which your permissions do not allow. The fixes then run one after another, each on its own: one that fails does not stop the rest, and the result says what happened to every one. The SQL always comes from a fresh analysis on the server, never from the browser, each statement is checked against your permissions (a read-only share cannot apply anything), and every fix is written to the query log.
+* **Analyze all** — the button in Explore's header checks every database on the connection (system databases are skipped; users limited to some databases only get those) and shows one line per database: tables, errors, warnings, info and how many can be fixed automatically. **Open** jumps to that database's analysis, where the bulk fixes are. It is not available while some tables are hidden from you, and for connections with more than 100 databases you analyze one at a time.
+
+### Notes
+
+* **Table notes** — the **Notes** tab of a table (and a small note icon in the table list) holds short notes about what the table is for or what to watch out for. A note is private by default; tick *Share with everyone who can open this connection* to share it. Anyone with access to the connection may write notes, even on a read-only share; only the author edits a note, and the author, the connection's owner or an admin can delete it. Tables hidden from a user by a table limit have no notes for that user. Works on PostgreSQL and SQLite connections too.
+* **Saved query notes** — the notes button in the Saved Queries list. Everyone who can see a saved query sees its notes and may add one; only the author edits a note, and the author, the query's owner or an admin can delete it. Deleting a query or a connection deletes its notes.
+
 ## Import
 
 ```http
