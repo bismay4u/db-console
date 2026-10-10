@@ -86,6 +86,9 @@ When a database is open, the left menu slides away and is replaced by a full-hei
 * **Storage:** very large tables; indexes much larger than the data; free space inside tables (`OPTIMIZE TABLE`); empty and long-unmodified tables (off by default)
 * **Objects:** views that no longer work (`CHECK TABLE`); disabled events
 * **Security:** possibly sensitive column names such as `password` or `token` (off by default)
+* **Runtime:** transactions open for a long time; statements waiting for a lock (with the blocking connection); deadlocks in the last N hours; replication lag or a stopped replica thread; tables over a size limit; indexes never used since the server started (needs `performance_schema` and a few days of uptime — otherwise the rule says why it could not run)
+
+**Dismiss** (the eye icon on a finding; owner/admin) hides a finding you have decided is fine, with a reason. It leaves the list, the counts and scheduled analyses, shows under "dismissed" with who and why, and **Restore** brings it back. **Apply…** runs a finding's suggested fix after showing the exact SQL and a confirmation. The SQL always comes from a fresh analysis on the server (never from the browser), runs with *your* permissions on that connection (a read-only share can preview but not apply) and is written to the query log. Dismissals are stored in `data/analyzer_dismissed.json`.
 
 **Rules are managed by admins** (**Manage rules**; everyone else can view them): switch any rule off, change its severity and thresholds (e.g. "at least 1,000 rows"), and set a regex of table names to ignore. Admins can also add their own rules, which can be tried against the open database before saving:
 

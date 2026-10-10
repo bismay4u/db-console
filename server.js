@@ -677,6 +677,40 @@ app.get('/api/explore/:key/:database/analyze', requireAuth, async (req, res) => 
   }
 });
 
+// Dismiss a finding ("we know") or bring it back. Needs owner/admin rights on the connection.
+app.post('/api/explore/:key/:database/analyze/dismiss', requireAuth, requireManage, (req, res) => {
+  try { res.json(analyzer.dismiss(req.params.key, req.params.database, req.body || {}, req.user.username)); } catch (err) { res.status(400).json({ error: err.message }); }
+});
+app.post('/api/explore/:key/:database/analyze/restore', requireAuth, requireManage, (req, res) => {
+  const { rule, object } = req.body || {};
+  res.json({ ok: analyzer.restore(req.params.key, req.params.database, rule, object) });
+});
+// Run a finding's suggested fix. The SQL comes from a fresh analysis on the server, never from the browser, and
+// runs with the caller's permissions (so a read-only share can't apply anything). Without confirm:true it only
+// returns the SQL and what it needs, so the UI can show a preview first.
+app.post('/api/explore/:key/:database/analyze/apply', requireAuth, async (req, res) => {
+  const { key, database } = req.params;
+  const { rule, object, confirm } = req.body || {};
+  const conn = req.conn;
+  const start = Date.now();
+  try {
+    const found = (await analyzer.analyze(key, database, { only: [rule] })).findings.find((f) => f.rule === rule && f.object === object);
+    if (!found) return res.status(404).json({ error: 'That finding is gone — the problem may already be fixed. Run the analysis again.' });
+    if (!found.fix) return res.status(400).json({ error: 'This finding has no automatic fix' });
+    const statements = db.splitStatements(found.fix);
+    const allowed = restrictionsFor(req.user, conn);
+    const denied = statements.map((s) => perms.statementDenied(s, allowed)).find(Boolean);
+    const destructive = statements.some((s) => /^\s*(drop|truncate|delete|kill)\b/i.test(s));
+    if (!confirm) return res.json({ sql: found.fix, statements: statements.length, destructive, denied: denied || null, message: found.message });
+    if (denied) return res.status(403).json({ error: denied });
+    const result = await db.runQuery(key, found.fix, { database, allowed });
+    const failed = result.statements.find((s) => !s.ok);
+    querylog.record({ username: req.user.username, source: 'analysis-fix', connKey: key, connLabel: conn.label, database, sql: found.fix, type: querylog.statementType(found.fix), ok: result.ok, error: failed ? failed.error : null, durationMs: Date.now() - start });
+    if (!result.ok) return res.status(400).json({ error: failed ? failed.error : 'The fix failed' });
+    return res.json({ ok: true, statements: result.statements.length });
+  } catch (err) { return res.status(400).json({ error: err.message }); }
+});
+
 app.get('/api/analyzer/rules', requireAuth, (req, res) => {
   res.json(analyzer.listRules({ includeSql: isAdmin(req.user) }));
 });

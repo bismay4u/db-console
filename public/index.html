@@ -1224,6 +1224,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                                     </div>
                                   </div>
                                   <span class="text-muted-sm text-nowrap" x-show="f.fix || f.detail"><i class="bi" :class="analysis.open[f.id] ? 'bi-chevron-up' : 'bi-chevron-down'"></i> <span x-text="f.fix ? 'Fix' : 'Details'"></span></span>
+                                  <button class="btn btn-sm btn-ghost-danger py-0" x-show="exploreConnCanManage()" title="Dismiss — we know about this" @click.stop="openDismiss(f)"><i class="bi bi-eye-slash"></i></button>
                                 </div>
                                 <div class="mt-2 ms-4" x-show="analysis.open[f.id]">
                                   <div class="text-muted-sm mb-1" x-show="f.detail" x-text="f.detail"></div>
@@ -1231,7 +1232,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                                     <div>
                                       <pre class="definition-block mb-1" style="white-space:pre-wrap" x-text="f.fix"></pre>
                                       <button class="btn btn-outline-soft btn-sm me-1" @click="copyText(f.fix)"><i class="bi bi-clipboard me-1"></i>Copy SQL</button>
-                                      <button class="btn btn-outline-soft btn-sm" @click="openFixInRunner(f)"><i class="bi bi-terminal me-1"></i>Open in Query Runner</button>
+                                      <button class="btn btn-outline-soft btn-sm me-1" @click="openFixInRunner(f)"><i class="bi bi-terminal me-1"></i>Open in Query Runner</button>
+                                      <button class="btn btn-accent btn-sm" x-show="fixRunnable(f)" @click="openApply(f)"><i class="bi bi-lightning-charge me-1"></i>Apply…</button>
                                     </div>
                                   </template>
                                 </div>
@@ -1239,6 +1241,23 @@ Separate multiple statements with ; — highlight text to run just that part."
                             </template>
                           </div>
                         </template>
+                        <div class="px-3 py-2" x-show="analysis.result.dismissed && analysis.result.dismissed.length" style="border-top:1px solid var(--border)">
+                          <a href="#" class="small text-decoration-none" @click.prevent="analysis.showDismissed = !analysis.showDismissed">
+                            <i class="bi" :class="analysis.showDismissed ? 'bi-chevron-down' : 'bi-chevron-right'"></i>
+                            <span x-text="(analysis.result.dismissed || []).length + ' dismissed'"></span>
+                          </a>
+                          <div x-show="analysis.showDismissed" class="mt-2">
+                            <template x-for="d in (analysis.result.dismissed || [])" :key="d.rule + d.object">
+                              <div class="d-flex align-items-start gap-2 mb-2">
+                                <div class="flex-grow-1 small">
+                                  <div x-text="d.message"></div>
+                                  <div class="text-muted-sm"><span x-text="d.ruleTitle"></span> · dismissed by <span x-text="d.dismissedBy"></span> <span x-text="timeAgo(d.dismissedAt)"></span><span x-show="d.reason"> — “<span x-text="d.reason"></span>”</span></div>
+                                </div>
+                                <button class="btn btn-outline-soft btn-sm" x-show="exploreConnCanManage()" @click="restoreDismissed(d)">Restore</button>
+                              </div>
+                            </template>
+                          </div>
+                        </div>
                         <div class="px-3 py-2" x-show="analysis.result.skipped.length" style="border-top:1px solid var(--border)">
                           <div class="small text-warning"><i class="bi bi-exclamation-triangle me-1"></i>Some rules could not run:</div>
                           <template x-for="sk in analysis.result.skipped" :key="sk.id"><div class="text-muted-sm"><strong x-text="sk.rule"></strong>: <span x-text="sk.reason"></span></div></template>
@@ -2338,6 +2357,41 @@ Separate multiple statements with ; — highlight text to run just that part."
         <span x-show="connModal.saving" class="spinner-border spinner-border-sm me-1"></span>
         Save
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Analysis: dismiss + apply fix ===== -->
+<div class="modal-backdrop-custom" x-show="dismissModal.open" x-cloak @click.self="dismissModal.open = false">
+  <div class="modal-panel" style="max-width:480px">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">Dismiss this finding</h2><button class="btn btn-sm btn-outline-soft" @click="dismissModal.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom">
+      <div class="small mb-2" x-text="dismissModal.finding && dismissModal.finding.message"></div>
+      <label class="form-label small fw-medium">Why is it fine? <span class="text-muted-sm">(shown to everyone who sees the dismissed list)</span></label>
+      <textarea class="form-control" rows="3" x-model="dismissModal.reason" placeholder="Append-only audit log, never queried by key"></textarea>
+      <div class="text-muted-sm mt-2">It is hidden from this analysis, the counts and scheduled analyses until someone restores it.</div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="dismissModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="confirmDismiss" :disabled="dismissModal.saving">Dismiss</button>
+    </div>
+  </div>
+</div>
+<div class="modal-backdrop-custom" x-show="applyModal.open" x-cloak @click.self="applyModal.open = false">
+  <div class="modal-panel" style="max-width:640px">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">Apply this fix?</h2><button class="btn btn-sm btn-outline-soft" @click="applyModal.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="applyModal.error" x-text="applyModal.error"></div>
+      <div class="small mb-2" x-text="applyModal.message"></div>
+      <div class="text-muted-sm mb-1">This will run on <strong x-text="labelFor(exploreConnKey)"></strong> / <strong x-text="exploreDatabase"></strong>:</div>
+      <pre class="definition-block mb-2" style="white-space:pre-wrap" x-text="applyModal.sql"></pre>
+      <div class="alert alert-warning py-2 small" x-show="applyModal.destructive"><i class="bi bi-exclamation-triangle me-1"></i>This statement ends sessions or removes things and cannot be undone.</div>
+      <div class="alert alert-warning py-2 small" x-show="!applyModal.destructive && !applyModal.denied">Schema changes can lock a large table while they run. Take a backup first if the data matters.</div>
+      <div class="alert alert-danger py-2 small" x-show="applyModal.denied" x-text="applyModal.denied"></div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="applyModal.open = false">Cancel</button>
+      <button class="btn" :class="applyModal.destructive ? 'btn-danger' : 'btn-accent'" @click="confirmApply" :disabled="applyModal.running || !!applyModal.denied"><span x-show="applyModal.running" class="spinner-border spinner-border-sm me-1"></span>Run it</button>
     </div>
   </div>
 </div>
@@ -3983,6 +4037,8 @@ function app() {
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
     shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], perms: {}, open_: {}, saving: false, error: '' },
     permissionList: [], permissionPresets: [],
+    dismissModal: { open: false, finding: null, reason: '', saving: false },
+    applyModal: { open: false, finding: null, sql: '', message: '', destructive: false, denied: '', error: '', running: false },
     jobs: [], jobsLoading: false, jobsTimer: null, notifyInfo: null,
     jobModal: { open: false, id: null, form: {}, databases: [], error: '', saving: false, preview: [], previewError: '' },
     jobRuns: { open: false, job: null, runs: [] },
@@ -5024,6 +5080,47 @@ function app() {
       this.activeTab = 'runner';
       this.$nextTick(() => { if (sqlCm) sqlCm.setValue(f.fix); });
     },
+    // ---- Dismissing and applying findings ----
+    fixRunnable(f) {
+      return Boolean(f.fix) && !/^\s*(--|#|\/\*)/.test(f.fix) && !/^\s*\/\*[\s\S]*\*\/\s*$/.test(f.fix);
+    },
+    openDismiss(f) { this.dismissModal = { open: true, finding: f, reason: '', saving: false }; },
+    async confirmDismiss() {
+      const m = this.dismissModal;
+      m.saving = true;
+      try {
+        await this.apiJson('POST', `${this.exploreBase()}/analyze/dismiss`, { rule: m.finding.rule, object: m.finding.object, reason: m.reason });
+        m.open = false;
+        await this.runAnalysis();
+        this.showToast('Dismissed');
+      } catch (e) { this.showToast(e.message, 'error'); } finally { m.saving = false; }
+    },
+    async restoreDismissed(d) {
+      try {
+        await this.apiJson('POST', `${this.exploreBase()}/analyze/restore`, { rule: d.rule, object: d.object });
+        await this.runAnalysis();
+        this.showToast('Restored');
+      } catch (e) { this.showToast(e.message, 'error'); }
+    },
+    async openApply(f) {
+      this.applyModal = { open: true, finding: f, sql: f.fix, message: f.message, destructive: false, denied: '', error: '', running: false };
+      try {
+        const r = await this.apiJson('POST', `${this.exploreBase()}/analyze/apply`, { rule: f.rule, object: f.object });
+        Object.assign(this.applyModal, { sql: r.sql, destructive: r.destructive, denied: r.denied || '' });
+      } catch (e) { this.applyModal.error = e.message; this.applyModal.denied = 'Cannot apply'; }
+    },
+    async confirmApply() {
+      const m = this.applyModal;
+      m.running = true; m.error = '';
+      try {
+        await this.apiJson('POST', `${this.exploreBase()}/analyze/apply`, { rule: m.finding.rule, object: m.finding.object, confirm: true });
+        m.open = false;
+        this.showToast('Fix applied');
+        await this.runAnalysis();
+        if (this.exploreTable) this.loadExploreTables();
+      } catch (e) { m.error = e.message; } finally { m.running = false; }
+    },
+
     // ---- Analysis rules ----
     async openRulesModal() {
       this.rulesModal = { ...this.rulesModal, open: true, error: '', expanded: {} };

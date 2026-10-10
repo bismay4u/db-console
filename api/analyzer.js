@@ -21,6 +21,7 @@ const permissions = require('./permissions');
 const schema = require('./schema');
 
 const RULES_FILE = path.join(DATA_DIR, 'analyzer_rules.json');
+const DISMISSED_FILE = path.join(DATA_DIR, 'analyzer_dismissed.json');
 const SEVERITIES = ['error', 'warning', 'info'];
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 };
 const MAX_FINDINGS_PER_RULE = 500;
@@ -541,7 +542,123 @@ const BUILTIN = [
     run(m) {
       return m.events.filter((e) => /disabled/i.test(e.status || '')).map((e) => ({ table: null, object: e.name, objectType: 'event', message: `Event ${e.name} is ${e.status}` }));
     }
-  }
+  },
+
+  // ---- Runtime rules: what the server is doing right now (need PROCESS for other users' sessions) ----
+  {
+    id: 'table-size-limit', category: 'Storage', severity: 'warning', title: 'Table over the size limit',
+    description: 'A hard ceiling on table size (data + indexes) that you want to be warned about before disks or backups suffer.',
+    params: [{ key: 'maxMb', label: 'Larger than (MB)', type: 'number', default: 10240 }],
+    run(m, p) {
+      return m.tables.filter((t) => (t.dataLength + t.indexLength) / 1048576 >= p.maxMb)
+        .map((t) => ({ table: t.name, object: t.name, objectType: 'table', message: `${bytes(t.dataLength + t.indexLength)} (limit ${num(p.maxMb)} MB)` }));
+    }
+  },
+  {
+    id: 'long-transaction', category: 'Runtime', severity: 'warning', title: 'Transaction open for a long time',
+    description: 'Long transactions hold locks, stop InnoDB from purging old row versions and make the history list grow.',
+    params: [{ key: 'seconds', label: 'Open for more than (seconds)', type: 'number', default: 60 }],
+    async run(m, p, ctx) {
+      const [rows] = await ctx.pool.query(
+        `SELECT trx_mysql_thread_id AS id, trx_started AS started, TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS age, trx_rows_modified AS modified, trx_query AS query
+           FROM information_schema.INNODB_TRX WHERE TIMESTAMPDIFF(SECOND, trx_started, NOW()) > ? ORDER BY trx_started`, [p.seconds]);
+      return rows.map((r) => ({
+        table: null, object: `thread ${r.id}`, objectType: 'transaction',
+        message: `Connection ${r.id} has had a transaction open for ${r.age}s (${num(r.modified)} row(s) modified)`,
+        detail: r.query ? `Current statement: ${String(r.query).slice(0, 300)}` : 'It is idle — probably a client that forgot to COMMIT.',
+        fix: `KILL ${Number(r.id)}`
+      }));
+    }
+  },
+  {
+    id: 'lock-waits', category: 'Runtime', severity: 'warning', title: 'Statements waiting for a lock',
+    description: 'A statement is blocked by another transaction right now. Short waits are normal; waits that last point to a long transaction or a missing index.',
+    params: [{ key: 'seconds', label: 'Waiting more than (seconds)', type: 'number', default: 5 }],
+    async run(m, p, ctx) {
+      let rows;
+      try {
+        [rows] = await ctx.pool.query(
+          `SELECT w.trx_mysql_thread_id AS waiting, TIMESTAMPDIFF(SECOND, w.trx_wait_started, NOW()) AS secs, w.trx_query AS waitingQuery,
+                  b.trx_mysql_thread_id AS blocking, b.trx_query AS blockingQuery
+             FROM information_schema.INNODB_LOCK_WAITS lw
+             JOIN information_schema.INNODB_TRX w ON w.trx_id = lw.requesting_trx_id
+             JOIN information_schema.INNODB_TRX b ON b.trx_id = lw.blocking_trx_id
+            WHERE TIMESTAMPDIFF(SECOND, w.trx_wait_started, NOW()) >= ?`, [p.seconds]);
+      } catch (e) {
+        // MySQL 8 moved these tables to performance_schema
+        [rows] = await ctx.pool.query(
+          `SELECT r.trx_mysql_thread_id AS waiting, TIMESTAMPDIFF(SECOND, r.trx_wait_started, NOW()) AS secs, r.trx_query AS waitingQuery,
+                  b.trx_mysql_thread_id AS blocking, b.trx_query AS blockingQuery
+             FROM performance_schema.data_lock_waits w
+             JOIN information_schema.INNODB_TRX r ON r.trx_id = w.REQUESTING_ENGINE_TRANSACTION_ID
+             JOIN information_schema.INNODB_TRX b ON b.trx_id = w.BLOCKING_ENGINE_TRANSACTION_ID
+            WHERE TIMESTAMPDIFF(SECOND, r.trx_wait_started, NOW()) >= ?`, [p.seconds]);
+      }
+      return rows.map((r) => ({
+        table: null, object: `thread ${r.waiting}`, objectType: 'transaction',
+        message: `Connection ${r.waiting} has waited ${r.secs}s for a lock held by connection ${r.blocking}`,
+        detail: `Waiting: ${String(r.waitingQuery || '(none)').slice(0, 200)}\nBlocking transaction's current statement: ${String(r.blockingQuery || '(idle — it has not committed)').slice(0, 200)}`,
+        fix: `KILL ${Number(r.blocking)}`
+      }));
+    }
+  },
+  {
+    id: 'recent-deadlock', category: 'Runtime', severity: 'warning', title: 'Deadlock detected recently',
+    description: 'InnoDB rolled back a transaction to break a deadlock. Occasional ones are normal; repeated ones need the code to take locks in the same order.',
+    params: [{ key: 'hours', label: 'Within the last (hours)', type: 'number', default: 24 }],
+    async run(m, p, ctx) {
+      const [rows] = await ctx.pool.query('SHOW ENGINE INNODB STATUS');
+      const text = String((rows[0] && (rows[0].Status || rows[0].status)) || '');
+      const found = /LATEST DETECTED DEADLOCK\s*-+\s*(\d{4}-\d\d-\d\d\s+\d{1,2}:\d\d:\d\d)/.exec(text);
+      if (!found) return [];
+      const when = new Date(found[1].replace(' ', 'T').replace(/T(\d):/, 'T0$1:'));
+      if (Number.isNaN(when.getTime()) || Date.now() - when.getTime() > p.hours * 3600000) return [];
+      const section = text.slice(text.indexOf('LATEST DETECTED DEADLOCK'));
+      const queries = [...section.matchAll(/^(?:update|insert|delete|select|replace)[^\n]*$/gim)].slice(0, 2).map((x) => x[0].slice(0, 200));
+      return [{ table: null, object: `deadlock ${found[1]}`, objectType: 'transaction', message: `A deadlock was detected at ${found[1]}`, detail: queries.length ? `Statements involved:\n${queries.join('\n')}` : undefined }];
+    }
+  },
+  {
+    id: 'replication-lag', category: 'Runtime', severity: 'error', title: 'Replication lagging or stopped',
+    description: 'On a replica: reads see old data when it falls behind, and a stopped thread means it is no longer following the primary.',
+    params: [{ key: 'seconds', label: 'Behind by more than (seconds)', type: 'number', default: 60 }],
+    async run(m, p, ctx) {
+      let rows;
+      try { [rows] = await ctx.pool.query('SHOW REPLICA STATUS'); } catch (e) { [rows] = await ctx.pool.query('SHOW SLAVE STATUS'); }
+      const out = [];
+      for (const r of rows) {
+        const io = r.Replica_IO_Running || r.Slave_IO_Running; const sql = r.Replica_SQL_Running || r.Slave_SQL_Running;
+        const lag = r.Seconds_Behind_Source ?? r.Seconds_Behind_Master;
+        const err = r.Last_SQL_Error || r.Last_IO_Error;
+        if (io !== 'Yes' || sql !== 'Yes') out.push({ table: null, object: 'replication', objectType: 'replication', severity: 'error', message: `Replication is not running (IO: ${io}, SQL: ${sql})`, detail: err || undefined });
+        else if (lag !== null && lag !== undefined && Number(lag) > p.seconds) out.push({ table: null, object: 'replication', objectType: 'replication', severity: 'warning', message: `The replica is ${num(lag)} seconds behind` });
+      }
+      return out;
+    }
+  },
+  {
+    id: 'unused-index', category: 'Indexes', severity: 'info', title: 'Index that has never been used',
+    description: 'Every index slows down writes and takes space. These have had no reads since the server started (needs performance_schema; only trustworthy after a long uptime).',
+    params: [{ key: 'minUptimeDays', label: 'Only when the server has been up at least (days)', type: 'number', default: 7 }],
+    async run(m, p, ctx) {
+      const [[v]] = await ctx.pool.query("SELECT @@performance_schema AS ps");
+      if (!Number(v.ps)) throw new Error('performance_schema is switched off on this server, so index usage is not recorded');
+      const [[up]] = await ctx.pool.query("SHOW GLOBAL STATUS LIKE 'Uptime'");
+      const days = Number(up.Value) / 86400;
+      if (days < p.minUptimeDays) throw new Error(`the server has only been up ${days.toFixed(1)} days; index usage statistics need at least ${p.minUptimeDays}`);
+      const [rows] = await ctx.pool.query(
+        `SELECT OBJECT_NAME AS tableName, INDEX_NAME AS indexName FROM performance_schema.table_io_waits_summary_by_index_usage
+          WHERE OBJECT_SCHEMA = ? AND INDEX_NAME IS NOT NULL AND INDEX_NAME <> 'PRIMARY' AND COUNT_STAR = 0`, [m.database]);
+      const out = [];
+      for (const r of rows) {
+        const t = m.byName.get(r.tableName);
+        const ix = t && t.indexes.find((i) => i.name === r.indexName);
+        if (!ix || ix.unique) continue; // a unique index also enforces a rule
+        out.push({ table: t.name, object: `${t.name}.${ix.name}`, objectType: 'index', message: `${ix.name} (${ix.sig.join(', ')}) has not been used since the server started ${days.toFixed(0)} days ago`, fix: alter(t.name, `DROP INDEX ${esc(ix.name)}`) });
+      }
+      return out;
+    }
+  },
 ];
 const BUILTIN_BY_ID = new Map(BUILTIN.map((r) => [r.id, r]));
 
@@ -751,6 +868,31 @@ function toFindings(rule, items, view) {
     }));
 }
 
+// ---------- Dismissed findings ----------
+// "We know, it's fine": hidden from the results (and from the counts, and from scheduled analyses)
+// until someone restores it. Per connection + database + rule + object.
+const dismissedFor = (key, database) => readJson(DISMISSED_FILE).filter((d) => d.conn === key && d.database === database);
+
+function dismiss(key, database, { rule, object, reason }, by) {
+  if (!rule || !object) throw new Error('rule and object are required');
+  return withLock(() => {
+    const all = readJson(DISMISSED_FILE).filter((d) => !(d.conn === key && d.database === database && d.rule === rule && d.object === object));
+    const entry = { conn: key, database, rule: String(rule), object: String(object), reason: String(reason || '').trim().slice(0, 500), by, at: new Date().toISOString() };
+    all.push(entry);
+    writeJson(DISMISSED_FILE, all);
+    return entry;
+  });
+}
+
+function restore(key, database, rule, object) {
+  return withLock(() => {
+    const all = readJson(DISMISSED_FILE);
+    const rest = all.filter((d) => !(d.conn === key && d.database === database && d.rule === rule && d.object === object));
+    writeJson(DISMISSED_FILE, rest);
+    return rest.length !== all.length;
+  });
+}
+
 async function analyze(key, database, { only } = {}) {
   const started = Date.now();
   const cfg = loadConfig();
@@ -782,12 +924,20 @@ async function analyze(key, database, { only } = {}) {
     }
   }
 
+  const hidden = dismissedFor(key, database);
+  const dismissed = [];
+  if (hidden.length) {
+    for (let i = findings.length - 1; i >= 0; i--) {
+      const d = hidden.find((x) => x.rule === findings[i].rule && x.object === findings[i].object);
+      if (d) dismissed.push({ ...findings.splice(i, 1)[0], reason: d.reason, dismissedBy: d.by, dismissedAt: d.at });
+    }
+  }
   findings.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || String(a.table).localeCompare(String(b.table)) || a.ruleTitle.localeCompare(b.ruleTitle) || String(a.object).localeCompare(String(b.object)));
   const summary = { error: 0, warning: 0, info: 0, total: findings.length };
   for (const f of findings) summary[f.severity]++;
   return {
     database, ranAt: new Date().toISOString(), durationMs: Date.now() - started,
-    tables: model.tables.length, views: model.views.length, rulesRun, summary, findings, skipped
+    tables: model.tables.length, views: model.views.length, rulesRun, summary, findings, dismissed, skipped
   };
 }
 
@@ -800,4 +950,4 @@ async function testRule(key, database, body) {
   return { findings: toFindings(rule, items, rule), tables: model.tables.length };
 }
 
-module.exports = { analyze, listRules, updateBuiltin, saveCustom, deleteCustom, testRule, BUILTIN };
+module.exports = { dismiss, restore, analyze, listRules, updateBuiltin, saveCustom, deleteCustom, testRule, BUILTIN };
