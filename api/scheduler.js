@@ -22,6 +22,7 @@ const analyzer = require('./analyzer');
 const querylog = require('./querylog');
 const access = require('./access');
 const metrics = require('./metrics');
+const scopeLib = require('./scope');
 
 const LEADER_FILE = path.join(DATA_DIR, '.scheduler.lock');
 const LOCK_DIR = path.join(DATA_DIR, 'job-locks');
@@ -95,6 +96,11 @@ async function runQueryJob(job) {
   const conn = connectionFor(job, user);
   const sql = params.apply(job.sql, job.params || {});
   const allowed = access.restrictionsFor(user, conn);
+  const sc = access.scopeOf(user, conn);
+  if (sc) {
+    const bad = scopeLib.checkSql(sc, sql, job.database || conn.database, await db.listDatabases(conn.key).catch(() => []));
+    if (bad) throw new Error(bad);
+  }
   const database = job.database || conn.database;
   const started = Date.now();
   const entry = { username: user.username, source: 'schedule', connKey: conn.key, connLabel: conn.label, database, sql };
@@ -137,7 +143,9 @@ async function runQueryJob(job) {
 
 async function runAnalysisJob(job, previous) {
   const user = ownerOf(job);
-  connectionFor(job, user);
+  const aconn = connectionFor(job, user);
+  const asc = access.scopeOf(user, aconn);
+  if (asc && (asc.hideTables.length || !scopeLib.dbAllowed(asc, job.database))) throw new Error('Analysis is not available: some databases or tables are hidden from the owner of this job');
   const r = await analyzer.analyze(job.connKey, job.database);
   const s = r.summary;
   const prev = previous && previous.summary;

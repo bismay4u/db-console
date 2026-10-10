@@ -10,7 +10,7 @@ const { DATA_DIR, readJson, writeJson, withLock } = require('./datadir');
 const secrets = require('./secrets');
 
 const FILE = path.join(DATA_DIR, 'notify.json');
-const EMPTY = { smtp: { host: '', port: 587, secure: false, user: '', password: '', from: '' }, webhookUrl: '', webhookSecret: '', baseUrl: '' };
+const EMPTY = { smtp: { host: '', port: 587, secure: false, user: '', password: '', from: '' }, webhookUrl: '', webhookSecret: '', baseUrl: '', approvalEmails: '' };
 
 function load() {
   let raw;
@@ -29,7 +29,7 @@ function publicView() {
   const s = load();
   return {
     smtp: { host: s.smtp.host, port: s.smtp.port, secure: Boolean(s.smtp.secure), user: s.smtp.user, from: s.smtp.from, hasPassword: Boolean(s.smtp.password) },
-    webhookUrl: s.webhookUrl, hasWebhookSecret: Boolean(s.webhookSecret), baseUrl: s.baseUrl,
+    webhookUrl: s.webhookUrl, hasWebhookSecret: Boolean(s.webhookSecret), baseUrl: s.baseUrl, approvalEmails: s.approvalEmails,
     emailConfigured: Boolean(s.smtp.host && s.smtp.from), webhookConfigured: Boolean(s.webhookUrl)
   };
 }
@@ -46,7 +46,8 @@ function save(body = {}) {
       },
       webhookUrl: String(body.webhookUrl ?? cur.webhookUrl).trim(),
       webhookSecret: body.webhookSecret ? String(body.webhookSecret) : cur.webhookSecret,
-      baseUrl: String(body.baseUrl ?? cur.baseUrl).trim().replace(/\/+$/, '')
+      baseUrl: String(body.baseUrl ?? cur.baseUrl).trim().replace(/\/+$/, ''),
+      approvalEmails: String(body.approvalEmails ?? cur.approvalEmails).trim()
     };
     if (next.webhookUrl && !/^https?:\/\//i.test(next.webhookUrl)) throw new Error('The webhook URL must start with http:// or https://');
     if (body.clearWebhookSecret) next.webhookSecret = '';

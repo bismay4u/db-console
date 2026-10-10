@@ -3,6 +3,7 @@
 // (a scheduled job runs with its owner's permissions).
 
 const perms = require('./permissions');
+const scope = require('./scope');
 
 function isAdmin(user) {
   return user && user.role === 'admin';
@@ -29,4 +30,9 @@ function canUse(user, conn) {
   return canManage(user, conn) || shared.includes('*') || shared.includes(user.username);
 }
 
-module.exports = { isAdmin, canManage, permissionsOf, restrictionsFor, canUse };
+// The database / table limits on a shared connection for this user; null for owners, admins and unrestricted shares.
+function scopeOf(user, conn) {
+  return canManage(user, conn) ? null : scope.forUser(conn, user.username);
+}
+
+module.exports = { isAdmin, canManage, permissionsOf, restrictionsFor, canUse, scopeOf };

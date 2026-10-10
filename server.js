@@ -20,6 +20,7 @@ const totp = require('./api/totp');
 const secrets = require('./api/secrets');
 const oidcMod = require('./api/oidc');
 const ldapMod = require('./api/ldap');
+const approvals = require('./api/approvals');
 const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
@@ -133,7 +134,8 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-const { isAdmin, canManage, permissionsOf, restrictionsFor, canUse } = require('./api/access');
+const { isAdmin, canManage, permissionsOf, restrictionsFor, canUse, scopeOf } = require('./api/access');
+const scopeLib = require('./api/scope');
 
 function publicUser(u) {
   return {
@@ -169,6 +171,8 @@ function connView(conn, user) {
     permissions: permissionsOf(user, conn),
     canWrite: permissionsOf(user, conn).length > 0,
     sharePermissions: manage ? (conn.sharePermissions || undefined) : undefined,
+    shareScopes: manage ? (conn.shareScopes || undefined) : undefined,
+    limited: manage ? undefined : Boolean(scopeOf(user, conn)),
     isShared: shared.length > 0,
     sharedWithMe: conn.owner !== user.username && (shared.includes('*') || shared.includes(user.username))
   };
@@ -208,6 +212,73 @@ app.param('key', (req, res, next, key) => {
   const conn = store.getConnection(key);
   if (!conn || !canUse(req.user, conn)) return res.status(404).json({ error: 'Connection not found' });
   req.conn = conn;
+  return next();
+});
+
+// ---- Database / table limits on shared connections (see api/scope.js) ----
+const dbNameCache = new Map();
+async function knownDatabases(key) {
+  const hit = dbNameCache.get(key);
+  if (hit && Date.now() - hit.at < 60000) return hit.names;
+  let names = [];
+  try { names = await db.listDatabases(key); } catch (e) { /* the query itself will report the problem */ }
+  dbNameCache.set(key, { at: Date.now(), names });
+  return names;
+}
+// null when `sql` stays inside what the user may touch on `conn`, else the message.
+async function scopeError(user, conn, sql, currentDb) {
+  const sc = scopeOf(user, conn);
+  return sc ? scopeLib.checkSql(sc, sql, currentDb, await knownDatabases(conn.key)) : null;
+}
+const DB_LEVEL_FORBIDDEN_WITH_HIDDEN = new Set(['export', 'restore', 'analyze', 'search-replace']); // they read every table
+app.use('/api/explore/:key', (req, res, next) => {
+  if (!req.user) return next();
+  const conn = store.getConnection(req.params.key);
+  if (!conn || !canUse(req.user, conn)) return next();
+  const sc = scopeOf(req.user, conn);
+  if (!sc) return next();
+  const segs = req.path.split('/').filter(Boolean).map((x) => { try { return decodeURIComponent(x); } catch (e) { return x; } });
+  const deny = (status, message) => res.status(status).json({ error: message });
+  const hasHidden = sc.hideTables.length > 0;
+
+  if (segs[0] === 'databases') {
+    if (req.method === 'POST' && sc.databases) return deny(403, 'You cannot create databases on this connection');
+    if (req.method === 'GET' && sc.databases) {
+      const send = res.json.bind(res);
+      res.json = (body) => send(Array.isArray(body) ? body.filter((d) => scopeLib.dbAllowed(sc, d)) : body);
+    }
+    return next();
+  }
+  if (segs[0] === 'meta' || !segs[0]) return next();
+  const database = segs[0];
+  if (!scopeLib.dbAllowed(sc, database)) return deny(403, `You do not have access to the database ${database}`);
+  const second = segs[1];
+  const dbLevel = segs.length <= 2 || ['objects', 'definition', 'analyze'].includes(second);
+  if (hasHidden) {
+    if (dbLevel) {
+      if (DB_LEVEL_FORBIDDEN_WITH_HIDDEN.has(second)) return deny(403, 'This is not available while some tables are hidden from you');
+      if (second === 'definition' && scopeLib.tableHidden(sc, database, segs[3] || '')) return deny(404, 'Not found');
+      if (second === 'table-actions' || second === 'objects') {
+        const names = [...(req.body.tables || []), req.body.target, req.body.newName, req.body.name].filter(Boolean);
+        if (names.some((n) => scopeLib.tableHidden(sc, database, n))) return deny(403, 'That table is not available to you');
+        if (typeof req.body.sql === 'string') { const err = scopeLib.checkSql(sc, req.body.sql, database, []); if (err) return deny(403, err); }
+      }
+      if (second === 'tables' && req.method === 'POST' && scopeLib.tableHidden(sc, database, (req.body || {}).name || '')) return deny(403, 'That name is not available to you');
+      const send = res.json.bind(res);
+      const visible = (t) => !scopeLib.tableHidden(sc, database, t.name || t.table || '');
+      res.json = (body) => {
+        if (!body || typeof body !== 'object') return send(body);
+        if (second === 'objects' && Array.isArray(body.tables)) return send({ ...body, tables: body.tables.filter(visible) });
+        if (second === 'autocomplete' && body.tables) return send({ ...body, tables: Object.fromEntries(Object.entries(body.tables).filter(([t]) => !scopeLib.tableHidden(sc, database, t))) });
+        if (second === 'diagram') return send({ ...body, tables: (body.tables || []).filter(visible), foreignKeys: (body.foreignKeys || []).filter((f) => !scopeLib.tableHidden(sc, database, f.table) && !scopeLib.tableHidden(sc, database, f.refTable)) });
+        if (second === 'foreign-keys' && Array.isArray(body)) return send(body.filter((f) => !scopeLib.tableHidden(sc, database, f.table) && !scopeLib.tableHidden(sc, database, f.refTable)));
+        if (second === 'search' && Array.isArray(body.results)) return send({ ...body, results: body.results.filter((r) => !scopeLib.tableHidden(sc, database, r.table)) });
+        return send(body);
+      };
+    } else if (scopeLib.tableHidden(sc, database, second)) {
+      return deny(404, `Table not found: ${second}`);
+    }
+  }
   return next();
 });
 
@@ -678,8 +749,8 @@ app.post('/api/connections', requireAuth, async (req, res) => {
 });
 
 app.put('/api/connections/:key', requireAuth, requireManage, (req, res) => {
-  const { label, host, port, user, password, database, monitor } = req.body || {};
-  const updated = store.updateConnection(req.params.key, { label, host, port, user, password, database, monitor, ...networkFromBody(req.body || {}) });
+  const { label, host, port, user, password, database, monitor, requireApproval } = req.body || {};
+  const updated = store.updateConnection(req.params.key, { label, host, port, user, password, database, monitor, requireApproval, ...networkFromBody(req.body || {}) });
   if (!updated) return res.status(404).json({ error: 'Connection not found' });
   db.dropPool(req.params.key); // force pool rebuild with new settings
   res.json(connView(updated, req.user));
@@ -688,9 +759,9 @@ app.put('/api/connections/:key', requireAuth, requireManage, (req, res) => {
 // Replace who a connection is shared with: { sharedWith: ['alice', 'bob'] }
 // or { sharedWith: ['*'] } for every user.
 app.put('/api/connections/:key/sharing', requireAuth, requireManage, (req, res) => {
-  const { sharedWith, permissions, readOnly } = req.body || {};
+  const { sharedWith, permissions, readOnly, scopes } = req.body || {};
   if (!Array.isArray(sharedWith)) return res.status(400).json({ error: 'sharedWith must be an array' });
-  const updated = store.setConnectionSharing(req.params.key, sharedWith, permissions, readOnly === undefined ? undefined : Boolean(readOnly));
+  const updated = store.setConnectionSharing(req.params.key, sharedWith, permissions, readOnly === undefined ? undefined : Boolean(readOnly), scopes);
   if (!updated) return res.status(404).json({ error: 'Connection not found' });
   res.json(connView(updated, req.user));
 });
@@ -864,6 +935,8 @@ app.post('/api/query/export', requireAuth, express.urlencoded({ extended: false,
     allowed: restrictionsFor(req.user, conn)
   };
   const sql = String(b.sql || '');
+  const outOfScope = await scopeError(req.user, conn, sql, options.database);
+  if (outOfScope) return res.status(403).json({ error: outOfScope });
   const start = Date.now();
   const entry = { username: req.user.username, source: 'export', connKey: conn.key, connLabel: conn.label, database: options.database, sql };
   try {
@@ -1356,6 +1429,18 @@ app.post('/api/query', requireAuth, async (req, res) => {
   const results = await Promise.all(
     dbKeys.map(async (key, i) => {
       let result;
+      const outOfScope = await scopeError(req.user, conns[i], sql, startDb(key, i));
+      if (outOfScope) return { key, ok: false, statements: [{ sql, ok: false, error: outOfScope }] };
+      // A shared user on a connection that wants a second pair of eyes: dangerous statements wait for approval.
+      if (conns[i].requireApproval && !explain && !canManage(req.user, conns[i])) {
+        const reasons = approvals.classify(sql);
+        if (reasons.length) {
+          const a = approvals.create({ requester: req.user.username, connKey: key, connLabel: conns[i].label, database: startDb(key, i), sql, reasons });
+          announceApproval(a);
+          querylog.record({ username: req.user.username, source: 'runner', connKey: key, connLabel: conns[i].label, database: startDb(key, i), sql, type: querylog.statementType(sql), ok: false, error: `Held for approval (${reasons.join(', ')})`, durationMs: 0 });
+          return { key, ok: false, pending: true, approvalId: a.id, statements: [{ sql, ok: false, error: `Needs approval before it runs (${reasons.join(', ')}). The owner of this connection has been asked.` }] };
+        }
+      }
       try {
         const { ok, statements, currentDatabase } = await db.runQuery(key, sql, {
           database: startDb(key, i), explain: Boolean(explain), allowed: restrictionsFor(req.user, conns[i]),
@@ -1469,6 +1554,77 @@ app.get('/api/auth-log.csv', requireAdmin, (req, res) => {
   sendCsv(res, `sign-in-activity-${stamp()}.csv`, ['time', 'event', 'user', 'ip', 'detail', 'browser'], entries.map((e) => [e.ts, e.event, e.username, e.ip, e.detail, e.agent]));
 });
 
+// ---- Approvals for dangerous statements ----
+const announced = new Set();
+function announceApproval(a) {
+  if (announced.has(a.id)) return;
+  announced.add(a.id);
+  const st = notify.load();
+  const link = notify.link('/#/approvals');
+  notify.deliver({
+    subject: `[DB Console] ${a.requester} asks to run ${a.reasons.join(', ')} on ${a.connLabel}`,
+    text: `${a.requester} wants to run this on ${a.connLabel} (${a.database}):\n\n${a.sql.slice(0, 1500)}\n\nIt will not run until the owner of the connection or an admin approves it.${link ? '\n' + link : ''}`,
+    data: { event: 'approval.requested', approval: { id: a.id, requester: a.requester, connection: a.connLabel, database: a.database, reasons: a.reasons } },
+    to: st.approvalEmails, webhook: true
+  }).catch(() => {});
+}
+const approvalView = (a, user) => {
+  const conn = store.getConnection(a.connKey);
+  return { ...a, connLabel: conn ? conn.label : a.connLabel, canDecide: a.status === 'pending' && a.requester !== user.username && Boolean(conn) && canManage(user, conn), mine: a.requester === user.username };
+};
+app.get('/api/approvals', requireAuth, (req, res) => {
+  const all = approvals.load().map((a) => approvalView(a, req.user));
+  const toApprove = all.filter((a) => !a.mine && (isAdmin(req.user) || (store.getConnection(a.connKey) || {}).owner === req.user.username));
+  res.json({
+    toApprove: toApprove.slice().reverse().slice(0, 200),
+    mine: all.filter((a) => a.mine).reverse().slice(0, 100),
+    pending: toApprove.filter((a) => a.status === 'pending').length
+  });
+});
+function loadApproval(req, res) {
+  const a = approvals.get(req.params.id);
+  const conn = a && store.getConnection(a.connKey);
+  if (!a || !conn) { res.status(404).json({ error: 'Request not found' }); return null; }
+  return { a, conn };
+}
+app.post('/api/approvals/:id/approve', requireAuth, async (req, res) => {
+  const found = loadApproval(req, res); if (!found) return;
+  const { a, conn } = found;
+  if (a.status !== 'pending') return res.status(409).json({ error: `This request is already ${a.status}` });
+  if (a.requester === req.user.username) return res.status(403).json({ error: 'You cannot approve your own request' });
+  if (!canManage(req.user, conn)) return res.status(403).json({ error: 'Only the owner of the connection or an admin can approve this' });
+  const requester = store.getUser(a.requester);
+  const start = Date.now();
+  let outcome;
+  try {
+    if (!requester || requester.disabled) throw new Error('The user who asked no longer has an active account');
+    if (!canUse(requester, conn)) throw new Error('The user who asked no longer has access to this connection');
+    const bad = await scopeError(requester, conn, a.sql, a.database);
+    if (bad) throw new Error(bad);
+    const result = await db.runQuery(a.connKey, a.sql, { database: a.database, allowed: restrictionsFor(requester, conn) });
+    const failed = result.statements.find((x) => !x.ok);
+    outcome = { ok: result.ok, error: failed ? failed.error : null, statements: result.statements.length, affected: result.statements.reduce((n, x) => n + (x.affectedRows || 0), 0) };
+  } catch (err) { outcome = { ok: false, error: err.message, statements: 0, affected: 0 }; }
+  querylog.record({ username: a.requester, source: 'approval', connKey: a.connKey, connLabel: conn.label, database: a.database, sql: a.sql, type: querylog.statementType(a.sql), ok: outcome.ok, error: outcome.error ? `${outcome.error} (approved by ${req.user.username})` : null, affectedRows: outcome.affected, durationMs: Date.now() - start });
+  const updated = approvals.update(a.id, { status: 'approved', decidedBy: req.user.username, decidedAt: new Date().toISOString(), outcome });
+  res.json(approvalView(updated, req.user));
+});
+app.post('/api/approvals/:id/reject', requireAuth, (req, res) => {
+  const found = loadApproval(req, res); if (!found) return;
+  const { a, conn } = found;
+  if (a.status !== 'pending') return res.status(409).json({ error: `This request is already ${a.status}` });
+  if (a.requester === req.user.username) return res.status(403).json({ error: 'Use "withdraw" for your own request' });
+  if (!canManage(req.user, conn)) return res.status(403).json({ error: 'Only the owner of the connection or an admin can reject this' });
+  res.json(approvalView(approvals.update(a.id, { status: 'rejected', decidedBy: req.user.username, decidedAt: new Date().toISOString(), reason: String((req.body || {}).reason || '').slice(0, 300) }), req.user));
+});
+app.post('/api/approvals/:id/withdraw', requireAuth, (req, res) => {
+  const found = loadApproval(req, res); if (!found) return;
+  const { a } = found;
+  if (a.requester !== req.user.username) return res.status(403).json({ error: 'That is not your request' });
+  if (a.status !== 'pending') return res.status(409).json({ error: `This request is already ${a.status}` });
+  res.json(approvalView(approvals.update(a.id, { status: 'withdrawn', decidedAt: new Date().toISOString() }), req.user));
+});
+
 // ---- Scheduled jobs: queries, analysis, backups, connection checks ----
 // Everyone manages their own jobs (a job runs with its owner's permissions); admins see and manage all of them.
 const jobView = (job) => {
@@ -1487,6 +1643,13 @@ function checkJobAccess(user, job) {
   for (const k of keys) {
     const conn = store.getConnection(k);
     if (!conn || !canUse(user, conn)) throw new Error('No access to that connection');
+    const sc = scopeOf(user, conn);
+    if (sc && job.type !== 'health') {
+      if (job.database && !scopeLib.dbAllowed(sc, job.database)) throw new Error(`You do not have access to the database ${job.database}`);
+      if (job.type === 'analysis' && sc.hideTables.length) throw new Error('Analysis is not available while tables are hidden from you');
+      const bad = job.type === 'query' ? scopeLib.checkSql(sc, job.sql, job.database, []) : null;
+      if (bad) throw new Error(bad);
+    }
     if (job.type === 'backup' && !canManage(user, conn)) throw new Error('Scheduled backups need owner or admin rights on the connection');
   }
 }
@@ -1574,6 +1737,10 @@ function diffSides(req, res, needTable) {
     const conn = side && store.getConnection(side.key);
     if (!conn || !canUse(req.user, conn)) { res.status(404).json({ error: 'Connection not found' }); return null; }
     if (!side.database || (needTable && !side.table)) { res.status(400).json({ error: needTable ? 'Choose a database and a table on both sides' : 'Choose a database on both sides' }); return null; }
+    const sc = scopeOf(req.user, conn);
+    if (sc && (!scopeLib.dbAllowed(sc, side.database) || (needTable ? scopeLib.tableHidden(sc, side.database, side.table) : sc.hideTables.length))) {
+      res.status(403).json({ error: needTable ? 'That table is not available to you' : 'Comparing structures is not available while databases or tables are limited for you' }); return null;
+    }
     out.push({ key: side.key, database: String(side.database), table: side.table ? String(side.table) : undefined, conn });
   }
   return out;
@@ -1607,10 +1774,18 @@ app.post('/api/diff/schema/apply', requireAuth, async (req, res) => {
   }
 });
 const dataOptions = (b) => ({ keyColumns: b.keyColumns, where: typeof b.where === 'string' && b.where.trim() ? b.where.trim() : undefined, columns: b.columns });
+async function dataWhereError(req, sides) {
+  const w = dataOptions(req.body).where;
+  if (!w) return null;
+  for (const sd of sides) { const e = await scopeError(req.user, sd.conn, w, sd.database); if (e) return e; }
+  return null;
+}
 app.post('/api/diff/data', requireAuth, async (req, res) => {
   const sides = diffSides(req, res, true);
   if (!sides) return;
   try {
+    const bad = await dataWhereError(req, sides);
+    if (bad) throw new Error(bad);
     const r = await diff.diffData(diffTarget(sides[0]), diffTarget(sides[1]), dataOptions(req.body));
     const { statements, ...rest } = r;
     res.json({ ...rest, script: [...statements.insert, ...statements.update, ...statements.delete].map((x) => x + ';').join('\n') });
@@ -1621,6 +1796,8 @@ app.post('/api/diff/data/apply', requireAuth, async (req, res) => {
   if (!sides) return;
   const start = Date.now();
   try {
+    const bad = await dataWhereError(req, sides);
+    if (bad) throw new Error(bad);
     const actions = req.body.actions || {};
     const d = await diff.diffData(diffTarget(sides[0]), diffTarget(sides[1]), dataOptions(req.body));
     const r = await diff.applyData(diffTarget(sides[1]), d, actions, { allowed: restrictionsFor(req.user, sides[1].conn) });

@@ -477,6 +477,9 @@
     <a class="nav-link-custom" :class="activeTab === 'schedules' && 'active'" @click="openTab('schedules')">
       <i class="bi bi-alarm"></i> Schedules
     </a>
+    <a class="nav-link-custom" :class="activeTab === 'approvals' && 'active'" @click="openTab('approvals')">
+      <i class="bi bi-patch-check"></i> Approvals <span class="badge rounded-pill bg-danger ms-1" x-show="approvals.pending" x-text="approvals.pending"></span>
+    </a>
 
     <template x-if="isAdmin()">
       <div>
@@ -799,7 +802,10 @@ Separate multiple statements with ; — highlight text to run just that part."
                     </div>
 
                     <template x-if="!s.ok">
-                      <div class="alert alert-danger mb-0 small" x-text="s.error"></div>
+                      <div class="alert mb-0 small" :class="r.pending ? 'alert-warning' : 'alert-danger'">
+                        <span x-text="s.error"></span>
+                        <a href="#" class="ms-1" x-show="r.pending" @click.prevent="openTab('approvals')">See the request</a>
+                      </div>
                     </template>
 
                     <template x-if="s.ok && s.type === 'result'">
@@ -2005,6 +2011,37 @@ Separate multiple statements with ; — highlight text to run just that part."
     </template>
 
     <!-- ================= ANALYTICS ================= -->
+    <!-- ================= APPROVALS ================= -->
+    <template x-if="activeTab === 'approvals'">
+      <div>
+        <div class="tab-switch mb-2" style="width:auto">
+          <button class="tab-btn text-nowrap" :class="approvals.view === 'toApprove' && 'active'" @click="approvals.view = 'toApprove'">To approve <span class="tab-count" x-show="approvals.pending" x-text="approvals.pending"></span></button>
+          <button class="tab-btn text-nowrap" :class="approvals.view === 'mine' && 'active'" @click="approvals.view = 'mine'">My requests</button>
+        </div>
+        <div class="text-muted-sm mb-2" x-show="approvals.view === 'toApprove'">Risky statements that people you share connections with asked to run. Nothing runs until you approve it, and it then runs with <em>their</em> permissions.</div>
+        <div class="card-surface p-4 text-center text-muted-sm" x-show="!approvals[approvals.view].length">Nothing here.</div>
+        <template x-for="a in approvals[approvals.view]" :key="a.id">
+          <div class="card-surface p-3 mb-2">
+            <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+              <strong x-text="approvals.view === 'toApprove' ? userLabel(a.requester) : 'You'"></strong>
+              <span class="text-muted-sm">wants to run on</span><strong x-text="a.connLabel"></strong><span class="db-chip"><i class="bi bi-database"></i><span x-text="a.database"></span></span>
+              <template x-for="r in a.reasons" :key="r"><span class="badge rounded-pill badge-soft-danger" x-text="r"></span></template>
+              <span class="badge rounded-pill ms-auto" :class="{ pending: 'badge-soft-danger', approved: 'badge-soft-success', rejected: 'badge-soft-danger' }[a.status] || ''" x-text="a.status"></span>
+              <span class="text-muted-sm" x-text="timeAgo(a.createdAt)"></span>
+            </div>
+            <pre class="definition-block mb-2" style="white-space:pre-wrap; max-height:180px; overflow:auto" x-text="a.sql"></pre>
+            <div class="small mb-2" x-show="a.outcome"><span :class="a.outcome && a.outcome.ok ? 'text-success' : 'text-danger'" x-text="a.outcome ? (a.outcome.ok ? 'Ran: ' + a.outcome.statements + ' statement(s), ' + a.outcome.affected + ' row(s) affected' : 'Failed: ' + a.outcome.error) : ''"></span> <span class="text-muted-sm" x-text="a.decidedBy ? ' — approved by ' + userLabel(a.decidedBy) : ''"></span></div>
+            <div class="small text-muted-sm mb-2" x-show="a.status === 'rejected'" x-text="'Rejected by ' + userLabel(a.decidedBy) + (a.reason ? ': ' + a.reason : '')"></div>
+            <div class="d-flex gap-2" x-show="a.status === 'pending'">
+              <button class="btn btn-accent btn-sm" x-show="a.canDecide" @click="decideApproval(a, 'approve')" :disabled="approvals.busy"><i class="bi bi-check-lg me-1"></i>Approve and run</button>
+              <button class="btn btn-outline-soft btn-sm" x-show="a.canDecide" @click="decideApproval(a, 'reject')" :disabled="approvals.busy">Reject</button>
+              <button class="btn btn-outline-soft btn-sm" x-show="a.mine" @click="decideApproval(a, 'withdraw')" :disabled="approvals.busy">Withdraw</button>
+            </div>
+          </div>
+        </template>
+      </div>
+    </template>
+
     <!-- ================= SCHEDULES ================= -->
     <template x-if="activeTab === 'schedules'">
       <div>
@@ -4221,6 +4258,13 @@ Separate multiple statements with ; — highlight text to run just that part."
           </div>
         </div>
       </div>
+      <div x-show="shareModal.kind !== 'query' && shareModal.all" class="mb-3">
+        <div class="share-user-perms">
+          <div class="small fw-medium mb-1">Limit what everyone can see <span class="text-muted-sm fw-normal">(optional)</span></div>
+          <input class="form-control form-control-sm mb-1" placeholder="Only these databases (comma-separated; empty = all)" :value="scopeField('*', 'databases')" @input="setScopeField('*', 'databases', $event.target.value)">
+          <input class="form-control form-control-sm" placeholder="Hide these tables (names or db.table, comma-separated)" :value="scopeField('*', 'hideTables')" @input="setScopeField('*', 'hideTables', $event.target.value)">
+        </div>
+      </div>
       <div x-show="!shareModal.all">
         <div class="text-muted-sm mb-1" x-text="shareModal.kind === 'query' ? 'Pick users:' : 'Or pick users:'"></div>
         <div class="d-flex flex-column gap-1" style="max-height:340px; overflow-y:auto">
@@ -4244,6 +4288,10 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <button class="btn btn-link btn-sm p-0 text-decoration-none" @click.prevent="shareModal.open_[u.username] = !shareModal.open_[u.username]"
                           x-text="shareModal.open_[u.username] ? 'Hide details' : 'Customize…'"></button>
                 </div>
+                <div class="mt-2" x-show="shareModal.open_[u.username]">
+                  <input class="form-control form-control-sm mb-1" placeholder="Only these databases (comma-separated; empty = all)" :value="scopeField(u.username, 'databases')" @input="setScopeField(u.username, 'databases', $event.target.value)">
+                  <input class="form-control form-control-sm" placeholder="Hide these tables (names or db.table, comma-separated)" :value="scopeField(u.username, 'hideTables')" @input="setScopeField(u.username, 'hideTables', $event.target.value)">
+                </div>
                 <div class="share-perm-grid" x-show="shareModal.open_[u.username]">
                   <template x-for="p in permissionList" :key="p.key">
                     <label class="form-check small" :title="p.help"><input type="checkbox" class="form-check-input" :checked="(shareModal.perms[u.username] || []).includes(p.key)" @change="toggleSharePerm(u.username, p.key)"> <span x-text="p.label"></span></label>
@@ -4255,8 +4303,12 @@ Separate multiple statements with ; — highlight text to run just that part."
           <div class="text-muted-sm" x-show="directory.filter(u => u.username !== shareModal.owner).length === 0">There are no other users yet.</div>
         </div>
       </div>
+      <div class="form-check form-switch mt-3" x-show="shareModal.kind !== 'query'">
+        <input class="form-check-input" type="checkbox" id="reqApproval" x-model="shareModal.requireApproval">
+        <label class="form-check-label small" for="reqApproval"><span class="fw-medium">Ask me before they run risky statements</span> — <code>DROP</code>, <code>TRUNCATE</code>, and <code>UPDATE</code> / <code>DELETE</code> without <code>WHERE</code> wait for your (or an admin's) approval. You are never held back yourself.</label>
+      </div>
       <div class="text-muted-sm mt-2" x-show="shareModal.kind !== 'query'">
-        <i class="bi bi-info-circle me-1"></i>Hover a permission for details. In the Query Runner, other statements need the matching permission (e.g. <code>DELETE</code> needs "Delete rows"); <em>Any SQL</em> also allows <code>CALL</code>, <code>SET</code> and transactions.
+        <i class="bi bi-info-circle me-1"></i>Database and table limits are enforced by DB Console (Explore, the Query Runner, exports, compare, schedules). They do not replace database grants — give the connection's database account only the privileges it should have. Hover a permission for details. In the Query Runner, other statements need the matching permission (e.g. <code>DELETE</code> needs "Delete rows"); <em>Any SQL</em> also allows <code>CALL</code>, <code>SET</code> and transactions.
       </div>
     </div>
     <div class="modal-footer-custom">
@@ -4437,6 +4489,7 @@ function app() {
     relatedModal: { open: false, loading: false, error: '', data: null, where: null },
     profileModal: { open: false, loading: false, error: '', data: null, column: '' },
     replaceModal: { open: false, find: '', replace: '', running: false, error: '', result: null },
+    approvals: { view: 'toApprove', toApprove: [], mine: [], pending: 0, busy: false },
     totpEnabled: false,
     twoFa: { open: false, forced: false, enabled: false, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false },
     dismissModal: { open: false, finding: null, reason: '', saving: false },
@@ -4596,6 +4649,8 @@ function app() {
         this.currentDbs = {};
       }
       await Promise.all([this.loadConnections(), this.loadQueries(), this.loadDirectory(), this.loadPermissionList()]);
+      this.loadApprovals();
+      setInterval(() => { if (!document.hidden) this.loadApprovals(); }, 60000);
       // Text set from elsewhere (saved query, history, log) goes into the editor.
       this.$watch('sql', (v) => { if (sqlCm && sqlCm.getValue() !== v) sqlCm.setValue(v); });
       this.$watch('selectedKeys', () => this.loadHintTables());
@@ -4676,7 +4731,7 @@ function app() {
       const [path, query = ''] = raw.split('?');
       const segs = path.split('/').filter(Boolean).map((x) => { try { return decodeURIComponent(x); } catch (e) { return x; } });
       const q = new URLSearchParams(query);
-      const tabs = ['runner', 'explore', 'connections', 'queries', 'logs', 'analytics', 'schedules'].concat(this.isAdmin() ? ['users', 'system'] : []);
+      const tabs = ['runner', 'explore', 'connections', 'queries', 'logs', 'analytics', 'schedules', 'approvals'].concat(this.isAdmin() ? ['users', 'system'] : []);
       const tab = tabs.includes(segs[0]) ? segs[0] : 'runner';
       this.routing = true;
       try {
@@ -4755,6 +4810,7 @@ function app() {
       if (tab === 'logs') this.loadLogs(true);
       if (tab === 'analytics') this.loadAnalytics();
       if (tab === 'schedules') { this.loadJobs(); this.loadNotifyInfo(); }
+      if (tab === 'approvals') this.loadApprovals();
       if (tab === 'users') this.loadUsers();
       if (tab === 'system') { this.sysCheck = null; this.loadSystemStatus(); }
     },
@@ -4762,7 +4818,7 @@ function app() {
     pageTitle() {
       return {
         runner: 'Query Runner', explore: 'Explore', connections: 'Connections', queries: 'Saved Queries',
-        logs: 'Query Log', analytics: 'Analytics', schedules: 'Schedules', users: 'Users', system: 'Update & Restart'
+        logs: 'Query Log', analytics: 'Analytics', schedules: 'Schedules', approvals: 'Approvals', users: 'Users', system: 'Update & Restart'
       }[this.activeTab];
     },
     pageSubtitle() {
@@ -4774,6 +4830,7 @@ function app() {
         logs: this.isAdmin() ? 'Everything run against a database, by every user' : 'Everything you have run against a database',
         analytics: this.isAdmin() ? 'Usage across all users and connections' : 'Your usage over time',
         schedules: 'Run queries, analyses, backups and connection checks on a timetable — and get told when something is wrong',
+        approvals: 'A second pair of eyes for risky statements on shared connections',
         users: 'Who can sign in, and what they can do',
         system: 'Pull the latest version from git and restart through PM2'
       }[this.activeTab];
@@ -5485,6 +5542,29 @@ function app() {
       this.activeTab = 'runner';
       this.$nextTick(() => { if (sqlCm) sqlCm.setValue(f.fix); });
     },
+    // ---- Approvals ----
+    async loadApprovals() {
+      try {
+        const d = await this.apiJson('GET', '/api/approvals');
+        Object.assign(this.approvals, { toApprove: d.toApprove, mine: d.mine, pending: d.pending });
+        if (this.activeTab === 'approvals' && !d.toApprove.length && d.mine.length && this.approvals.view === 'toApprove') this.approvals.view = 'mine';
+      } catch (e) { /* the badge is a nicety */ }
+    },
+    async decideApproval(a, action) {
+      let body = {};
+      if (action === 'reject') { const reason = window.prompt('Why? (optional — the person will see it)'); if (reason === null) return; body = { reason }; }
+      if (action === 'approve') {
+        const ok = await this.askConfirm('Run this now?', `${this.userLabel(a.requester)}'s statement runs on ${a.connLabel} / ${a.database} immediately, with their permissions:\n\n${a.sql.slice(0, 400)}`, { confirmLabel: 'Approve and run', danger: true });
+        if (!ok) return;
+      }
+      this.approvals.busy = true;
+      try {
+        await this.apiJson('POST', `/api/approvals/${a.id}/${action}`, body);
+        await this.loadApprovals();
+        this.showToast(action === 'approve' ? 'Approved' : action === 'reject' ? 'Rejected' : 'Withdrawn');
+      } catch (e) { this.showToast(e.message, 'error'); } finally { this.approvals.busy = false; }
+    },
+
     // ---- Two-factor authentication ----
     async openTwoFa(forced = false) {
       this.twoFa = { open: true, forced, enabled: false, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false };
@@ -7654,8 +7734,11 @@ function app() {
         owner: item.owner,
         all: shared.includes('*'), users: shared.filter(u => u !== '*'),
         perms: JSON.parse(JSON.stringify(item.sharePermissions || {})), open_: {},
+        scopes: Object.fromEntries(Object.entries(item.shareScopes || {}).map(([n, v]) => [n, { databases: (v.databases || []).join(', '), hideTables: (v.hideTables || []).join(', ') }])),
+        requireApproval: Boolean(item.requireApproval), wasRequireApproval: Boolean(item.requireApproval),
         saving: false, error: ''
       };
+      for (const n of Object.keys(this.shareModal.scopes)) this.shareModal.open_[n] = true;
       // Shares made before permissions existed: full access, or read-only for the old read-only switch.
       if (kind !== 'query') for (const name of shared) this.sharePermsFor(name, item.readOnlyShare ? [] : null);
       this.loadDirectory();
@@ -7684,6 +7767,16 @@ function app() {
       const preset = this.permissionPresets.find((p) => p.key === key);
       return preset ? preset.label : `Custom · ${(this.shareModal.perms[name] || []).length}`;
     },
+    scopeField(name, field) { return (((this.shareModal.scopes || {})[name] || {})[field]) || ''; },
+    setScopeField(name, field, value) {
+      if (!this.shareModal.scopes) this.shareModal.scopes = {};
+      this.shareModal.scopes[name] = { databases: '', hideTables: '', ...(this.shareModal.scopes[name] || {}), [field]: value };
+    },
+    scopesToSend() {
+      const names = this.shareModal.all ? ['*'] : this.shareModal.users;
+      const list = (t) => String(t || '').split(',').map(x => x.trim()).filter(Boolean);
+      return Object.fromEntries(names.map(n => [n, { databases: list(((this.shareModal.scopes || {})[n] || {}).databases), hideTables: list(((this.shareModal.scopes || {})[n] || {}).hideTables) }]));
+    },
     sharePermissionsToSend() {
       const names = this.shareModal.all ? ['*'] : this.shareModal.users;
       return Object.fromEntries(names.map((n) => [n, this.shareModal.perms[n] || this.allPermissionKeys()]));
@@ -7698,11 +7791,14 @@ function app() {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sharedWith: this.shareModal.all ? ['*'] : this.shareModal.users,
-            ...(this.shareModal.kind === 'query' ? {} : { permissions: this.sharePermissionsToSend() })
+            ...(this.shareModal.kind === 'query' ? {} : { permissions: this.sharePermissionsToSend(), scopes: this.scopesToSend() })
           })
         });
         const data = await res.json();
         if (!res.ok) { this.shareModal.error = data.error || 'Failed to save'; return; }
+        if (this.shareModal.kind !== 'query' && this.shareModal.requireApproval !== this.shareModal.wasRequireApproval) {
+          await this.apiJson('PUT', `/api/connections/${this.shareModal.key}`, { requireApproval: this.shareModal.requireApproval });
+        }
         this.shareModal.open = false;
         await (this.shareModal.kind === 'query' ? this.loadQueries() : this.loadConnections());
         this.showToast('Sharing updated');

@@ -16,6 +16,7 @@ const path = require('path');
 const { DATA_DIR, FILE_MODE, ensureDir, readJson, writeJson, withLock } = require('./datadir');
 const perms = require('./permissions');
 const secrets = require('./secrets');
+const scope = require('./scope');
 
 const CONNECTIONS_FILE = path.join(DATA_DIR, 'connections.json');
 const QUERIES_FILE = path.join(DATA_DIR, 'queries.json');
@@ -191,6 +192,7 @@ function createConnection(data) {
     sharedWith: []
   };
   if (data.monitor) conn.monitor = true; // record server metrics every minute
+  if (data.requireApproval) conn.requireApproval = true; // dangerous statements from shared users need an owner's approval
   applyNetwork(conn, data);
 
   conns.push(conn);
@@ -216,6 +218,7 @@ function updateConnection(key, data) {
   };
   applyNetwork(updated, data, existing);
   if (data.monitor !== undefined) { if (data.monitor) updated.monitor = true; else delete updated.monitor; }
+  if (data.requireApproval !== undefined) { if (data.requireApproval) updated.requireApproval = true; else delete updated.requireApproval; }
 
   conns[idx] = updated;
   saveConnections(conns);
@@ -226,7 +229,7 @@ function updateConnection(key, data) {
 // permissions: { username | '*': [permission names] } (see permissions.js);
 // a user left out keeps what they had, or gets full access when new.
 // readOnly (older API): applies to everyone listed when `permissions` is not given.
-function setConnectionSharing(key, sharedWith, permissions, readOnly) {
+function setConnectionSharing(key, sharedWith, permissions, readOnly, scopes) {
   const conns = listConnections();
   const idx = conns.findIndex((c) => c.key === key);
   if (idx === -1) return null;
@@ -245,6 +248,8 @@ function setConnectionSharing(key, sharedWith, permissions, readOnly) {
     else map[name] = current.readOnlyShare && !current.sharePermissions ? [] : perms.ALL.slice();
   }
   const next = { ...current, sharedWith: list, sharePermissions: map };
+  const cleanedScopes = scope.clean(scopes === undefined ? current.shareScopes : scopes, names);
+  if (Object.keys(cleanedScopes).length) next.shareScopes = cleanedScopes; else delete next.shareScopes;
   delete next.readOnlyShare; // replaced by sharePermissions
   conns[idx] = next;
   saveConnections(conns);
