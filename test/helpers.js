@@ -108,4 +108,31 @@ function finish() {
   assert.strictEqual(f.length, 0, `${f.length} check(s) failed:\n  ✗ ${f.join('\n  ✗ ')}`);
 }
 
-module.exports = { DB, ROOT, mysql, startServer, login, check, finish, assertSafeServer, freePort };
+// A throwaway sshd on a free local port, logging in as the current user with a generated key.
+// Returns null when sshd isn't installed. { port, user, privateKey, wrongKey, hostFingerprint, stop() }
+async function startSshd() {
+  const SSHD = ['/usr/sbin/sshd', '/usr/bin/sshd', '/usr/local/sbin/sshd'].find((p) => fs.existsSync(p));
+  if (!SSHD) return null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dbc-ssh-'));
+  const port = await freePort();
+  const key = path.join(dir, 'id'); const wrong = path.join(dir, 'wrong'); const hostKey = path.join(dir, 'host');
+  for (const f of [key, wrong, hostKey]) execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', f]);
+  fs.copyFileSync(key + '.pub', path.join(dir, 'authorized_keys'));
+  fs.chmodSync(dir, 0o700);
+  const me = os.userInfo().username;
+  fs.writeFileSync(path.join(dir, 'sshd_config'), [
+    `Port ${port}`, 'ListenAddress 127.0.0.1', `HostKey ${hostKey}`, `AuthorizedKeysFile ${path.join(dir, 'authorized_keys')}`,
+    'PasswordAuthentication no', 'UsePAM no', 'AllowTcpForwarding yes', 'StrictModes no', `PidFile ${path.join(dir, 'pid')}`, `AllowUsers ${me}`, 'PermitRootLogin yes',
+    'Subsystem sftp internal-sftp'
+  ].join('\n'));
+  try { fs.mkdirSync('/run/sshd', { recursive: true }); } catch (e) { /* not root */ }
+  const child = spawn(SSHD, ['-D', '-e', '-f', path.join(dir, 'sshd_config')], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 800));
+  return {
+    port, user: me, dir, privateKey: fs.readFileSync(key, 'utf8'), wrongKey: fs.readFileSync(wrong, 'utf8'),
+    hostFingerprint: execFileSync('ssh-keygen', ['-lf', hostKey + '.pub']).toString().split(' ')[1],
+    stop() { child.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
+  };
+}
+
+module.exports = { startSshd, DB, ROOT, mysql, startServer, login, check, finish, assertSafeServer, freePort };

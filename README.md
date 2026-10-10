@@ -327,6 +327,21 @@ DB Console supports multiple users, each with their own login.
 
 ---
 
+### ⏰ Schedules
+
+Run things on a timetable and get told when something is wrong (**Schedules** in the sidebar).
+
+* **Query** — run a SQL statement (with `{{parameters}}`) and keep the rows as a CSV (the newest N files), optionally attached to an email. Alert when it fails, every run, when it returns rows, or when it returns none (a classic "this should never happen" check). Runs with its owner's permissions, and every run is in the query log
+* **Analysis** — analyse a database and track the findings over time: a trend chart of errors and warnings, and an alert when there are errors or more problems than last time
+* **Backup** — dump a database to `.sql.gz` under `data/backups/`, keep the newest N, and optionally **test-restore** each one into a scratch database (tables and row counts are checked, then the scratch database is dropped). Backups can be uploaded to **S3** (or any S3-compatible service: MinIO, Wasabi, R2…) and to **SFTP**; on SFTP only the newest N are kept (for S3 use a bucket lifecycle rule)
+* **Connection check** — ping connections and alert when one **goes down** or **comes back** (not on every check while it stays down)
+* Schedules are cron expressions (`*/15 * * * *`, `0 2 * * 1-5`, `@daily`…) or presets, in the server's local time (set `TZ` to change it); a job can also be **manual only** and started with **Run now**
+* Alerts go to **email** (SMTP) and/or a **webhook** (Slack, Teams, Discord or your own endpoint; an optional signing secret adds an `X-DBConsole-Signature: sha256=…` header). Admins configure both under **Schedules → Alert settings**; SMTP password and webhook secret are stored encrypted
+* Under PM2 cluster mode one worker is elected to run the timetable (another takes over within 30 seconds if it dies), and a job never runs twice at once. A run that was missed while the server was down runs once when it comes back
+* Everyone manages their own jobs; admins see all. Backups need owner or admin rights on the connection
+
+---
+
 ### 📜 Query Log
 
 Everything run against a database is logged per user:

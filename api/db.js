@@ -454,6 +454,7 @@ module.exports = {
   streamDatabaseBackupTarGz,
   exportDatabase,
   exportQueryResult,
+  isExportable,
   stripTrailingLimit,
   restoreDump
 };
@@ -1125,6 +1126,11 @@ function rawQuery(rawConn, sql) {
 }
 
 const EXPORTABLE_RE = /^(select|with|table|values|show|describe|desc|explain)\b/i;
+// True for one statement that returns rows and can be streamed to a file (see exportQueryResult).
+function isExportable(sqlText) {
+  const st = splitStatements(sqlText);
+  return st.length === 1 && permissions.statementNeeds(st[0]) === 'read' && EXPORTABLE_RE.test(stripLeadingComments(st[0]));
+}
 
 // options: { database, format: 'csv'|'tsv', gzip, bom, nulls: 'empty'|'null'|'\\N', stripLimit, maxRows (0 = all), allowed }
 // Resolves with { rows, stripped, truncated }. Errors found before the first

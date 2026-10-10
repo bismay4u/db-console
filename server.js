@@ -9,6 +9,10 @@ const store = require('./api/store');
 const db = require('./api/db');
 const querylog = require('./api/querylog');
 const params = require('./api/params');
+const jobs = require('./api/jobs');
+const scheduler = require('./api/scheduler');
+const notify = require('./api/notify');
+const cron = require('./api/cron');
 const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
@@ -122,9 +126,7 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-function isAdmin(user) {
-  return user && user.role === 'admin';
-}
+const { isAdmin, canManage, permissionsOf, restrictionsFor, canUse } = require('./api/access');
 
 function publicUser(u) {
   return {
@@ -142,27 +144,6 @@ function publicUser(u) {
 // Owner and admins manage a connection (edit, delete, share). Anyone it is
 // shared with may use it (run queries, explore, export, back up, restore),
 // or, when it is shared read-only, only read through it.
-function canManage(user, conn) {
-  return isAdmin(user) || conn.owner === user.username;
-}
-
-// What the user may change through this connection: everything for the
-// owner and admins, otherwise what it was shared with them (see permissions.js).
-function permissionsOf(user, conn) {
-  return canManage(user, conn) ? perms.ALL.slice() : perms.sharedPermissions(conn, user.username);
-}
-
-// The Set handed to the Query Runner; null means no restrictions.
-function restrictionsFor(user, conn) {
-  const p = permissionsOf(user, conn);
-  return p.length === perms.ALL.length ? null : new Set(p);
-}
-
-function canUse(user, conn) {
-  const shared = conn.sharedWith || [];
-  return canManage(user, conn) || shared.includes('*') || shared.includes(user.username);
-}
-
 function connView(conn, user) {
   const { sharedWith, secretError, ...rest } = conn;
   const hasSecrets = Object.fromEntries(store.SECRET_FIELDS.map((f) => [f, Boolean(conn[f])]));
@@ -1225,6 +1206,101 @@ app.get('/api/auth-log.csv', requireAdmin, (req, res) => {
   sendCsv(res, `sign-in-activity-${stamp()}.csv`, ['time', 'event', 'user', 'ip', 'detail', 'browser'], entries.map((e) => [e.ts, e.event, e.username, e.ip, e.detail, e.agent]));
 });
 
+// ---- Scheduled jobs: queries, analysis, backups, connection checks ----
+// Everyone manages their own jobs (a job runs with its owner's permissions); admins see and manage all of them.
+const jobView = (job) => {
+  const conn = job.connKey ? store.getConnection(job.connKey) : null;
+  return { ...jobs.view(job), connLabel: conn ? conn.label : (job.connKey ? '(deleted)' : undefined), running: scheduler.runningIds().includes(job.id) };
+};
+function requireJob(req, res, next) {
+  const job = jobs.get(req.params.id);
+  if (!job || (job.owner !== req.user.username && !isAdmin(req.user))) return res.status(404).json({ error: 'Job not found' });
+  req.job = job;
+  return next();
+}
+// The connections a job refers to must be usable by whoever saves it; a backup needs more.
+function checkJobAccess(user, job) {
+  const keys = job.type === 'health' ? (job.connKeys || []) : [job.connKey];
+  for (const k of keys) {
+    const conn = store.getConnection(k);
+    if (!conn || !canUse(user, conn)) throw new Error('No access to that connection');
+    if (job.type === 'backup' && !canManage(user, conn)) throw new Error('Scheduled backups need owner or admin rights on the connection');
+  }
+}
+
+app.get('/api/jobs', requireAuth, (req, res) => {
+  res.json(jobs.list().filter((j) => isAdmin(req.user) || j.owner === req.user.username).map(jobView));
+});
+app.post('/api/schedule/preview', requireAuth, (req, res) => {
+  try {
+    const expr = cron.validate(req.body && req.body.schedule);
+    const runs = [];
+    let from = new Date();
+    for (let i = 0; i < 5; i++) { const d = cron.next(expr, from); if (!d) break; runs.push(d.toISOString()); from = d; }
+    res.json({ schedule: expr, next: runs });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/jobs', requireAuth, (req, res) => {
+  try {
+    const draft = jobs.normalize(req.body || {});
+    checkJobAccess(req.user, draft);
+    res.status(201).json(jobView(jobs.create(req.body, req.user.username)));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.put('/api/jobs/:id', requireAuth, requireJob, (req, res) => {
+  try {
+    const draft = { ...jobs.normalize(req.body || {}, req.job) };
+    checkJobAccess(req.user, draft);
+    res.json(jobView(jobs.update(req.job.id, req.body)));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.delete('/api/jobs/:id', requireAuth, requireJob, (req, res) => {
+  jobs.remove(req.job.id);
+  res.json({ ok: true });
+});
+// Runs it now. Returns at once; with ?wait=1 it waits for the run to finish and returns it.
+app.post('/api/jobs/:id/run', requireAuth, requireJob, async (req, res) => {
+  if (scheduler.runningIds().includes(req.job.id)) return res.status(409).json({ error: 'This job is already running' });
+  const p = scheduler.runJob(req.job, { trigger: 'manual', by: req.user.username });
+  if (req.query.wait === '1') {
+    try { return res.json(await p); } catch (e) { return res.status(500).json({ error: e.message }); }
+  }
+  p.catch((e) => console.error(`Job ${req.job.name} failed: ${e.message}`));
+  return res.status(202).json({ started: true });
+});
+app.get('/api/jobs/:id/runs', requireAuth, requireJob, (req, res) => {
+  res.json(jobs.runsFor(req.job.id, Math.min(Number(req.query.limit) || 50, 200)));
+});
+// The file a run produced: the CSV of a query job, or a backup.
+app.get('/api/jobs/:id/runs/:runId/file', requireAuth, requireJob, (req, res) => {
+  const run = jobs.runsFor(req.job.id, 1000).find((r) => r.id === req.params.runId);
+  if (!run || !run.file) return res.status(404).json({ error: 'No file for this run' });
+  const dir = req.job.type === 'backup' ? jobs.backupDir(req.job.id) : jobs.outputDir(req.job.id);
+  const file = path.join(dir, path.basename(run.file));
+  if (!fs.existsSync(file)) return res.status(404).json({ error: 'The file is gone (older files are removed to keep the newest ones)' });
+  if (req.job.type === 'backup') {
+    const conn = store.getConnection(req.job.connKey);
+    if (!conn || !canManage(req.user, conn)) return res.status(403).json({ error: 'Downloading a backup needs owner or admin rights on the connection' });
+  }
+  return res.download(file, path.basename(file));
+});
+
+// Where alerts go (admins).
+app.get('/api/notify', requireAuth, (req, res) => {
+  const v = notify.publicView();
+  res.json(isAdmin(req.user) ? v : { emailConfigured: v.emailConfigured, webhookConfigured: v.webhookConfigured });
+});
+app.put('/api/notify', requireAdmin, (req, res) => {
+  try { res.json(notify.save(req.body || {})); } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/notify/test', requireAdmin, async (req, res) => {
+  const { email, webhook } = req.body || {};
+  const out = { sent: [], errors: [] };
+  if (email) { try { await notify.sendEmail({ to: email, subject: '[DB Console] Test message', text: 'Alerts from DB Console reach this address.' }); out.sent.push('email'); } catch (e) { out.errors.push('email: ' + e.message); } }
+  if (webhook) { try { await notify.sendWebhook({ text: '[DB Console] Test message', subject: 'Test message', event: 'test' }); out.sent.push('webhook'); } catch (e) { out.errors.push('webhook: ' + e.message); } }
+  res.json(out);
+});
+
 app.get('/api/analytics', requireAuth, (req, res) => {
   const { from, to, ...filters } = logFilters(req);
   res.json(querylog.analytics(filters, req.query.days));
@@ -1298,6 +1374,7 @@ const server = app.listen(PORT, () => {
   // With `wait_ready: true` in the PM2 ecosystem file, PM2 waits for this
   // before routing traffic to a reloaded worker and stopping the old one.
   if (process.send) process.send('ready');
+  scheduler.start();
 });
 // Node closes a request that takes longer than 5 minutes to upload by
 // default; a restore or import of a multi-GB file can take much longer.
@@ -1317,6 +1394,7 @@ function shutdown(signal) {
   console.log(`${signal} received, shutting down`);
   // A long export/restore could keep the server open; don't wait forever.
   setTimeout(() => process.exit(0), 10000).unref();
+  scheduler.stop();
   server.close(async () => {
     await db.closeAllPools();
     process.exit(0);

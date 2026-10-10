@@ -3,28 +3,13 @@ const { test } = require('node:test');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn, execFileSync } = require('child_process');
 const T = require('./helpers');
 const { check, finish } = T;
 
-const SSHD = ['/usr/sbin/sshd', '/usr/bin/sshd', '/usr/local/sbin/sshd'].find((p) => fs.existsSync(p));
-
-test('connections through an SSH tunnel', { timeout: 120000, skip: !SSHD && 'sshd not installed' }, async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dbc-ssh-'));
-  const sshPort = await T.freePort();
-  const key = path.join(dir, 'id'); const wrong = path.join(dir, 'wrong'); const hostKey = path.join(dir, 'host');
-  for (const f of [key, wrong, hostKey]) execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', f]);
-  fs.copyFileSync(key + '.pub', path.join(dir, 'authorized_keys'));
-  fs.chmodSync(dir, 0o700);
-  const me = os.userInfo().username;
-  fs.writeFileSync(path.join(dir, 'sshd_config'), [
-    `Port ${sshPort}`, 'ListenAddress 127.0.0.1', `HostKey ${hostKey}`, `AuthorizedKeysFile ${path.join(dir, 'authorized_keys')}`,
-    'PasswordAuthentication no', 'UsePAM no', 'AllowTcpForwarding yes', 'StrictModes no', `PidFile ${path.join(dir, 'pid')}`, `AllowUsers ${me}`, 'PermitRootLogin yes'
-  ].join('\n'));
-  try { fs.mkdirSync('/run/sshd', { recursive: true }); } catch (e) { /* not root */ }
-  const sshd = spawn(SSHD, ['-D', '-e', '-f', path.join(dir, 'sshd_config')], { stdio: 'ignore' });
-  await new Promise((r) => setTimeout(r, 800));
-  const fp = execFileSync('ssh-keygen', ['-lf', hostKey + '.pub']).toString().split(' ')[1];
+test('connections through an SSH tunnel', { timeout: 120000 }, async (t) => {
+  const ssh = await T.startSshd();
+  if (!ssh) return t.skip('sshd not installed');
+  const sshPort = ssh.port; const me = ssh.user; const fp = ssh.hostFingerprint;
   const srv = await T.startServer();
   try {
     const cookie = await T.login(srv.B);
@@ -33,9 +18,9 @@ test('connections through an SSH tunnel', { timeout: 120000, skip: !SSHD && 'ssh
       const t = await r.text(); let d; try { d = JSON.parse(t); } catch { d = t; } return { status: r.status, data: d };
     };
     const base = { label: 'Tunnelled', host: T.DB.host, port: T.DB.port, user: T.DB.user, password: T.DB.password, database: 'shop', sshHost: '127.0.0.1', sshPort: sshPort, sshUser: me };
-    const privateKey = fs.readFileSync(key, 'utf8');
+    const privateKey = ssh.privateKey;
 
-    let r = await api('POST', '/api/connections/test', { ...base, sshPrivateKey: fs.readFileSync(wrong, 'utf8') });
+    let r = await api('POST', '/api/connections/test', { ...base, sshPrivateKey: ssh.wrongKey });
     check(r.data.ok === false && /SSH/.test(r.data.error), 'a key the server does not know is refused', r.data);
     r = await api('POST', '/api/connections/test', { ...base, sshPrivateKey: privateKey, sshHostKey: 'SHA256:notTheRealFingerprint' });
     check(r.data.ok === false, 'a wrong host-key fingerprint is refused', r.data);
@@ -65,7 +50,7 @@ test('connections through an SSH tunnel', { timeout: 120000, skip: !SSHD && 'ssh
     r = await api('POST', `/api/connections/${k}/test`);
     check(r.data.ok === true, 'direct connection works after clearing the tunnel', r.data);
   } finally {
-    await srv.stop(); sshd.kill(); fs.rmSync(dir, { recursive: true, force: true });
+    await srv.stop(); ssh.stop();
   }
   finish();
 });

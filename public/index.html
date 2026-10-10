@@ -474,6 +474,9 @@
     <a class="nav-link-custom" :class="activeTab === 'analytics' && 'active'" @click="openTab('analytics')">
       <i class="bi bi-bar-chart-line"></i> Analytics
     </a>
+    <a class="nav-link-custom" :class="activeTab === 'schedules' && 'active'" @click="openTab('schedules')">
+      <i class="bi bi-alarm"></i> Schedules
+    </a>
 
     <template x-if="isAdmin()">
       <div>
@@ -518,6 +521,9 @@
       </button>
       <button class="btn btn-accent btn-sm" x-show="activeTab==='queries'" @click="openQueryModal()">
         <i class="bi bi-plus-lg me-1"></i> New saved query
+      </button>
+      <button class="btn btn-accent btn-sm" x-show="activeTab==='schedules'" @click="openJobModal()">
+        <i class="bi bi-plus-lg me-1"></i> New job
       </button>
       <button class="btn btn-accent btn-sm" x-show="activeTab==='users'" @click="openUserModal()">
         <i class="bi bi-person-plus me-1"></i> New user
@@ -1796,6 +1802,73 @@ Separate multiple statements with ; — highlight text to run just that part."
     </template>
 
     <!-- ================= ANALYTICS ================= -->
+    <!-- ================= SCHEDULES ================= -->
+    <template x-if="activeTab === 'schedules'">
+      <div>
+        <div class="alert alert-info py-2 small d-flex align-items-center gap-2" x-show="notifyInfo && !notifyInfo.emailConfigured && !notifyInfo.webhookConfigured">
+          <i class="bi bi-bell-slash"></i>
+          <span>Alerts have nowhere to go yet. Jobs still run and keep their history, but nobody is told when one fails.</span>
+          <button class="btn btn-sm btn-outline-soft ms-auto" x-show="isAdmin()" @click="openNotifyModal()">Set up alerts</button>
+        </div>
+        <div class="card-surface">
+          <div class="d-flex align-items-center gap-2 px-3 py-2" style="border-bottom:1px solid var(--border)">
+            <span class="text-muted-sm" x-text="jobs.length + ' job(s)'"></span>
+            <span class="text-muted-sm" x-show="jobsLoading"><span class="spinner-border spinner-border-sm"></span></span>
+            <div class="ms-auto d-flex align-items-center gap-2">
+              <span class="text-muted-sm" x-show="notifyInfo && (notifyInfo.emailConfigured || notifyInfo.webhookConfigured)"><i class="bi bi-bell me-1"></i><span x-text="[notifyInfo && notifyInfo.emailConfigured ? 'email' : '', notifyInfo && notifyInfo.webhookConfigured ? 'webhook' : ''].filter(Boolean).join(' + ')"></span></span>
+              <button class="btn btn-outline-soft btn-sm" x-show="isAdmin()" @click="openNotifyModal()"><i class="bi bi-bell me-1"></i>Alert settings</button>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-modern mb-0">
+              <thead><tr><th>Job</th><th>Target</th><th>Schedule</th><th>Last run</th><th class="text-end">Actions</th></tr></thead>
+              <tbody>
+                <template x-for="j in jobs" :key="j.id">
+                  <tr :class="!j.enabled && 'opacity-50'">
+                    <td>
+                      <div class="fw-medium"><i class="bi me-1" :class="jobIcon(j.type)"></i><span x-text="j.name"></span></div>
+                      <div class="text-muted-sm" x-text="jobTypeLabel(j.type)"></div>
+                      <div class="text-muted-sm" x-show="isAdmin() && j.owner !== username" x-text="'by ' + userLabel(j.owner)"></div>
+                    </td>
+                    <td>
+                      <div x-text="j.type === 'health' ? ((j.connKeys || []).length ? j.connKeys.length + ' connection(s)' : 'All connections') : (j.connLabel || j.connKey)"></div>
+                      <div class="text-muted-sm" x-show="j.database" x-text="j.database"></div>
+                    </td>
+                    <td>
+                      <code x-show="j.schedule" x-text="j.schedule"></code>
+                      <span class="text-muted-sm" x-show="!j.schedule">Manual only</span>
+                      <div class="text-muted-sm" x-show="j.enabled && j.nextRunAt" x-text="'next ' + formatTs(j.nextRunAt)"></div>
+                      <div class="text-muted-sm" x-show="!j.enabled">paused</div>
+                    </td>
+                    <td>
+                      <template x-if="j.running"><span class="badge rounded-pill badge-soft-success"><span class="spinner-border spinner-border-sm me-1" style="width:.6rem;height:.6rem"></span>running</span></template>
+                      <template x-if="!j.running && j.lastRun">
+                        <div>
+                          <span class="badge rounded-pill" :class="j.lastRun.ok ? 'badge-soft-success' : 'badge-soft-danger'" x-text="j.lastRun.ok ? 'OK' : 'FAILED'"></span>
+                          <span class="text-muted-sm ms-1" x-text="timeAgo(j.lastRun.at)"></span>
+                          <div class="text-muted-sm text-truncate" style="max-width:340px" :title="j.lastRun.message" x-text="j.lastRun.message"></div>
+                        </div>
+                      </template>
+                      <span class="text-muted-sm" x-show="!j.running && !j.lastRun">never run</span>
+                    </td>
+                    <td class="text-end text-nowrap">
+                      <button class="btn btn-sm btn-outline-soft me-1" title="Run now" :disabled="j.running" @click="runJobNow(j)"><i class="bi bi-play-fill"></i></button>
+                      <button class="btn btn-sm btn-outline-soft me-1" title="History" @click="openJobRuns(j)"><i class="bi bi-clock-history"></i></button>
+                      <button class="btn btn-sm btn-outline-soft me-1" :title="j.enabled ? 'Pause' : 'Resume'" @click="toggleJob(j)"><i class="bi" :class="j.enabled ? 'bi-pause-fill' : 'bi-play-circle'"></i></button>
+                      <button class="btn btn-sm btn-outline-soft me-1" title="Edit" @click="openJobModal(j)"><i class="bi bi-pencil"></i></button>
+                      <button class="btn btn-sm btn-ghost-danger" title="Delete" @click="removeJob(j)"><i class="bi bi-trash"></i></button>
+                    </td>
+                  </tr>
+                </template>
+                <tr x-show="!jobs.length"><td colspan="5" class="text-center text-muted-sm py-4">No jobs yet. Schedule a query, an analysis, a backup or a connection check with <strong>New job</strong>.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="text-muted-sm mt-2"><i class="bi bi-info-circle me-1"></i>Times are the server's local time. A job runs with its owner's permissions.</div>
+      </div>
+    </template>
+
     <template x-if="activeTab === 'analytics'">
       <div>
         <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-center gap-2">
@@ -2265,6 +2338,234 @@ Separate multiple statements with ; — highlight text to run just that part."
         <span x-show="connModal.saving" class="spinner-border spinner-border-sm me-1"></span>
         Save
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Job modal ===== -->
+<div class="modal-backdrop-custom" x-show="jobModal.open" x-cloak @click.self="jobModal.open = false">
+  <div class="modal-panel" style="max-width:760px">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="jobModal.id ? 'Edit job' : 'New job'"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="jobModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="jobModal.error" x-text="jobModal.error"></div>
+      <div class="row g-2">
+        <div class="col-md-4">
+          <label class="form-label small fw-medium">What</label>
+          <select class="form-select" x-model="jobModal.form.type" :disabled="!!jobModal.id" @change="jobTypeChanged()">
+            <option value="query">Run a query</option><option value="analysis">Analyse a database</option>
+            <option value="backup">Back up a database</option><option value="health">Check connections</option>
+          </select>
+        </div>
+        <div class="col-md-8">
+          <label class="form-label small fw-medium">Name</label>
+          <input type="text" class="form-control" x-model="jobModal.form.name" placeholder="Nightly orders report">
+        </div>
+
+        <template x-if="jobModal.form.type !== 'health'">
+          <div class="col-12">
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label small fw-medium">Connection</label>
+                <select class="form-select" x-model="jobModal.form.connKey" @change="loadJobDatabases()">
+                  <option value="" disabled>Select…</option>
+                  <template x-for="c in connections.filter(c => jobModal.form.type !== 'backup' || c.canManage)" :key="c.key"><option :value="c.key" x-text="c.label"></option></template>
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small fw-medium">Database</label>
+                <select class="form-select" x-model="jobModal.form.database">
+                  <option value="" disabled>Select…</option>
+                  <template x-for="d in jobModal.databases" :key="d"><option :value="d" x-text="d"></option></template>
+                </select>
+              </div>
+            </div>
+          </div>
+        </template>
+        <template x-if="jobModal.form.type === 'health'">
+          <div class="col-12">
+            <label class="form-label small fw-medium">Connections to check <span class="text-muted-sm">(none ticked = all of yours)</span></label>
+            <div class="d-flex flex-wrap gap-3">
+              <template x-for="c in connections" :key="c.key">
+                <label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" :checked="jobModal.form.connKeys.includes(c.key)" @change="toggleJobConn(c.key)"><span x-text="c.label"></span></label>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <template x-if="jobModal.form.type === 'query'">
+          <div class="col-12">
+            <label class="form-label small fw-medium">SQL <span class="text-muted-sm">— a SELECT is saved as CSV; <code>{{name}}</code> / <code>{{name=default}}</code> are parameters</span></label>
+            <textarea class="form-control font-monospace" rows="5" x-model="jobModal.form.sql" placeholder="SELECT status, COUNT(*) FROM orders WHERE created > NOW() - INTERVAL 1 DAY GROUP BY status"></textarea>
+            <div class="row g-2 mt-0" x-show="paramsIn(jobModal.form.sql).length">
+              <template x-for="p in paramsIn(jobModal.form.sql)" :key="p.name">
+                <div class="col-md-4"><label class="form-label small mb-0" x-text="p.name"></label>
+                  <input type="text" class="form-control form-control-sm" x-model="jobModal.form.params[p.name]" :placeholder="p.default !== undefined ? 'default: ' + p.default : 'value'"></div>
+              </template>
+            </div>
+            <div class="row g-2 mt-1">
+              <div class="col-md-4"><label class="form-label small mb-0">Row limit</label><input type="number" class="form-control form-control-sm" x-model.number="jobModal.form.maxRows"></div>
+              <div class="col-md-4"><label class="form-label small mb-0">Keep the last N files</label><input type="number" class="form-control form-control-sm" x-model.number="jobModal.form.keepFiles"></div>
+              <div class="col-md-4 d-flex align-items-end"><label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" x-model="jobModal.form.attach">Attach the CSV to emails</label></div>
+            </div>
+          </div>
+        </template>
+
+        <template x-if="jobModal.form.type === 'backup'">
+          <div class="col-12">
+            <div class="row g-2">
+              <div class="col-md-4"><label class="form-label small mb-0">Keep the newest N backups</label><input type="number" min="1" class="form-control form-control-sm" x-model.number="jobModal.form.backup.keep"></div>
+              <div class="col-md-8 d-flex align-items-end gap-3 flex-wrap">
+                <label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" x-model="jobModal.form.backup.restoreTest">Test-restore each backup into a scratch database</label>
+                <label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" x-model="jobModal.form.backup.schemaOnly">Structure only</label>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small mb-0">Also upload to</label>
+                <select class="form-select form-select-sm" x-model="jobModal.form.backup.upload.type">
+                  <option value="">Nowhere (keep on this server)</option><option value="s3">S3 / S3-compatible</option><option value="sftp">SFTP</option>
+                </select>
+              </div>
+              <template x-if="jobModal.form.backup.upload.type === 's3'">
+                <div class="col-12"><div class="row g-2">
+                  <div class="col-md-6"><label class="form-label small mb-0">Bucket</label><input class="form-control form-control-sm" x-model="jobModal.form.backup.upload.bucket"></div>
+                  <div class="col-md-3"><label class="form-label small mb-0">Region</label><input class="form-control form-control-sm" x-model="jobModal.form.backup.upload.region" placeholder="us-east-1"></div>
+                  <div class="col-md-3"><label class="form-label small mb-0">Folder</label><input class="form-control form-control-sm" x-model="jobModal.form.backup.upload.prefix" placeholder="db-console/"></div>
+                  <div class="col-12"><label class="form-label small mb-0">Endpoint <span class="text-muted-sm">(leave empty for AWS; MinIO, Wasabi, R2… need one)</span></label><input class="form-control form-control-sm" x-model="jobModal.form.backup.upload.endpoint" placeholder="https://s3.example.com"></div>
+                  <div class="col-md-6"><label class="form-label small mb-0">Access key id</label><input class="form-control form-control-sm" x-model="jobModal.form.backup.upload.accessKeyId" autocomplete="off"></div>
+                  <div class="col-md-6"><label class="form-label small mb-0">Secret access key <span class="text-muted-sm" x-show="jobModal.form.backup.upload.hasSecretAccessKey">(saved — blank keeps it)</span></label><input type="password" class="form-control form-control-sm" x-model="jobModal.form.backup.upload.secretAccessKey" autocomplete="new-password"></div>
+                  <div class="col-12 text-muted-sm">Old backups on S3 aren't deleted — use a lifecycle rule on the bucket.</div>
+                </div></div>
+              </template>
+              <template x-if="jobModal.form.backup.upload.type === 'sftp'">
+                <div class="col-12"><div class="row g-2">
+                  <div class="col-md-5"><label class="form-label small mb-0">Host</label><input class="form-control form-control-sm" x-model="jobModal.form.backup.upload.host"></div>
+                  <div class="col-md-2"><label class="form-label small mb-0">Port</label><input class="form-control form-control-sm" x-model="jobModal.form.backup.upload.port" placeholder="22"></div>
+                  <div class="col-md-5"><label class="form-label small mb-0">User</label><input class="form-control form-control-sm" x-model="jobModal.form.backup.upload.user"></div>
+                  <div class="col-12"><label class="form-label small mb-0">Folder</label><input class="form-control form-control-sm" x-model="jobModal.form.backup.upload.path" placeholder="/backups/db-console"></div>
+                  <div class="col-md-6"><label class="form-label small mb-0">Password <span class="text-muted-sm" x-show="jobModal.form.backup.upload.hasPassword">(saved)</span></label><input type="password" class="form-control form-control-sm" x-model="jobModal.form.backup.upload.password" autocomplete="new-password"></div>
+                  <div class="col-md-6"><label class="form-label small mb-0">Private key <span class="text-muted-sm" x-show="jobModal.form.backup.upload.hasPrivateKey">(saved)</span></label><textarea class="form-control form-control-sm font-monospace" rows="2" x-model="jobModal.form.backup.upload.privateKey"></textarea></div>
+                  <div class="col-12 text-muted-sm">The same number of newest backups is kept on the SFTP server too.</div>
+                </div></div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <div class="col-12"><hr class="my-1"></div>
+        <div class="col-md-5">
+          <label class="form-label small fw-medium">Schedule</label>
+          <select class="form-select" @change="jobModal.form.schedule = $event.target.value; previewSchedule()">
+            <option value="" :selected="!jobModal.form.schedule">Manual only (Run now)</option>
+            <template x-for="p in schedulePresets" :key="p[1]"><option :value="p[1]" :selected="jobModal.form.schedule === p[1]" x-text="p[0]"></option></template>
+            <option value="__custom" :selected="jobModal.form.schedule && !schedulePresets.some(p => p[1] === jobModal.form.schedule)">Custom…</option>
+          </select>
+        </div>
+        <div class="col-md-7">
+          <label class="form-label small fw-medium">Cron <span class="text-muted-sm">minute hour day month weekday</span></label>
+          <input type="text" class="form-control font-monospace" x-model="jobModal.form.schedule" @input.debounce.400ms="previewSchedule()" placeholder="0 2 * * *">
+          <div class="text-muted-sm mt-1" x-show="jobModal.preview.length">Next: <span x-text="jobModal.preview.slice(0, 3).map(t => formatTs(t)).join(' · ')"></span></div>
+          <div class="text-danger small mt-1" x-show="jobModal.previewError" x-text="jobModal.previewError"></div>
+        </div>
+
+        <div class="col-12"><hr class="my-1"></div>
+        <div class="col-md-5">
+          <label class="form-label small fw-medium">Alert when</label>
+          <select class="form-select" x-model="jobModal.form.notifyWhen">
+            <template x-for="o in notifyChoices(jobModal.form.type)" :key="o[0]"><option :value="o[0]" x-text="o[1]"></option></template>
+          </select>
+        </div>
+        <div class="col-md-7">
+          <label class="form-label small fw-medium">Email <span class="text-muted-sm">(comma-separated)</span></label>
+          <input type="text" class="form-control" x-model="jobModal.form.emails" placeholder="ops@example.com, me@example.com" :disabled="notifyInfo && !notifyInfo.emailConfigured">
+        </div>
+        <div class="col-12">
+          <label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" x-model="jobModal.form.webhook" :disabled="notifyInfo && !notifyInfo.webhookConfigured">Also post to the webhook (Slack, Teams, Discord…)</label>
+          <div class="text-muted-sm mt-1" x-show="notifyInfo && !notifyInfo.emailConfigured && !notifyInfo.webhookConfigured">An administrator needs to set up alerts first (Schedules → Alert settings).</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="jobModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveJob" :disabled="jobModal.saving"><span x-show="jobModal.saving" class="spinner-border spinner-border-sm me-1"></span>Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Job history modal ===== -->
+<div class="modal-backdrop-custom" x-show="jobRuns.open" x-cloak @click.self="jobRuns.open = false">
+  <div class="modal-panel" style="max-width:860px">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold" x-text="'History — ' + (jobRuns.job ? jobRuns.job.name : '')"></h2>
+      <button class="btn btn-sm btn-outline-soft" @click="jobRuns.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <template x-if="jobRuns.job && jobRuns.job.type === 'analysis' && jobRuns.runs.filter(r => r.summary && r.summary.total !== undefined).length > 1">
+        <div class="mb-3">
+          <div class="section-title mb-1">Findings over time</div>
+          <div style="height:180px; position:relative"><canvas x-effect="drawTrend($el, jobRuns.runs)"></canvas></div>
+        </div>
+      </template>
+      <div class="table-responsive">
+        <table class="table table-modern mb-0">
+          <thead><tr><th>When</th><th>Result</th><th>Took</th><th>Alerted</th><th></th></tr></thead>
+          <tbody>
+            <template x-for="r in jobRuns.runs" :key="r.id">
+              <tr>
+                <td class="text-nowrap"><span x-text="formatTs(r.at)"></span><div class="text-muted-sm" x-text="r.trigger === 'manual' ? 'run by ' + (r.by || 'someone') : 'scheduled'"></div></td>
+                <td><span class="badge rounded-pill" :class="r.ok ? 'badge-soft-success' : 'badge-soft-danger'" x-text="r.ok ? 'OK' : 'FAILED'"></span> <span class="small" x-text="r.message"></span>
+                  <div class="text-danger small" x-show="r.notifyErrors" x-text="(r.notifyErrors || []).join('; ')"></div></td>
+                <td class="text-muted-sm text-nowrap" x-text="r.durationMs !== undefined ? (r.durationMs / 1000).toFixed(1) + ' s' : ''"></td>
+                <td class="text-muted-sm" x-text="(r.notified || []).join(' + ')"></td>
+                <td class="text-end"><a class="btn btn-sm btn-outline-soft" x-show="r.file" :href="`/api/jobs/${jobRuns.job.id}/runs/${r.id}/file`" title="Download"><i class="bi bi-download"></i></a></td>
+              </tr>
+            </template>
+            <tr x-show="!jobRuns.runs.length"><td colspan="5" class="text-center text-muted-sm py-3">No runs yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Alert settings modal (admin) ===== -->
+<div class="modal-backdrop-custom" x-show="notifyModal.open" x-cloak @click.self="notifyModal.open = false">
+  <div class="modal-panel">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold">Alert settings</h2>
+      <button class="btn btn-sm btn-outline-soft" @click="notifyModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="notifyModal.error" x-text="notifyModal.error"></div>
+      <div class="section-title mb-1">Email (SMTP)</div>
+      <div class="row g-2">
+        <div class="col-8"><label class="form-label small mb-0">Server</label><input class="form-control form-control-sm" x-model="notifyModal.form.smtp.host" placeholder="smtp.example.com"></div>
+        <div class="col-4"><label class="form-label small mb-0">Port</label><input class="form-control form-control-sm" x-model.number="notifyModal.form.smtp.port"></div>
+        <div class="col-6"><label class="form-label small mb-0">User</label><input class="form-control form-control-sm" x-model="notifyModal.form.smtp.user" autocomplete="off"></div>
+        <div class="col-6"><label class="form-label small mb-0">Password <span class="text-muted-sm" x-show="notifyModal.info.smtp && notifyModal.info.smtp.hasPassword">(saved — blank keeps it)</span></label><input type="password" class="form-control form-control-sm" x-model="notifyModal.form.smtp.password" autocomplete="new-password"></div>
+        <div class="col-8"><label class="form-label small mb-0">From address</label><input class="form-control form-control-sm" x-model="notifyModal.form.smtp.from" placeholder="db-console@example.com"></div>
+        <div class="col-4 d-flex align-items-end"><label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" x-model="notifyModal.form.smtp.secure">TLS from the start (port 465)</label></div>
+      </div>
+      <div class="section-title mt-3 mb-1">Webhook</div>
+      <div class="row g-2">
+        <div class="col-12"><label class="form-label small mb-0">URL <span class="text-muted-sm">(Slack / Teams / Discord incoming webhook, or your own endpoint)</span></label><input class="form-control form-control-sm" x-model="notifyModal.form.webhookUrl" placeholder="https://hooks.slack.com/services/…"></div>
+        <div class="col-12"><label class="form-label small mb-0">Signing secret <span class="text-muted-sm">(optional — adds an <code>X-DBConsole-Signature</code> HMAC header)</span> <span class="text-muted-sm" x-show="notifyModal.info.hasWebhookSecret">(saved — blank keeps it)</span></label><input type="password" class="form-control form-control-sm" x-model="notifyModal.form.webhookSecret" autocomplete="new-password"></div>
+      </div>
+      <div class="section-title mt-3 mb-1">Links in alerts</div>
+      <input class="form-control form-control-sm" x-model="notifyModal.form.baseUrl" placeholder="https://dbconsole.example.com (this app's public address)">
+      <div class="section-title mt-3 mb-1">Send a test</div>
+      <div class="d-flex gap-2 align-items-center flex-wrap">
+        <input class="form-control form-control-sm" style="max-width:260px" x-model="notifyModal.testEmail" placeholder="you@example.com">
+        <button class="btn btn-outline-soft btn-sm" @click="testNotify(true)" :disabled="notifyModal.testing">Email</button>
+        <button class="btn btn-outline-soft btn-sm" @click="testNotify(false)" :disabled="notifyModal.testing">Webhook</button>
+        <span class="small" :class="notifyModal.testOk ? 'text-success' : 'text-danger'" x-text="notifyModal.testResult"></span>
+      </div>
+      <div class="text-muted-sm mt-1">Tests use the saved settings — save first.</div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="notifyModal.open = false">Close</button>
+      <button class="btn btn-accent" @click="saveNotify" :disabled="notifyModal.saving">Save</button>
     </div>
   </div>
 </div>
@@ -3682,6 +3983,15 @@ function app() {
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
     shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], perms: {}, open_: {}, saving: false, error: '' },
     permissionList: [], permissionPresets: [],
+    jobs: [], jobsLoading: false, jobsTimer: null, notifyInfo: null,
+    jobModal: { open: false, id: null, form: {}, databases: [], error: '', saving: false, preview: [], previewError: '' },
+    jobRuns: { open: false, job: null, runs: [] },
+    notifyModal: { open: false, form: { smtp: {} }, info: {}, error: '', saving: false, testEmail: '', testing: false, testResult: '', testOk: false },
+    schedulePresets: [
+      ['Every 5 minutes', '*/5 * * * *'], ['Every 15 minutes', '*/15 * * * *'], ['Every hour', '0 * * * *'],
+      ['Every day at 02:00', '0 2 * * *'], ['Every day at 07:00', '0 7 * * *'], ['Every Monday at 07:00', '0 7 * * 1'],
+      ['First of the month at 03:00', '0 3 1 * *']
+    ],
     usersView: 'users',
     authLog: { entries: [], total: 0, summary: null, page: 1, size: 50, event: '', q: '', loading: false },
     downloadModal: { open: false, key: '', label: '', database: '', sql: '', format: 'csv', gzip: false, bom: true, nulls: 'empty', stripLimit: false, hasLimit: false, limitText: '', maxRows: '' },
@@ -3905,7 +4215,7 @@ function app() {
       const [path, query = ''] = raw.split('?');
       const segs = path.split('/').filter(Boolean).map((x) => { try { return decodeURIComponent(x); } catch (e) { return x; } });
       const q = new URLSearchParams(query);
-      const tabs = ['runner', 'explore', 'connections', 'queries', 'logs', 'analytics'].concat(this.isAdmin() ? ['users', 'system'] : []);
+      const tabs = ['runner', 'explore', 'connections', 'queries', 'logs', 'analytics', 'schedules'].concat(this.isAdmin() ? ['users', 'system'] : []);
       const tab = tabs.includes(segs[0]) ? segs[0] : 'runner';
       this.routing = true;
       try {
@@ -3983,6 +4293,7 @@ function app() {
       this.activeTab = tab;
       if (tab === 'logs') this.loadLogs(true);
       if (tab === 'analytics') this.loadAnalytics();
+      if (tab === 'schedules') { this.loadJobs(); this.loadNotifyInfo(); }
       if (tab === 'users') this.loadUsers();
       if (tab === 'system') { this.sysCheck = null; this.loadSystemStatus(); }
     },
@@ -3990,7 +4301,7 @@ function app() {
     pageTitle() {
       return {
         runner: 'Query Runner', explore: 'Explore', connections: 'Connections', queries: 'Saved Queries',
-        logs: 'Query Log', analytics: 'Analytics', users: 'Users', system: 'Update & Restart'
+        logs: 'Query Log', analytics: 'Analytics', schedules: 'Schedules', users: 'Users', system: 'Update & Restart'
       }[this.activeTab];
     },
     pageSubtitle() {
@@ -4001,6 +4312,7 @@ function app() {
         queries: 'Reusable SQL — yours, plus queries others have shared with you',
         logs: this.isAdmin() ? 'Everything run against a database, by every user' : 'Everything you have run against a database',
         analytics: this.isAdmin() ? 'Usage across all users and connections' : 'Your usage over time',
+        schedules: 'Run queries, analyses, backups and connection checks on a timetable — and get told when something is wrong',
         users: 'Who can sign in, and what they can do',
         system: 'Pull the latest version from git and restart through PM2'
       }[this.activeTab];
@@ -6562,6 +6874,159 @@ function app() {
     },
 
     // ---- Users (admin) ----
+    // ---- Schedules ----
+    jobIcon(t) { return { query: 'bi-table', analysis: 'bi-clipboard2-pulse', backup: 'bi-cloud-arrow-down', health: 'bi-heart-pulse' }[t] || 'bi-clock'; },
+    jobTypeLabel(t) { return { query: 'Query', analysis: 'Analysis', backup: 'Backup', health: 'Connection check' }[t] || t; },
+    notifyChoices(type) {
+      return {
+        query: [['failure', 'it fails'], ['always', 'every run'], ['rows', 'it returns rows'], ['norows', 'it returns no rows']],
+        analysis: [['failure', 'it fails'], ['always', 'every run'], ['errors', 'there are errors'], ['worse', 'there are more problems than last time']],
+        backup: [['failure', 'it fails'], ['always', 'every run']],
+        health: [['change', 'a connection goes down or comes back'], ['always', 'every check']]
+      }[type] || [];
+    },
+    async loadJobs() {
+      this.jobsLoading = true;
+      try {
+        this.jobs = await this.apiJson('GET', '/api/jobs');
+      } catch (e) { this.showToast(e.message, 'error'); } finally { this.jobsLoading = false; }
+      clearTimeout(this.jobsTimer);
+      // While something is running, keep looking until it has finished.
+      if (this.activeTab === 'schedules' && this.jobs.some(j => j.running)) this.jobsTimer = setTimeout(() => this.loadJobs(), 2500);
+    },
+    async loadNotifyInfo() {
+      try { this.notifyInfo = await this.apiJson('GET', '/api/notify'); } catch (e) { /* ignore */ }
+    },
+    blankJob(type = 'query') {
+      return {
+        type, name: '', connKey: '', database: '', connKeys: [], schedule: '0 2 * * *', sql: '', params: {}, maxRows: 100000, keepFiles: 10, attach: false,
+        notifyWhen: type === 'health' ? 'change' : 'failure', emails: '', webhook: false,
+        backup: { keep: 7, restoreTest: false, schemaOnly: false, upload: { type: '' } }
+      };
+    },
+    jobTypeChanged() {
+      const f = this.jobModal.form;
+      f.notifyWhen = f.type === 'health' ? 'change' : 'failure';
+      if (f.type === 'backup' && f.connKey && !this.connections.some(c => c.key === f.connKey && c.canManage)) { f.connKey = ''; f.database = ''; }
+    },
+    openJobModal(job) {
+      const form = this.blankJob(job ? job.type : 'query');
+      if (job) {
+        Object.assign(form, JSON.parse(JSON.stringify(job)));
+        form.params = form.params || {}; form.connKeys = form.connKeys || [];
+        form.backup = Object.assign({ keep: 7, restoreTest: false, schemaOnly: false }, form.backup || {});
+        form.backup.upload = form.backup.upload || { type: '' };
+      } else {
+        const c = this.selectedConnections()[0] || this.connections[0];
+        if (c) { form.connKey = c.key; form.database = this.currentDb(c); }
+      }
+      this.jobModal = { open: true, id: job ? job.id : null, form, databases: [], error: '', saving: false, preview: [], previewError: '' };
+      if (form.connKey) this.loadJobDatabases(true);
+      this.previewSchedule();
+    },
+    async loadJobDatabases(keep = false) {
+      const f = this.jobModal.form;
+      if (!keep) f.database = '';
+      if (!f.connKey) { this.jobModal.databases = []; return; }
+      try {
+        const list = await this.apiJson('GET', `/api/explore/${f.connKey}/databases`);
+        this.jobModal.databases = list;
+        if (!f.database && list.length) { const c = this.connections.find(x => x.key === f.connKey); f.database = list.includes(c && c.database) ? c.database : list[0]; }
+        else if (f.database && !list.includes(f.database)) this.jobModal.databases = [f.database, ...list];
+      } catch (e) { this.jobModal.error = e.message; }
+    },
+    toggleJobConn(key) {
+      const k = this.jobModal.form.connKeys;
+      this.jobModal.form.connKeys = k.includes(key) ? k.filter(x => x !== key) : [...k, key];
+    },
+    async previewSchedule() {
+      const f = this.jobModal.form;
+      this.jobModal.previewError = ''; this.jobModal.preview = [];
+      if (!f.schedule || f.schedule === '__custom') { if (f.schedule === '__custom') f.schedule = ''; return; }
+      try {
+        const r = await this.apiJson('POST', '/api/schedule/preview', { schedule: f.schedule });
+        this.jobModal.preview = r.next;
+      } catch (e) { this.jobModal.previewError = e.message; }
+    },
+    async saveJob() {
+      this.jobModal.saving = true; this.jobModal.error = '';
+      try {
+        const f = this.jobModal.form;
+        const body = { ...f };
+        if (f.type === 'backup' && !(f.backup.upload && f.backup.upload.type)) body.backup = { ...f.backup, upload: {} };
+        if (this.jobModal.id) await this.apiJson('PUT', `/api/jobs/${this.jobModal.id}`, body);
+        else await this.apiJson('POST', '/api/jobs', body);
+        this.jobModal.open = false;
+        await this.loadJobs();
+        this.showToast('Job saved');
+      } catch (e) { this.jobModal.error = e.message; } finally { this.jobModal.saving = false; }
+    },
+    async runJobNow(j) {
+      try {
+        await this.apiJson('POST', `/api/jobs/${j.id}/run`);
+        j.running = true;
+        this.showToast('Started — the result appears in the list when it finishes');
+        clearTimeout(this.jobsTimer);
+        this.jobsTimer = setTimeout(() => this.loadJobs(), 1200);
+      } catch (e) { this.showToast(e.message, 'error'); }
+    },
+    async toggleJob(j) {
+      try { await this.apiJson('PUT', `/api/jobs/${j.id}`, { enabled: !j.enabled }); await this.loadJobs(); } catch (e) { this.showToast(e.message, 'error'); }
+    },
+    async removeJob(j) {
+      const ok = await this.askConfirm('Delete job?', `"${j.name}" and its saved results are removed. Backups it made stay on the server's disk.`, { confirmLabel: 'Delete', danger: true });
+      if (!ok) return;
+      try { await this.apiJson('DELETE', `/api/jobs/${j.id}`); await this.loadJobs(); this.showToast('Job deleted'); } catch (e) { this.showToast(e.message, 'error'); }
+    },
+    async openJobRuns(j) {
+      this.jobRuns = { open: true, job: j, runs: [] };
+      try { this.jobRuns.runs = await this.apiJson('GET', `/api/jobs/${j.id}/runs?limit=100`); } catch (e) { this.showToast(e.message, 'error'); }
+    },
+    drawTrend(canvas, runs) {
+      if (!window.Chart) return;
+      const pts = Alpine.raw(runs).filter(r => r.summary && r.summary.total !== undefined).slice().reverse();
+      const prev = window.Chart.getChart(canvas);
+      if (prev) prev.destroy();
+      new window.Chart(canvas, {
+        type: 'line',
+        data: {
+          labels: pts.map(r => new Date(r.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + new Date(r.at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })),
+          datasets: [
+            { label: 'Errors', data: pts.map(r => r.summary.error), borderColor: '#ef4444', backgroundColor: '#ef444422', tension: .2 },
+            { label: 'Warnings', data: pts.map(r => r.summary.warning), borderColor: '#f59e0b', backgroundColor: '#f59e0b22', tension: .2 }
+          ]
+        },
+        options: { responsive: true, maintainAspectRatio: false, animation: false, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+      });
+    },
+    async openNotifyModal() {
+      try {
+        const info = await this.apiJson('GET', '/api/notify');
+        this.notifyModal = {
+          open: true, info, error: '', saving: false, testEmail: '', testing: false, testResult: '', testOk: false,
+          form: { smtp: { host: info.smtp.host, port: info.smtp.port, user: info.smtp.user, from: info.smtp.from, secure: info.smtp.secure, password: '' }, webhookUrl: info.webhookUrl, webhookSecret: '', baseUrl: info.baseUrl }
+        };
+      } catch (e) { this.showToast(e.message, 'error'); }
+    },
+    async saveNotify() {
+      this.notifyModal.saving = true; this.notifyModal.error = '';
+      try {
+        this.notifyModal.info = await this.apiJson('PUT', '/api/notify', this.notifyModal.form);
+        this.notifyModal.form.smtp.password = ''; this.notifyModal.form.webhookSecret = '';
+        this.notifyInfo = this.notifyModal.info;
+        this.showToast('Alert settings saved');
+      } catch (e) { this.notifyModal.error = e.message; } finally { this.notifyModal.saving = false; }
+    },
+    async testNotify(email) {
+      const m = this.notifyModal;
+      m.testing = true; m.testResult = '';
+      try {
+        const r = await this.apiJson('POST', '/api/notify/test', email ? { email: m.testEmail } : { webhook: true });
+        m.testOk = r.errors.length === 0 && r.sent.length > 0;
+        m.testResult = m.testOk ? 'Sent' : (r.errors[0] || 'Nothing was sent — enter an address');
+      } catch (e) { m.testOk = false; m.testResult = e.message; } finally { m.testing = false; }
+    },
+
     authFilterParams() {
       const p = new URLSearchParams();
       if (this.authLog.event) p.set('event', this.authLog.event);
