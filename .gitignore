@@ -18,3 +18,6 @@ todos.txt
 # Runtime data: created by the app on first start (connections with
 # passwords, users, sessions, query log). Never commit it.
 data/
+
+# Local PM2 config (copy ecosystem_copy.config.js to this name and edit it)
+ecosystem.config.js
