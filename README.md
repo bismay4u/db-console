@@ -97,6 +97,14 @@ When a database is open, the left menu slides away and is replaced by a full-hei
 
 Rule settings are stored in `data/analyzer_rules.json`. Open `#/explore/<connection>/<database>?tab=analysis` to share the analysis.
 
+**Looking at data**
+
+* **Related rows** (the ⛓ icon on every grid row): the rows this row points to through foreign keys, and for each table that points at it how many rows do, with one click to show exactly those rows
+* **Column profile** (the chart icon on a column in **Structure**): rows, NULLs, distinct values, smallest / largest / average, lengths and empty strings, the ten most common values and a distribution chart. Tables of millions of rows are profiled on a sample, and the profile says so
+* **Replace across the database** (**Search** tab → *Replace ‘…’ with…*): find text in every plain text column of every table, preview the affected rows and before/after samples, then replace it all in one transaction — any error leaves the data untouched. Case-sensitive; non-InnoDB tables (which cannot roll back) are never changed
+* The row editor validates and formats **JSON** (Format / Compact) and has date, date-time and time pickers
+* **Diagram** can be downloaded as **SVG** or **PNG**
+
 **Tables**
 
 * **Data** tab: pagination, multi-column sorting (Shift+click a header to add a sort), search across all columns, and Adminer-style filters: column (or any column) + operator (`=`, `≠`, `<`, `>`, contains, starts/ends with, `LIKE`, `REGEXP`, `IN`, `IS NULL`...) + value, combined with AND; applied on the server, and used by CSV export too
@@ -250,7 +258,9 @@ CSV/TSV: `NULL` is written as `\N` (the MySQL `LOAD DATA` convention; a real `\N
 
 ---
 
-### 📥 Import (CSV / TSV)
+### 📥 Import (CSV / TSV / Excel / JSON)
+
+Besides CSV and TSV you can import **Excel** files (`.xlsx`, `.xls`, `.ods`; pick the sheet; dates become real dates, empty cells NULL) and **JSON** (an array of objects, or one object per line; the keys become the columns, nested values are kept as JSON text). Those are converted to CSV in your browser (keep them under about 50 MB; the SheetJS library is loaded only when you choose such a file) and then go through the same mapping and streaming import as a CSV. SQL `INSERT` files are restored with **Restore**.
 
 Import a CSV or TSV file — also gzipped (`.csv.gz`) — into an existing table:
 

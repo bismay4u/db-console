@@ -13,6 +13,7 @@ const jobs = require('./api/jobs');
 const scheduler = require('./api/scheduler');
 const notify = require('./api/notify');
 const cron = require('./api/cron');
+const insight = require('./api/insight');
 const system = require('./api/system');
 const schema = require('./api/schema');
 const serverAdmin = require('./api/serveradmin');
@@ -743,6 +744,13 @@ app.get('/api/explore/:key/:database/info', requireAuth, schemaRoute((req) => sc
 app.put('/api/explore/:key/:database', requireAuth, schemaRoute((req, b) => schema.alterDatabase(req.params.key, req.params.database, b)));
 app.delete('/api/explore/:key/:database', requireAuth, schemaRoute((req, b) => schema.dropDatabase(req.params.key, req.params.database, b)));
 app.get('/api/explore/:key/:database/search', requireAuth, schemaRoute((req) => schema.searchDatabase(req.params.key, req.params.database, req.query.q), { logged: false }));
+app.post('/api/explore/:key/:database/search-replace', requireAuth, schemaRoute((req, b) => insight.searchReplace(req.params.key, req.params.database, { ...b, preview: b.preview !== false })));
+app.get('/api/explore/:key/:database/:table/profile', requireAuth, schemaRoute((req) => insight.profileColumn(req.params.key, req.params.database, req.params.table, req.query.column), { logged: false }));
+app.get('/api/explore/:key/:database/:table/related', requireAuth, schemaRoute((req) => {
+  let where;
+  try { where = JSON.parse(req.query.where || '{}'); } catch (e) { throw new Error('where must be JSON'); }
+  return insight.relatedRows(req.params.key, req.params.database, req.params.table, where);
+}, { logged: false }));
 app.get('/api/explore/:key/:database/diagram', requireAuth, schemaRoute((req) => schema.getDiagram(req.params.key, req.params.database), { logged: false }));
 app.get('/api/explore/:key/:database/foreign-keys', requireAuth, schemaRoute((req) => schema.getDatabaseForeignKeys(req.params.key, req.params.database), { logged: false }));
 // Table and column names of a database, for SQL autocomplete: { table: [columns] }.

@@ -1131,6 +1131,8 @@ Separate multiple statements with ; — highlight text to run just that part."
                         <button class="btn btn-outline-soft btn-sm" title="Zoom in" @click="diagramZoom(0.1)"><i class="bi bi-zoom-in"></i></button>
                         <button class="btn btn-outline-soft btn-sm" @click="diagramAutoLayout()"><i class="bi bi-grid-3x3-gap me-1"></i>Auto layout</button>
                         <button class="btn btn-outline-soft btn-sm" @click="loadDiagram()"><i class="bi bi-arrow-clockwise"></i></button>
+                        <button class="btn btn-outline-soft btn-sm" :disabled="!diagram.tables.length" @click="exportDiagram('svg')" title="Download as an SVG image"><i class="bi bi-filetype-svg me-1"></i>SVG</button>
+                        <button class="btn btn-outline-soft btn-sm" :disabled="!diagram.tables.length" @click="exportDiagram('png')" title="Download as a PNG image"><i class="bi bi-file-earmark-image me-1"></i>PNG</button>
                       </div>
                     </div>
                     <div class="alert alert-danger py-2 small m-2" x-show="diagram.error" x-text="diagram.error"></div>
@@ -1277,6 +1279,9 @@ Separate multiple statements with ; — highlight text to run just that part."
                         <span x-show="dbSearch.running" class="spinner-border spinner-border-sm me-1"></span>Search
                       </button>
                     </div>
+                    <div class="mb-2" x-show="dbSearch.term.trim()">
+                      <button class="perm-update btn btn-outline-soft btn-sm" @click="openReplace()"><i class="bi bi-arrow-left-right me-1"></i>Replace ‘<span x-text="dbSearch.term.trim().slice(0, 30)"></span>’ with…</button>
+                    </div>
                     <div class="alert alert-danger py-2 small" x-show="dbSearch.error" x-text="dbSearch.error"></div>
                     <template x-if="dbSearch.result">
                       <div>
@@ -1330,7 +1335,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <div class="d-flex align-items-center gap-2" x-show="exploreView==='data'">
                   <button class="btn btn-outline-soft btn-sm" @click="loadExploreRows" title="Reload"><i class="bi bi-arrow-clockwise"></i></button>
                   <a class="btn btn-outline-soft btn-sm" :href="tableExportUrl()" target="_blank" :title="exploreFiltersActive() ? 'Exports the rows matching the current search/filters' : 'Exports the whole table'"><i class="bi bi-download me-1"></i>Export CSV</a>
-                  <button class="perm-insert btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal"><i class="bi bi-upload me-1"></i>Import CSV</button>
+                  <button class="perm-insert btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal" title="CSV, TSV, Excel or JSON"><i class="bi bi-upload me-1"></i>Import</button>
                   <button class="perm-insert btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow()"><i class="bi bi-plus-lg me-1"></i>Add row</button>
                 </div>
               </div>
@@ -1395,6 +1400,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <table class="table table-modern mb-0">
                       <thead>
                         <tr>
+                          <th style="width:1.8rem" title="Related rows"></th>
                           <th class="row-actions perm-rows" x-show="canEditRows()">
                             <input type="checkbox" class="form-check-input" title="Select all rows on this page"
                                    :checked="exploreRows.length && exploreSelected.length === exploreRows.length"
@@ -1412,6 +1418,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <tbody>
                         <template x-for="(row, ridx) in exploreRows" :key="ridx">
                           <tr :class="isRowSelected(row) && 'row-selected'">
+                            <td class="px-1"><button class="btn btn-sm btn-link p-0 text-muted" title="Rows this row points to, and rows that point at it" :disabled="!explorePrimaryKey.length" @click="openRelated(row)"><i class="bi bi-diagram-2"></i></button></td>
                             <td class="row-actions perm-rows" x-show="canEditRows()">
                               <input type="checkbox" class="form-check-input" :checked="isRowSelected(row)" @change="toggleRowSelected(row)">
                               <button class="perm-update btn btn-sm btn-outline-soft" title="Edit row" @click="openEditRow(row)"><i class="bi bi-pencil"></i></button>
@@ -1490,7 +1497,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                     <div class="table-responsive">
                       <table class="table table-modern mb-0">
                         <thead>
-                          <tr><th>Column</th><th>Type</th><th>Null</th><th>Default</th><th>Extra</th><th>Comment</th></tr>
+                          <tr><th>Column</th><th>Type</th><th>Null</th><th>Default</th><th>Extra</th><th>Comment</th><th style="width:2rem"></th></tr>
                         </thead>
                         <tbody>
                           <template x-for="c in (exploreSchema ? exploreSchema.columns : [])" :key="c.name">
@@ -1505,6 +1512,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                               <td class="text-muted-sm" x-text="describeDefault(c.default)"></td>
                               <td class="text-muted-sm" x-text="[c.autoIncrement ? 'AUTO_INCREMENT' : '', c.onUpdate ? 'ON UPDATE CURRENT_TIMESTAMP' : '', c.generated ? c.generated.kind + ' AS (' + c.generated.expression + ')' : ''].filter(Boolean).join(' · ')"></td>
                               <td class="text-muted-sm" x-text="c.comment"></td>
+                              <td><button class="btn btn-sm btn-link p-0 text-muted" title="What is in this column?" @click="openProfile(c.name)"><i class="bi bi-bar-chart"></i></button></td>
                             </tr>
                           </template>
                         </tbody>
@@ -2361,6 +2369,127 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
+<!-- ===== Related rows ===== -->
+<div class="modal-backdrop-custom" x-show="relatedModal.open" x-cloak @click.self="relatedModal.open = false">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold" x-text="'Related to ' + exploreTable + ' · ' + describeWhere(relatedModal.where || {})"></h2><button class="btn btn-sm btn-outline-soft" @click="relatedModal.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom" style="max-height:65vh; overflow-y:auto">
+      <div class="text-muted-sm" x-show="relatedModal.loading"><span class="spinner-border spinner-border-sm me-1"></span>Looking…</div>
+      <div class="alert alert-danger py-2 small" x-show="relatedModal.error" x-text="relatedModal.error"></div>
+      <template x-if="relatedModal.data">
+        <div>
+          <div class="section-title mb-1">Points to</div>
+          <div class="text-muted-sm mb-2" x-show="!relatedModal.data.parents.length">This table has no foreign keys.</div>
+          <template x-for="p in relatedModal.data.parents" :key="p.fk">
+            <div class="border rounded-2 p-2 mb-2">
+              <div class="d-flex align-items-center gap-2">
+                <i class="bi bi-arrow-up-right text-muted"></i>
+                <strong x-text="p.table"></strong><span class="text-muted-sm" x-text="p.columns.join(', ') + ' → ' + p.refColumns.join(', ')"></span>
+                <button class="btn btn-sm btn-outline-soft ms-auto" x-show="p.row" @click="openRelatedTable(p.table, p.filter)">Open</button>
+              </div>
+              <div class="text-muted-sm mt-1" x-show="!p.row" x-text="p.reason === 'null' ? 'The foreign key is NULL — it points at nothing.' : 'The referenced row does not exist.'"></div>
+              <div class="small mt-1" x-show="p.row" x-text="relatedSummary(p.row)"></div>
+            </div>
+          </template>
+          <div class="section-title mt-3 mb-1">Referenced by</div>
+          <div class="text-muted-sm" x-show="!relatedModal.data.children.length">Nothing points at this row.</div>
+          <template x-for="c in relatedModal.data.children" :key="c.fk + c.table">
+            <div class="border rounded-2 p-2 mb-2 d-flex align-items-center gap-2">
+              <i class="bi bi-arrow-down-left text-muted"></i>
+              <strong x-text="c.table"></strong><span class="text-muted-sm" x-text="c.columns.join(', ')"></span>
+              <span class="badge rounded-pill ms-2" :class="c.count ? 'badge-soft-success' : ''" x-text="c.count.toLocaleString() + (c.count === 1 ? ' row' : ' rows')"></span>
+              <button class="btn btn-sm btn-outline-soft ms-auto" x-show="c.count" @click="openRelatedTable(c.table, c.filter)">Show them</button>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Column profile ===== -->
+<div class="modal-backdrop-custom" x-show="profileModal.open" x-cloak @click.self="profileModal.open = false">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold" x-text="exploreTable + '.' + profileModal.column"></h2><button class="btn btn-sm btn-outline-soft" @click="profileModal.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom" style="max-height:70vh; overflow-y:auto">
+      <div class="text-muted-sm" x-show="profileModal.loading"><span class="spinner-border spinner-border-sm me-1"></span>Reading the column…</div>
+      <div class="alert alert-danger py-2 small" x-show="profileModal.error" x-text="profileModal.error"></div>
+      <template x-if="profileModal.data">
+        <div>
+          <div class="text-muted-sm mb-2"><code x-text="profileModal.data.type"></code><span x-show="profileModal.data.sampled" x-text="' · based on the first ' + Number(profileModal.data.sampleRows).toLocaleString() + ' rows'"></span></div>
+          <div class="row g-2 mb-3">
+            <template x-for="st in profileStats()" :key="st[0]">
+              <div class="col-6 col-md-3"><div class="border rounded-2 p-2"><div class="text-muted-sm" x-text="st[0]"></div><div class="fw-semibold text-truncate" :title="st[1]" x-text="st[1]"></div></div></div>
+            </template>
+          </div>
+          <template x-if="profileModal.data.histogram">
+            <div class="mb-3">
+              <div class="section-title mb-1">Distribution</div>
+              <div class="d-flex align-items-end gap-1" style="height:90px">
+                <template x-for="(h, i) in profileModal.data.histogram" :key="i">
+                  <div class="flex-fill" :title="h.from.toLocaleString(undefined, {maximumFractionDigits: 2}) + ' – ' + h.to.toLocaleString(undefined, {maximumFractionDigits: 2}) + ': ' + h.count.toLocaleString()"
+                       :style="`background:var(--accent); opacity:.75; border-radius:3px 3px 0 0; height:${Math.max(2, h.count / Math.max(...profileModal.data.histogram.map(x => x.count), 1) * 100)}%`"></div>
+                </template>
+              </div>
+            </div>
+          </template>
+          <template x-if="profileModal.data.top">
+            <div>
+              <div class="section-title mb-1">Most common values</div>
+              <template x-for="t in profileModal.data.top" :key="String(t.value) + t.isNull">
+                <div class="d-flex align-items-center gap-2 small mb-1">
+                  <div class="text-truncate" style="width:34%" :title="t.value" :class="t.isNull && 'cell-null'" x-text="t.isNull ? 'NULL' : (t.value === '' ? '(empty)' : t.value)"></div>
+                  <div class="flex-grow-1" style="background:var(--bg); border-radius:4px; height:12px"><div :style="`width:${t.count / profileModal.data.total * 100}%; min-width:2px; height:100%; background:var(--accent); opacity:.65; border-radius:4px`"></div></div>
+                  <div class="text-muted-sm text-end" style="width:7.5rem" x-text="t.count.toLocaleString() + ' (' + (t.count / profileModal.data.total * 100).toFixed(1) + '%)'"></div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Search & replace ===== -->
+<div class="modal-backdrop-custom" x-show="replaceModal.open" x-cloak @click.self="!replaceModal.running && (replaceModal.open = false)">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">Replace text across <span x-text="exploreDatabase"></span></h2><button class="btn btn-sm btn-outline-soft" @click="replaceModal.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom" style="max-height:70vh; overflow-y:auto">
+      <div class="alert alert-danger py-2 small" x-show="replaceModal.error" style="white-space:pre-wrap" x-text="replaceModal.error"></div>
+      <div class="row g-2">
+        <div class="col-md-6"><label class="form-label small fw-medium">Find</label><input class="form-control form-control-sm" x-model="replaceModal.find" @input="replaceModal.result = null"></div>
+        <div class="col-md-6"><label class="form-label small fw-medium">Replace with</label><input class="form-control form-control-sm" x-model="replaceModal.replace" @input="replaceModal.result = null" placeholder="(nothing — deletes the text)"></div>
+      </div>
+      <div class="text-muted-sm mt-1">Case-sensitive, in plain text columns (CHAR, VARCHAR, TEXT) of every table. Binary and JSON columns are left alone.</div>
+      <div class="mt-2"><button class="btn btn-outline-soft btn-sm" @click="previewReplace()" :disabled="replaceModal.running || !replaceModal.find"><span x-show="replaceModal.running" class="spinner-border spinner-border-sm me-1"></span>Preview</button></div>
+      <template x-if="replaceModal.result && replaceModal.result.preview">
+        <div class="mt-3">
+          <div class="small mb-2"><strong x-text="replaceModal.result.occurrences.toLocaleString()"></strong> occurrence(s) in <strong x-text="replaceModal.result.rows.toLocaleString()"></strong> row(s) of <strong x-text="replaceModal.result.columns"></strong> column(s).</div>
+          <div class="text-muted-sm" x-show="!replaceModal.result.found.length">Nothing to replace.</div>
+          <template x-for="f in replaceModal.result.found" :key="f.table + f.column">
+            <div class="border rounded-2 p-2 mb-2">
+              <div class="d-flex align-items-center gap-2"><strong x-text="f.table + '.' + f.column"></strong><span class="text-muted-sm" x-text="f.rows.toLocaleString() + ' row(s)'"></span>
+                <span class="badge rounded-pill badge-soft-danger" x-show="f.engine && f.engine.toLowerCase() !== 'innodb'" :title="'Tables that cannot roll back are never changed'" x-text="f.engine + ' — will be skipped'"></span></div>
+              <template x-for="(sm, i) in f.sample" :key="i">
+                <div class="small mt-1 font-monospace" style="word-break:break-all"><span class="text-danger" x-text="sm.before"></span><br><span class="text-success" x-text="sm.after"></span></div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+      <template x-if="replaceModal.result && !replaceModal.result.preview">
+        <div class="alert alert-success py-2 small mt-3"><span x-text="replaceModal.result.rowsChanged.toLocaleString()"></span> row(s) changed in <span x-text="replaceModal.result.applied.length"></span> column(s).
+          <div x-show="replaceModal.result.skipped.length" x-text="'Skipped (cannot roll back): ' + replaceModal.result.skipped.join(', ')"></div></div>
+      </template>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="replaceModal.open = false">Close</button>
+      <button class="btn btn-danger" x-show="replaceModal.result && replaceModal.result.preview && replaceModal.result.found.length" @click="applyReplace()" :disabled="replaceModal.running">Replace everything shown</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Analysis: dismiss + apply fix ===== -->
 <div class="modal-backdrop-custom" x-show="dismissModal.open" x-cloak @click.self="dismissModal.open = false">
   <div class="modal-panel" style="max-width:480px">
@@ -2680,8 +2809,15 @@ Separate multiple statements with ; — highlight text to run just that part."
                 </select>
               </template>
               <template x-if="f.kind === 'textarea'">
-                <textarea class="form-control form-control-sm" rows="3" x-model="f.value" :disabled="!!(f.isNull || (f.fn && !functionTakesArg(f.fn)))"
-                          :placeholder="exploreRowModal.mode === 'insert' ? 'default' : ''"></textarea>
+                <div>
+                  <textarea class="form-control form-control-sm" :class="jsonish(f.value) && 'font-monospace'" :rows="jsonish(f.value) ? 8 : 3" x-model="f.value" :disabled="!!(f.isNull || (f.fn && !functionTakesArg(f.fn)))"
+                            :placeholder="exploreRowModal.mode === 'insert' ? 'default' : ''"></textarea>
+                  <div class="d-flex align-items-center gap-2 mt-1 small" x-show="jsonish(f.value)">
+                    <a href="#" class="text-decoration-none" @click.prevent="f.value = JSON.stringify(JSON.parse(f.value), null, 2)" x-show="jsonError(f.value) === ''">Format</a>
+                    <a href="#" class="text-decoration-none" @click.prevent="f.value = JSON.stringify(JSON.parse(f.value))" x-show="jsonError(f.value) === ''">Compact</a>
+                    <span :class="jsonError(f.value) === '' ? 'text-success' : 'text-danger'" x-text="jsonError(f.value) === '' ? 'Valid JSON' : 'Not valid JSON — ' + jsonError(f.value)"></span>
+                  </div>
+                </div>
               </template>
               <template x-if="f.kind === 'blob'">
                 <div class="d-flex align-items-center gap-2 small">
@@ -2690,9 +2826,9 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <input type="file" class="form-control form-control-sm" style="max-width:260px" :disabled="!!(f.isNull)" @change="loadFieldFile(f, $event)">
                 </div>
               </template>
-              <template x-if="['text', 'date', 'datetime', 'hex'].includes(f.kind)">
+              <template x-if="['text', 'date', 'datetime', 'time', 'hex'].includes(f.kind)">
                 <input class="form-control form-control-sm" x-model="f.value"
-                       :type="f.kind === 'date' ? 'date' : (f.kind === 'datetime' ? 'datetime-local' : 'text')" :step="f.kind === 'datetime' ? 1 : null"
+                       :type="f.kind === 'date' ? 'date' : (f.kind === 'datetime' ? 'datetime-local' : (f.kind === 'time' ? 'time' : 'text'))" :step="f.kind === 'datetime' || f.kind === 'time' ? 1 : null"
                        :placeholder="f.kind === 'hex' ? 'hex bytes, e.g. 0a1b2c' : (exploreRowModal.mode === 'insert' ? (f.autoIncrement ? 'auto' : 'default') : '')"
                        :disabled="!!(f.isNull || (exploreRowModal.mode === 'edit' && f.pk) || (f.fn && !functionTakesArg(f.fn)))">
               </template>
@@ -2748,12 +2884,14 @@ Separate multiple statements with ; — highlight text to run just that part."
       <!-- Step 1: pick file -->
       <template x-if="importModal.step === 'pick'">
         <div>
-          <label class="form-label small fw-medium">CSV or TSV file (the first row must be a header)</label>
-          <input type="file" accept=".csv,.tsv,.txt,.gz,text/csv,text/tab-separated-values" class="form-control form-control-sm" @change="onImportFileSelected($event)">
+          <label class="form-label small fw-medium">CSV, TSV, Excel or JSON file (the first row / the keys of the objects become the header)</label>
+          <input type="file" accept=".csv,.tsv,.txt,.gz,.xlsx,.xls,.xlsm,.ods,.json,.ndjson,.jsonl,text/csv,text/tab-separated-values,application/json" class="form-control form-control-sm" @change="onImportFileSelected($event)">
           <div class="text-muted-sm mt-2">
-            The file is streamed to the server and inserted in batches as it uploads, so files with millions of rows work.
+            CSV / TSV files are streamed to the server and inserted in batches as they upload, so files with millions of rows work.
             <code>.gz</code> files are accepted too. <code>\N</code> is read as NULL, as in DB Console's own exports.
+            Excel (<code>.xlsx</code>, <code>.xls</code>, <code>.ods</code>) and JSON (an array of objects, or one object per line) files are converted to CSV in your browser first, so keep those under about 50 MB; for SQL <code>INSERT</code> files use Restore.
           </div>
+          <div class="text-muted-sm mt-2" x-show="importModal.converting === true"><span class="spinner-border spinner-border-sm me-1"></span>Converting…</div>
         </div>
       </template>
 
@@ -2764,6 +2902,12 @@ Separate multiple statements with ; — highlight text to run just that part."
             <div>
               <label class="form-label small fw-medium mb-1">File</label>
               <div class="small"><i class="bi bi-file-earmark-text me-1"></i><span x-text="(importModal.file || {}).name"></span> · <span x-text="formatBytes((importModal.file || {}).size || 0)"></span></div>
+              <div class="text-muted-sm" x-show="importModal.convertedFrom">Converted from <span x-text="importModal.convertedFrom"></span> in the browser</div>
+              <div class="mt-1" x-show="importModal.sheetNames && importModal.sheetNames.length > 1">
+                <select class="form-select form-select-sm" style="width:auto" x-model="importModal.sheet" @change="switchImportSheet()">
+                  <template x-for="n in importModal.sheetNames" :key="n"><option :value="n" x-text="'Sheet: ' + n"></option></template>
+                </select>
+              </div>
             </div>
             <div>
               <label class="form-label small fw-medium mb-1">Format</label>
@@ -3983,6 +4127,7 @@ Separate multiple statements with ; — highlight text to run just that part."
 // would wrap it in a proxy, which CodeMirror doesn't survive).
 let sqlCm = null;
 const numericColCache = new WeakMap(); // statement result -> its numeric columns (not reactive)
+let importWorkbook = null; // the Excel file being imported (not reactive)
 let routeQueue = Promise.resolve(); // see applyRoute()
 
 function app() {
@@ -4037,6 +4182,9 @@ function app() {
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
     shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], perms: {}, open_: {}, saving: false, error: '' },
     permissionList: [], permissionPresets: [],
+    relatedModal: { open: false, loading: false, error: '', data: null, where: null },
+    profileModal: { open: false, loading: false, error: '', data: null, column: '' },
+    replaceModal: { open: false, find: '', replace: '', running: false, error: '', result: null },
     dismissModal: { open: false, finding: null, reason: '', saving: false },
     applyModal: { open: false, finding: null, sql: '', message: '', destructive: false, denied: '', error: '', running: false },
     jobs: [], jobsLoading: false, jobsTimer: null, notifyInfo: null,
@@ -5080,6 +5228,62 @@ function app() {
       this.activeTab = 'runner';
       this.$nextTick(() => { if (sqlCm) sqlCm.setValue(f.fix); });
     },
+    // ---- JSON in the row editor ----
+    jsonish(v) { return typeof v === 'string' && /^\s*[\[{]/.test(v) && /[\]}]\s*$/.test(v); },
+    jsonError(v) { try { JSON.parse(v); return ''; } catch (e) { return e.message.replace(/^JSON\.parse: /, '').slice(0, 90); } },
+
+    // ---- Related rows ----
+    async openRelated(row) {
+      this.relatedModal = { open: true, loading: true, error: '', data: null, where: this.rowWhere(row) };
+      try {
+        this.relatedModal.data = await this.apiJson('GET', `${this.tableBase()}/related?where=${encodeURIComponent(JSON.stringify(this.relatedModal.where))}`);
+      } catch (e) { this.relatedModal.error = e.message; } finally { this.relatedModal.loading = false; }
+    },
+    relatedSummary(row) {
+      return Object.entries(row).slice(0, 6).map(([k, v]) => `${k}: ${v === null ? 'NULL' : (typeof v === 'object' ? (v.__hex !== undefined ? '0x' + v.__hex : '(binary)') : String(v).slice(0, 40))}`).join(' · ');
+    },
+    async openRelatedTable(table, filters) {
+      this.relatedModal.open = false;
+      await this.openReferencedTable({ refDb: this.exploreDatabase, refTable: table }, filters);
+    },
+
+    // ---- Column profile ----
+    async openProfile(column) {
+      this.profileModal = { open: true, loading: true, error: '', data: null, column };
+      try {
+        this.profileModal.data = await this.apiJson('GET', `${this.tableBase()}/profile?column=${encodeURIComponent(column)}`);
+      } catch (e) { this.profileModal.error = e.message; } finally { this.profileModal.loading = false; }
+    },
+    profileStats() {
+      const d = this.profileModal.data;
+      if (!d) return [];
+      const n = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+      const out = [['Rows', n(d.total)], ['NULL', `${n(d.nulls)} (${d.total ? (d.nulls / d.total * 100).toFixed(1) : 0}%)`]];
+      if (d.distinct !== null) out.push(['Distinct values', n(d.distinct)], ['Smallest', d.min === null ? '—' : d.min], ['Largest', d.max === null ? '—' : d.max]);
+      if (d.avg !== undefined) out.push(['Average', n(d.avg)]);
+      if (d.minLength !== undefined) out.push(['Length', `${n(d.minLength)} – ${n(d.maxLength)}`], ['Average length', n(d.avgLength)], ['Empty strings', n(d.emptyStrings)]);
+      return out;
+    },
+
+    // ---- Search & replace ----
+    openReplace() { this.replaceModal = { open: true, find: this.dbSearch.term.trim(), replace: '', running: false, error: '', result: null }; },
+    async previewReplace() {
+      const m = this.replaceModal;
+      m.running = true; m.error = ''; m.result = null;
+      try { m.result = await this.apiJson('POST', `${this.exploreBase()}/search-replace`, { find: m.find, replace: m.replace, preview: true }); } catch (e) { m.error = e.message; } finally { m.running = false; }
+    },
+    async applyReplace() {
+      const m = this.replaceModal;
+      const r = m.result;
+      const ok = await this.askConfirm('Replace in the database?', `${r.occurrences.toLocaleString()} occurrence(s) of “${m.find}” in ${r.rows.toLocaleString()} row(s) will be changed. It runs as one transaction, so any error leaves the data untouched, but a successful replace cannot be undone.`, { confirmLabel: 'Replace', danger: true });
+      if (!ok) return;
+      m.running = true; m.error = '';
+      try {
+        m.result = await this.apiJson('POST', `${this.exploreBase()}/search-replace`, { find: m.find, replace: m.replace, preview: false });
+        if (this.exploreTable) this.loadExploreRows && this.loadExploreRows();
+      } catch (e) { m.error = e.message; } finally { m.running = false; }
+    },
+
     // ---- Dismissing and applying findings ----
     fixRunnable(f) {
       return Boolean(f.fix) && !/^\s*(--|#|\/\*)/.test(f.fix) && !/^\s*\/\*[\s\S]*\*\/\s*$/.test(f.fix);
@@ -5328,6 +5532,50 @@ function app() {
       return this.diagramLines().map((l) =>
         `<g${hover && (hover === l.from || hover === l.to) ? ' class="hl"' : ''}><title>${e(l.title)}</title><path d="${l.d}"></path><circle cx="${l.x2}" cy="${l.y2}" r="3"></circle></g>`
       ).join('');
+    },
+    // A standalone SVG of the diagram as arranged on screen (positions included).
+    diagramSvgText() {
+      const { width, head, row } = this.DIAGRAM;
+      const size = this.diagramSize();
+      const e = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const fit = (t, px) => { const max = Math.max(3, Math.floor(px / 6.6)); return t.length > max ? t.slice(0, max - 1) + '…' : t; };
+      const fkCols = this.diagramFkCols();
+      const out = [`<svg xmlns="http://www.w3.org/2000/svg" width="${size.w}" height="${size.h}" viewBox="0 0 ${size.w} ${size.h}" font-family="Inter, Arial, sans-serif" font-size="12">`,
+        `<rect width="100%" height="100%" fill="#ffffff"/>`];
+      for (const l of this.diagramLines()) out.push(`<path d="${l.d}" fill="none" stroke="#8b95a7" stroke-width="1.4" opacity=".8"/><circle cx="${l.x2}" cy="${l.y2}" r="3" fill="#8b95a7"/>`);
+      for (const t of this.diagram.tables) {
+        const p = this.diagram.pos[t.name]; if (!p) continue;
+        const h = this.diagramHeight(t);
+        out.push(`<g transform="translate(${p.x},${p.y})"><rect width="${width}" height="${h}" rx="8" fill="#ffffff" stroke="#d7dbe7"/>`,
+          `<path d="M0,${head} V8 a8,8 0 0 1 8,-8 H${width - 8} a8,8 0 0 1 8,8 V${head} Z" fill="${t.view ? '#f1f3f8' : '#eceefe'}"/>`,
+          `<text x="10" y="${head / 2 + 4}" font-weight="700" fill="${t.view ? '#6b7280' : '#4a5df9'}">${e(fit((t.view ? '👁 ' : '') + t.name, width - 20))}</text>`);
+        t.columns.forEach((c, i) => {
+          const y = head + i * row + row / 2 + 4;
+          out.push(`<text x="10" y="${y}" font-weight="${c.pk ? 700 : 400}" fill="#1f2937">${e((c.pk ? '🔑 ' : fkCols[t.name + '.' + c.name] ? '🔗 ' : '') + fit(c.name, 120))}</text>`,
+            `<text x="${width - 8}" y="${y}" text-anchor="end" fill="#8b95a7" font-size="10">${e(fit(String(c.type || ''), 80))}</text>`);
+        });
+        out.push('</g>');
+      }
+      out.push('</svg>');
+      return out.join('\n');
+    },
+    exportDiagram(kind) {
+      const svg = this.diagramSvgText();
+      const name = `${this.exploreDatabase}-diagram`;
+      if (kind === 'svg') { this.downloadBlob(new Blob([svg], { type: 'image/svg+xml' }), name + '.svg'); return; }
+      const size = this.diagramSize();
+      const scale = Math.min(3, Math.max(1, 6000 / Math.max(size.w, size.h)));
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(size.w * scale); canvas.height = Math.round(size.h * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((b) => b ? this.downloadBlob(b, name + '.png') : this.showToast('Could not create the PNG', 'error'), 'image/png');
+      };
+      img.onerror = () => this.showToast('Could not create the PNG', 'error');
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
     },
     resetExploreObjects() {
       this.exploreTables = []; this.exploreRoutines = []; this.exploreTriggers = []; this.exploreEvents = [];
@@ -5584,6 +5832,7 @@ function app() {
       else if (/blob|^binary|^varbinary/.test(type)) kind = (raw && raw.__blob) || /blob/.test(type) ? 'blob' : 'hex';
       else if (/text|json/.test(type)) kind = 'textarea';
       else if (type === 'date') kind = 'date';
+      else if (/^time(\(\d+\))?$/.test(type) && (raw === null || raw === undefined || /^\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(String(raw)))) kind = 'time';
       else if (/^(datetime|timestamp)$/.test(type)) kind = 'datetime';
       let value = '';
       let size = null;
@@ -6376,18 +6625,120 @@ function app() {
         open: true, step: 'pick', file: null, format: 'csv', delimiter: ',', gzip: false,
         previewFields: [], previewRows: [], mapping: [],
         onDuplicate: 'error', onError: 'stop', atomic: true, truncate: false, noFkChecks: false, base64Binary: true,
-        running: false, error: '', progress: {}, result: null, startedAt: 0, xhr: null
+        running: false, error: '', progress: {}, result: null, startedAt: 0, xhr: null,
+        converting: false, convertedFrom: '', sheetNames: [], sheet: ''
       };
     },
     // Table columns a file column can go into (generated columns can't be written).
     importTargetColumns() {
       return this.exploreColumns.filter((c) => !/\b(VIRTUAL|STORED|PERSISTENT)\b/i.test(c.extra || '')).map((c) => c.name);
     },
+    loadScriptOnce(url) {
+      this._scripts = this._scripts || {};
+      if (!this._scripts[url]) {
+        this._scripts[url] = new Promise((resolve, reject) => {
+          const el = document.createElement('script');
+          el.src = url; el.onload = resolve; el.onerror = () => { delete this._scripts[url]; reject(new Error('Could not load ' + url)); };
+          document.head.appendChild(el);
+        });
+      }
+      return this._scripts[url];
+    },
+    // A field of the CSV we hand to the importer: null is written as an unquoted \N, as in our own exports.
+    importCsvField(v) {
+      if (v === null || v === undefined) return '\\N';
+      const t = String(v);
+      return /[",\r\n]/.test(t) || t === '\\N' || t !== t.trim() ? '"' + t.replace(/"/g, '""') + '"' : t;
+    },
+    importCsvFromRows(rows) {
+      return rows.map(r => r.map(v => this.importCsvField(v)).join(',')).join('\r\n') + '\r\n';
+    },
+    // Sheet → rows of strings. Dates are read from the cell's number format as wall-clock values, so no time zone shifts them.
+    sheetRows(XLSX, ws) {
+      const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+      const p2 = (n) => String(n).padStart(2, '0');
+      const rows = [];
+      for (let r = range.s.r; r <= range.e.r; r++) {
+        const row = [];
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const cell = ws[XLSX.utils.encode_cell({ r, c })];
+          if (!cell || cell.v === undefined || cell.v === null || cell.t === 'z' || cell.t === 'e') { row.push(null); continue; }
+          if (cell.t === 'n' && cell.z && XLSX.SSF.is_date(cell.z)) {
+            const d = XLSX.SSF.parse_date_code(cell.v);
+            const date = `${String(d.y).padStart(4, '0')}-${p2(d.m)}-${p2(d.d)}`;
+            const time = `${p2(d.H)}:${p2(d.M)}:${p2(Math.floor(d.S))}`;
+            row.push(cell.v < 1 ? time : (d.H || d.M || d.S ? `${date} ${time}` : date));
+          } else if (cell.t === 'b') row.push(cell.v ? '1' : '0');
+          else if (cell.t === 'd') row.push(cell.v instanceof Date ? cell.v.toISOString().slice(0, 19).replace('T', ' ') : String(cell.v));
+          else row.push(String(cell.v));
+        }
+        rows.push(row);
+      }
+      while (rows.length && rows[rows.length - 1].every(v => v === null)) rows.pop();
+      return rows;
+    },
+    jsonToRows(text) {
+      let items;
+      const t = text.replace(/^\uFEFF/, '').trim();
+      if (t.startsWith('[')) items = JSON.parse(t);
+      else items = t.split(/\r?\n/).filter(l => l.trim()).map((l, i) => { try { return JSON.parse(l); } catch (e) { throw new Error(`Line ${i + 1} is not valid JSON`); } });
+      if (!Array.isArray(items) || !items.length || !items.every(x => x && typeof x === 'object' && !Array.isArray(x))) throw new Error('Expected a JSON array of objects (or one object per line)');
+      const cols = [];
+      const seen = new Set();
+      for (const o of items) for (const k of Object.keys(o)) if (!seen.has(k)) { seen.add(k); cols.push(k); }
+      const cell = (v) => v === undefined || v === null ? null : typeof v === 'boolean' ? (v ? '1' : '0') : typeof v === 'object' ? JSON.stringify(v) : String(v);
+      return [cols, ...items.map(o => cols.map(k => cell(o[k])))];
+    },
+    async convertImportFile(file) {
+      const m = this.importModal;
+      m.converting = true;
+      try {
+        let rows, label;
+        if (/\.(xlsx|xls|xlsm|ods)$/i.test(file.name)) {
+          await this.loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+          const XLSX = window.XLSX;
+          const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellNF: true });
+          importWorkbook = wb;
+          m.sheetNames = wb.SheetNames; m.sheet = wb.SheetNames[0];
+          rows = this.sheetRows(XLSX, wb.Sheets[m.sheet]);
+          label = 'Excel';
+        } else {
+          rows = this.jsonToRows(await file.text());
+          label = 'JSON';
+        }
+        if (!rows.length) throw new Error('The file has no data');
+        const base = file.name.replace(/\.[^.]+$/, '');
+        m.file = new File([this.importCsvFromRows(rows)], base + '.csv', { type: 'text/csv' });
+        m.convertedFrom = `${file.name} (${label})`;
+        m.format = 'csv'; m.delimiter = ','; m.gzip = false;
+        return true;
+      } catch (e) {
+        m.error = 'Could not read ' + file.name + ': ' + e.message;
+        return false;
+      } finally { m.converting = false; }
+    },
+    async switchImportSheet() {
+      const m = this.importModal;
+      if (!importWorkbook) return;
+      const rows = this.sheetRows(window.XLSX, importWorkbook.Sheets[m.sheet]);
+      if (!rows.length) { m.error = 'That sheet is empty'; return; }
+      m.error = '';
+      m.file = new File([this.importCsvFromRows(rows)], (m.file.name || 'sheet.csv'), { type: 'text/csv' });
+      m.mapping = []; m.previewFields = [];
+      await this.previewImportFile(true);
+    },
     async onImportFileSelected(event) {
-      const file = event.target.files[0];
+      let file = event.target.files[0];
       if (!file) return;
       const m = this.importModal;
-      m.file = file; m.error = '';
+      m.error = ''; m.convertedFrom = ''; m.sheetNames = []; importWorkbook = null;
+      if (/\.(xlsx|xls|xlsm|ods|json|ndjson|jsonl)$/i.test(file.name)) {
+        if (file.size > 200 * 1024 * 1024) { m.error = 'Excel and JSON files are converted in the browser — over 200 MB, please export to CSV first'; return; }
+        if (!(await this.convertImportFile(file))) return;
+        await this.previewImportFile(true);
+        return;
+      }
+      m.file = file;
       m.gzip = /\.gz$/i.test(file.name);
       const inner = file.name.replace(/\.gz$/i, '');
       m.format = /\.(tsv|tab)$/i.test(inner) ? 'tsv' : 'csv';

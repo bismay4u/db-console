@@ -123,6 +123,8 @@ function exploreRequirement(method, segments, body = {}, query = {}) {
   if (second === 'objects' && third === 'save') return body.name ? ['alter'] : ['create'];
   if (second === 'objects' && third === 'drop') return ['drop'];
   if (second === 'restore') return ['restore'];
+  // search & replace: a preview only reads
+  if (second === 'search-replace') return body.preview === false ? ['update'] : [];
   // applying an analysis fix is checked statement by statement in the route itself
   if (second === 'analyze' && third === 'apply') return [];
   if (segments.length === 3) {
