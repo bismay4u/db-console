@@ -712,15 +712,15 @@ Separate multiple statements with ; — highlight text to run just that part."
                         <div class="d-flex justify-content-between align-items-center mb-1 gap-2">
                           <div class="text-muted-sm">
                             <span x-text="s.rowCount.toLocaleString() + ' row(s)'"></span>
-                            <span class="text-warning-emphasis" x-show="s.truncated" x-text="' · only the first ' + s.rows.length.toLocaleString() + ' were sent — add a LIMIT or export the table'"></span>
+                            <span class="text-warning-emphasis" x-show="s.truncated" x-text="' · only the first ' + s.rows.length.toLocaleString() + ' are shown — Download gets every row'"></span>
                           </div>
                           <div class="d-flex align-items-center gap-1 ms-auto" x-show="s.rows.length > resultPageSize">
                             <button class="btn btn-outline-soft btn-sm" style="padding:.05rem .4rem" :disabled="(s.page || 1) <= 1" @click="s.page = (s.page || 1) - 1"><i class="bi bi-chevron-left"></i></button>
                             <span class="text-muted-sm" x-text="'Page ' + (s.page || 1) + ' / ' + Math.ceil(s.rows.length / resultPageSize)"></span>
                             <button class="btn btn-outline-soft btn-sm" style="padding:.05rem .4rem" :disabled="(s.page || 1) >= Math.ceil(s.rows.length / resultPageSize)" @click="s.page = (s.page || 1) + 1"><i class="bi bi-chevron-right"></i></button>
                           </div>
-                          <button class="btn btn-outline-soft btn-sm" style="padding:.1rem .5rem; font-size:.72rem" @click="exportStatementCsv(s)">
-                            <i class="bi bi-download me-1"></i>Export CSV
+                          <button class="btn btn-outline-soft btn-sm" style="padding:.1rem .5rem; font-size:.72rem" @click="openDownload(r, s)" title="Download the full result as CSV or TSV, however many rows it has">
+                            <i class="bi bi-download me-1"></i>Download…
                           </button>
                         </div>
                         <div class="table-responsive" style="max-height:320px;">
@@ -2467,6 +2467,55 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
+<!-- ===== Query Runner: download a full result ===== -->
+<div class="modal-backdrop-custom" x-show="downloadModal.open" x-cloak @click.self="downloadModal.open = false">
+  <div class="modal-panel modal-panel-lg">
+    <div class="modal-header-custom">
+      <h2 class="h6 mb-0 fw-semibold">Download result</h2>
+      <button class="btn btn-sm btn-outline-soft" @click="downloadModal.open = false"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="modal-body-custom">
+      <div class="text-muted-sm mb-3">
+        <i class="bi bi-info-circle me-1"></i>The statement is run again on <strong x-text="downloadModal.label"></strong> and streamed straight into the file, so results of lakhs or millions of rows download in full. What is shown on screen is only a preview.
+      </div>
+      <div class="mb-3" x-show="downloadModal.hasLimit">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="dlStrip" x-model="downloadModal.stripLimit">
+          <label class="form-check-label small fw-medium" for="dlStrip">Ignore the <code x-text="downloadModal.limitText"></code> in the query and download every row</label>
+        </div>
+      </div>
+      <div class="mb-3">
+        <div class="text-muted-sm mb-1">Statement that will run (in <code x-text="downloadModal.database"></code>):</div>
+        <pre class="definition-block mb-0" style="white-space:pre-wrap; max-height:140px" x-text="downloadEffectiveSql()"></pre>
+      </div>
+      <div class="row g-3">
+        <div class="col-sm-4">
+          <label class="form-label small fw-medium mb-1">Format</label>
+          <select class="form-select form-select-sm" x-model="downloadModal.format"><option value="csv">CSV</option><option value="tsv">TSV</option></select>
+        </div>
+        <div class="col-sm-4">
+          <label class="form-label small fw-medium mb-1">NULL is written as</label>
+          <select class="form-select form-select-sm" x-model="downloadModal.nulls"><option value="empty">empty</option><option value="null">NULL</option><option value="\N">\N</option></select>
+        </div>
+        <div class="col-sm-4">
+          <label class="form-label small fw-medium mb-1">Stop after <span class="text-muted-sm">(rows, optional)</span></label>
+          <input type="number" min="1" class="form-control form-control-sm" placeholder="all rows" x-model="downloadModal.maxRows">
+        </div>
+        <div class="col-12">
+          <div class="form-check"><input class="form-check-input" type="checkbox" id="dlGzip" x-model="downloadModal.gzip"><label class="form-check-label small" for="dlGzip">Compress (.gz) — much smaller for big results</label></div>
+          <div class="form-check" x-show="downloadModal.format === 'csv'"><input class="form-check-input" type="checkbox" id="dlBom" x-model="downloadModal.bom"><label class="form-check-label small" for="dlBom">Add a byte-order mark so Excel reads accents and other non-English text correctly</label></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="downloadModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="submitDownload()"><i class="bi bi-download me-1"></i>Download</button>
+    </div>
+  </div>
+</div>
+<form x-ref="downloadForm" method="POST" action="/api/query/export" target="downloadFrame" style="display:none"></form>
+<iframe name="downloadFrame" title="download" style="display:none" @load="downloadFrameLoaded($event)"></iframe>
+
 <!-- ===== Explore: Analysis rules ===== -->
 <div class="modal-backdrop-custom" x-show="rulesModal.open" x-cloak @click.self="rulesModal.open = false">
   <div class="modal-panel modal-panel-xl">
@@ -3346,6 +3395,7 @@ function app() {
     connModal: { open: false, key: null, cloneFrom: null, cloneCanReuse: false, form: {}, testResult: null, testing: false, saving: false, error: '' },
     shareModal: { open: false, kind: 'connection', key: null, label: '', owner: '', all: false, users: [], perms: {}, open_: {}, saving: false, error: '' },
     permissionList: [], permissionPresets: [],
+    downloadModal: { open: false, key: '', label: '', database: '', sql: '', format: 'csv', gzip: false, bom: true, nulls: 'empty', stripLimit: false, hasLimit: false, limitText: '', maxRows: '' },
     analysis: { running: false, error: '', result: null, conn: '', db: '', sev: ['error', 'warning', 'info'], category: '', q: '', group: 'table', open: {} },
     rulesModal: { open: false, loading: false, error: '', builtin: [], custom: [], expanded: {} },
     ruleEditor: { open: false, id: null, title: '', description: '', severity: 'warning', category: '', kind: 'sql', sql: '', target: 'table', pattern: '', mode: 'must-match', typePattern: '', exclude: '', enabled: true, error: '', saving: false, test: null, testing: false },
@@ -5378,12 +5428,54 @@ function app() {
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
     },
-    exportStatementCsv(s) {
-      if (!s.columns || !s.rows) return;
-      const lines = [s.columns.map(this.csvFieldClient).join(',')];
-      for (const row of s.rows) lines.push(s.columns.map((c) => this.csvFieldClient(row[c])).join(','));
-      const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
-      this.downloadBlob(blob, 'query-result.csv');
+    // ---- Download the full result of a Query Runner statement ----
+    // The page only holds a preview (at most 10,000 rows); the server runs the
+    // statement again and streams every row into the file.
+    openDownload(r, s) {
+      const sql = String(s.sql || '').trim().replace(/;+\s*$/, '');
+      const body = sql.replace(/^(\s+|--[^\n]*(\n|$)|#[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, '');
+      const m = /\s+(limit\s+(\d+\s*,\s*\d+|\d+(\s+offset\s+\d+)?))\s*$/i.exec(sql);
+      const hasLimit = Boolean(m) && /^(select|with|table|values)\b/i.test(body);
+      const old = this.downloadModal;
+      this.downloadModal = {
+        open: true, key: r.key, label: this.labelFor(r.key), database: s.database || r.ranIn || '', sql,
+        format: old.format, gzip: old.gzip, bom: old.bom, nulls: old.nulls, maxRows: '',
+        hasLimit, limitText: hasLimit ? m[1].toUpperCase() : '', stripLimit: hasLimit
+      };
+    },
+    downloadEffectiveSql() {
+      const m = this.downloadModal;
+      return m.stripLimit && m.hasLimit ? m.sql.replace(/\s+limit\s+(\d+\s*,\s*\d+|\d+(\s+offset\s+\d+)?)\s*$/i, '') : m.sql;
+    },
+    // A plain form POST into a hidden frame: the browser's download manager
+    // saves the stream to disk, so the file never passes through page memory.
+    submitDownload() {
+      const m = this.downloadModal;
+      const form = this.$refs.downloadForm;
+      form.replaceChildren();
+      const fields = {
+        key: m.key, database: m.database, sql: m.sql, format: m.format, gzip: m.gzip ? '1' : '0', bom: m.bom ? '1' : '0',
+        nulls: m.nulls, stripLimit: m.stripLimit && m.hasLimit ? '1' : '0', maxRows: m.maxRows || ''
+      };
+      for (const [name, value] of Object.entries(fields)) {
+        const input = document.createElement('input');
+        input.type = 'hidden'; input.name = name; input.value = value;
+        form.appendChild(input);
+      }
+      form.submit();
+      m.open = false;
+      this.showToast('Download started — large results can take a while to begin');
+    },
+    // A refused download comes back as JSON into the hidden frame (a real file never loads there).
+    downloadFrameLoaded(ev) {
+      try {
+        const doc = ev.target.contentDocument;
+        const text = doc && doc.body ? doc.body.innerText.trim() : '';
+        if (!text) return;
+        let message = text.slice(0, 200);
+        try { message = JSON.parse(text).error || message; } catch (e) { /* not JSON */ }
+        this.showToast('Download failed: ' + message, 'error');
+      } catch (e) { /* cross-origin or empty frame */ }
     },
 
     // ---- Explore: CSV export of a full table (server-streamed download) ----

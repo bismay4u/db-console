@@ -580,6 +580,40 @@ function schemaRoute(handler, { logged = true } = {}) {
   };
 }
 
+// ---- Download the full result of a Query Runner statement ----
+// The browser submits a plain form (so the file is streamed straight to disk
+// by the download manager); the statement is run again on the server with no
+// row limit. See db.exportQueryResult.
+app.post('/api/query/export', requireAuth, express.urlencoded({ extended: false, limit: '2mb' }), async (req, res) => {
+  const b = req.body || {};
+  const conn = store.getConnection(b.key);
+  if (!conn || !canUse(req.user, conn)) return res.status(404).json({ error: 'Connection not found' });
+  const yes = (v) => v === '1' || v === 'true' || v === 'on';
+  const options = {
+    database: b.database || conn.database,
+    format: b.format === 'tsv' ? 'tsv' : 'csv',
+    gzip: yes(b.gzip), bom: yes(b.bom), stripLimit: yes(b.stripLimit),
+    nulls: ['null', '\\N'].includes(b.nulls) ? b.nulls : 'empty',
+    maxRows: Math.max(0, parseInt(b.maxRows, 10) || 0),
+    allowed: restrictionsFor(req.user, conn)
+  };
+  const sql = String(b.sql || '');
+  const start = Date.now();
+  const entry = { username: req.user.username, source: 'export', connKey: conn.key, connLabel: conn.label, database: options.database, sql };
+  try {
+    const result = await db.exportQueryResult(conn.key, sql, options, res, (filename, contentType) => {
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'no-store');
+      attachment(res, filename);
+    });
+    querylog.record({ ...entry, type: querylog.statementType(sql), ok: true, rowCount: result.rows, durationMs: Date.now() - start });
+  } catch (err) {
+    querylog.record({ ...entry, type: querylog.statementType(sql), ok: false, error: err.message, durationMs: Date.now() - start });
+    if (!res.headersSent) res.status(400).json({ error: err.message });
+    else res.end();
+  }
+});
+
 // ---- Database analysis (Explore → Analyze) ----
 // Anyone with access to the connection can run it (it only reads); the rules
 // are managed by admins.

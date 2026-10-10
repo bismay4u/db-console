@@ -137,7 +137,8 @@ Features include:
 * Error reporting, and the server's warnings for a statement that produced any
 * **Explain** (next to **Run**) shows the execution plan of SELECT / UPDATE / DELETE / INSERT statements without running them
 * Asks for confirmation before running `DROP`, `TRUNCATE`, `DELETE`, or an `UPDATE` / `DELETE` without a `WHERE` anywhere in the batch (comments and text inside strings are ignored), and before a `SELECT` with no `LIMIT`
-* Results are paged in the browser; at most 10,000 rows are returned per statement
+* Results are paged in the browser; at most 10,000 rows are shown per statement (with the real total) — it is only a preview
+* **Download…** on a result saves **every row**, however many: the statement is run again on the server and streamed straight into a CSV or TSV file (optionally gzipped), so results of lakhs or millions of rows need no browser or server memory. If the query ends in a `LIMIT n` used as a preview, tick "Ignore the LIMIT" to get the whole result set; or stop after N rows, choose how `NULL` is written, and add a byte-order mark for Excel. It runs in a `READ ONLY` transaction, only for statements that return rows, and is written to the query log
 * `CALL` shows the procedure's first result set
 * Saved SQL queries
 * Load saved queries directly into Query Runner
@@ -810,6 +811,18 @@ Responses are newline-delimited JSON progress events (`executed`, `failed`, `byt
 ---
 
 ## Query Execution
+
+Download the full result of one statement (a plain form POST, so the browser streams the file to disk):
+
+```http
+POST /api/query/export      # application/x-www-form-urlencoded
+  key, database, sql        # one SELECT / WITH / SHOW / DESCRIBE / EXPLAIN statement
+  format=csv|tsv, gzip=1, bom=1, nulls=empty|null|\N
+  stripLimit=1              # drop a trailing LIMIT n [OFFSET m] / LIMIT m, n
+  maxRows=N                 # stop after N rows (omit for all)
+```
+
+A refused or failing statement returns `400` JSON before any file starts.
 
 ```http
 POST /api/query

@@ -277,6 +277,7 @@ async function runQuery(key, sqlText, { database, explain = false, allowed = nul
   let ok = true;
   let discard = restricted || statements.some(leavesSessionState);
   let currentDatabase = null;
+  let workingDb = database || defaultDb; // the database in effect for the next statement (a USE changes it)
 
   try {
     if (database && database !== defaultDb) {
@@ -334,7 +335,12 @@ async function runQuery(key, sqlText, { database, explain = false, allowed = nul
             entry.warnings = warnings.map((w) => ({ level: w.Level, code: w.Code, message: w.Message }));
           }
         }
+        entry.database = workingDb; // so a download re-runs it in the same database
         results.push(entry);
+        if (/^use\b/i.test(stripLeadingComments(stmt))) {
+          const [[cur]] = await conn.query('SELECT DATABASE() AS db');
+          workingDb = cur.db;
+        }
       } catch (err) {
         results.push({ sql: stmt, ok: false, error: err.message, durationMs: Date.now() - start });
         ok = false;
@@ -401,6 +407,8 @@ module.exports = {
   streamDatabaseBackup,
   streamDatabaseBackupTarGz,
   exportDatabase,
+  exportQueryResult,
+  stripTrailingLimit,
   restoreDump
 };
 
@@ -1050,6 +1058,133 @@ async function streamTableCsv(key, database, table, res, { sortCol, sortDir, sor
     () => closeStreamingConnection(rawConn, false),
     (err) => { closeStreamingConnection(rawConn, true); throw err; }
   );
+}
+
+// ---- Download the full result of a Query Runner statement ----
+// The Query Runner shows at most MAX_RESULT_ROWS rows, but a download should
+// contain every row. The statement is run again on its own streaming
+// connection and its rows go straight into the response, one at a time, so
+// a result of lakhs or millions of rows needs no memory and has no limit.
+
+// Removes a trailing `LIMIT n`, `LIMIT n OFFSET m` or `LIMIT m, n` from a
+// SELECT, so the download covers every row instead of the preview.
+const TRAILING_LIMIT_RE = /\s+limit\s+(\d+\s*,\s*\d+|\d+(\s+offset\s+\d+)?)\s*$/i;
+function stripTrailingLimit(sql) {
+  const trimmed = String(sql).replace(/[\s;]+$/, '');
+  return TRAILING_LIMIT_RE.test(trimmed) ? trimmed.replace(TRAILING_LIMIT_RE, '') : String(sql);
+}
+
+function rawQuery(rawConn, sql) {
+  return new Promise((resolve, reject) => rawConn.query(sql, (err, rows) => (err ? reject(err) : resolve(rows))));
+}
+
+const EXPORTABLE_RE = /^(select|with|table|values|show|describe|desc|explain)\b/i;
+
+// options: { database, format: 'csv'|'tsv', gzip, bom, nulls: 'empty'|'null'|'\\N', stripLimit, maxRows (0 = all), allowed }
+// Resolves with { rows, stripped, truncated }. Errors found before the first
+// byte is written (not a SELECT, not allowed, a SQL error) reject before
+// onStart(filename, contentType) is called, so the caller can still answer
+// with a normal error.
+async function exportQueryResult(key, sqlText, options, res, onStart) {
+  const o = { format: 'csv', gzip: false, bom: true, nulls: 'empty', stripLimit: false, maxRows: 0, database: null, allowed: null, ...options };
+  const statements = splitStatements(sqlText);
+  if (statements.length !== 1) throw new Error('Choose one statement to download');
+  let stmt = statements[0];
+  if (permissions.statementNeeds(stmt) !== 'read' || !EXPORTABLE_RE.test(stripLeadingComments(stmt))) {
+    throw new Error('Only statements that return rows (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN) can be downloaded');
+  }
+  const denied = permissions.statementDenied(stmt, o.allowed);
+  if (denied) throw new Error(denied);
+  // A download is for reading rows; INTO OUTFILE would write a file on the database server instead.
+  if (/\binto\s+(outfile|dumpfile)\b/i.test(stmt)) throw new Error('SELECT … INTO OUTFILE/DUMPFILE writes a file on the server and can’t be downloaded');
+  let stripped = false;
+  if (o.stripLimit && /^(select|with|table|values)\b/i.test(stripLeadingComments(stmt))) {
+    const without = stripTrailingLimit(stmt);
+    stripped = without !== stmt;
+    stmt = without;
+  }
+  const conn = store.getConnection(key);
+  if (!conn) throw new Error(`Unknown connection: ${key}`);
+
+  const tsv = o.format === 'tsv';
+  const sep = tsv ? '\t' : ',';
+  const eol = tsv ? '\n' : '\r\n';
+  const nullText = o.nulls === 'null' ? 'NULL' : o.nulls === '\\N' ? '\\N' : '';
+  // csvField/tsvField write NULL as \N and binary as Base64; NULL is replaced by the chosen text here.
+  const field = tsv ? tsvField : csvField;
+  const cell = (v) => (v === null || v === undefined ? nullText : field(v));
+
+  const maxRows = Math.max(0, Number(o.maxRows) || 0);
+  const rawConn = createStreamingConnection(conn);
+  let failed = true;
+  let killed = false; // the connection was already destroyed (row limit reached)
+  let gzip = null;
+  try {
+    if (o.database && o.database !== conn.database) await rawQuery(rawConn, `USE ${esc(o.database)}`);
+    // Whatever the statement calls (a function with side effects), a download never writes.
+    await rawQuery(rawConn, 'START TRANSACTION READ ONLY');
+
+    const query = rawConn.query({ sql: stmt, rowsAsArray: true });
+    const stream = query.stream({ highWaterMark: 200 });
+    // Wait for the column list before sending anything, so a SQL error is still a normal error response.
+    const fields = await new Promise((resolve, reject) => {
+      const onFields = (f) => { stream.off('error', onError); stream.off('end', onEnd); if (Array.isArray(f)) resolve(f); else reject(new Error('That statement did not return a result set')); };
+      const onError = (err) => { query.off('fields', onFields); stream.off('end', onEnd); reject(err); };
+      const onEnd = () => { query.off('fields', onFields); stream.off('error', onError); reject(new Error('That statement did not return a result set')); };
+      query.once('fields', onFields);
+      stream.once('error', onError);
+      stream.once('end', onEnd);
+    });
+
+    const ext = `${tsv ? 'tsv' : 'csv'}${o.gzip ? '.gz' : ''}`;
+    onStart(`query-result-${fileStamp()}.${ext}`, o.gzip ? 'application/gzip' : (tsv ? 'text/tab-separated-values; charset=utf-8' : 'text/csv; charset=utf-8'));
+    let out = res;
+    if (o.gzip) { gzip = zlib.createGzip(); gzip.pipe(res); out = gzip; }
+
+    const count = await new Promise((resolve, reject) => {
+      let rows = 0;
+      let done = false;
+      const finish = (err) => {
+        if (done) return;
+        done = true;
+        res.off('close', onClose);
+        if (err) reject(err); else resolve(rows);
+      };
+      const onClose = () => { if (!res.writableFinished) finish(new Error('Download cancelled by the client')); };
+      res.on('close', onClose);
+      if (res.destroyed) return finish(new Error('Download cancelled by the client'));
+
+      out.write((o.bom && !tsv ? '\uFEFF' : '') + fields.map((f) => cell(f.name)).join(sep) + eol);
+      stream.on('data', (row) => {
+        if (done) return;
+        rows++;
+        const ok = out.write(row.map(cell).join(sep) + eol);
+        if (maxRows && rows >= maxRows) {
+          // Enough rows: stop the query on the server and finish the file.
+          stream.pause();
+          killed = true;
+          closeStreamingConnection(rawConn, true);
+          return finish(null);
+        }
+        if (!ok) {
+          stream.pause();
+          out.once('drain', () => stream.resume());
+        }
+      });
+      stream.on('end', () => finish(null));
+      stream.on('error', finish);
+    });
+    failed = false;
+
+    // Finish the (compressed) file.
+    await new Promise((resolve) => {
+      if (gzip) { res.once('finish', resolve); res.once('close', resolve); gzip.end(); } else { res.end(resolve); }
+    });
+    return { rows: count, stripped, truncated: Boolean(maxRows && count >= maxRows) };
+  } finally {
+    if (gzip && failed) gzip.destroy();
+    if (!killed) closeStreamingConnection(rawConn, failed);
+  }
 }
 
 // Bulk-inserts a batch of already-parsed CSV rows (used by the CSV import
