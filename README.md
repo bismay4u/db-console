@@ -352,6 +352,14 @@ DB Console supports multiple users, each with their own login.
 
 ---
 
+### 🎨 Comfort
+
+* **Dark mode** — *Theme* in the sidebar cycles *system* → *light* → *dark* (the choice is remembered per browser; *system* follows your OS setting, including the SQL editor and the charts)
+* **Phone and tablet layout** — below 768 px the sidebar becomes a drawer (the menu button in the top bar; it closes when you pick something), dialogs slide up from the bottom, and tables scroll sideways inside their card
+* **Keyboard shortcuts** (press `?`): `Ctrl/Cmd+K` jump to any page, connection or table · `Ctrl+Enter` run · `Ctrl+Shift+F` format · `Ctrl+S` save the SQL as a query · `Ctrl+/` comment lines · `Esc` close the open dialog · `/` focus the search box · `g` then `r` / `e` / `c` / `q` / `l` / `s` / `a` go to Runner / Explore / Connections / Saved queries / Log / Schedules / Approvals
+
+---
+
 ### ⏰ Schedules
 
 Run things on a timetable and get told when something is wrong (**Schedules** in the sidebar).

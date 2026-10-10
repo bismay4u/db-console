@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DB Console</title>
+<script>
+  // Light / dark / follow the system, applied before the first paint so there is no flash.
+  (function () {
+    var mode = 'system';
+    try { mode = localStorage.getItem('dbc.theme') || 'system'; } catch (e) { /* storage unavailable */ }
+    var dark = mode === 'dark' || (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    document.documentElement.setAttribute('data-bs-theme', dark ? 'dark' : 'light');
+  })();
+</script>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -28,6 +38,12 @@
     --accent:#4a5df9;
     --accent-hover:#3c4fe0;
     --accent-soft:#eef0ff;
+    --surface-2:#fbfbfc;        /* a slightly different shade inside a card: code blocks, results */
+    --input-bg:#ffffff;
+    --raised:#ffffff;           /* buttons, active tabs, popovers */
+    --danger-soft:#fdecec;
+    --code-text:#2b3040;
+    --shadow-rgb:20,20,43;
     --danger:#e5484d;
     --success:#1fa971;
     --sidebar-w:208px;
@@ -112,10 +128,10 @@
   /* ---- Buttons ---- */
   .btn-accent{ background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; border-radius:9px; }
   .btn-accent:hover{ background:var(--accent-hover); border-color:var(--accent-hover); color:#fff; }
-  .btn-outline-soft{ border:1px solid var(--border); color:var(--text); background:#fff; border-radius:9px; }
+  .btn-outline-soft{ border:1px solid var(--border); color:var(--text); background:var(--raised); border-radius:9px; }
   .btn-outline-soft:hover{ background:var(--bg); }
   .btn-ghost-danger{ color:var(--danger); background:transparent; border:1px solid transparent; }
-  .btn-ghost-danger:hover{ background:#fdecec; }
+  .btn-ghost-danger:hover{ background:var(--danger-soft); }
 
   /* ---- Tabs (Query Runner left panel) ---- */
   .tab-switch{ display:flex; gap:.2rem; background:var(--bg); border-radius:9px; padding:.2rem; }
@@ -124,7 +140,7 @@
     font-size:.79rem; font-weight:600; padding:.4rem .5rem; border-radius:7px; cursor:pointer;
     display:flex; align-items:center; justify-content:center; gap:.35rem;
   }
-  .tab-btn.active{ background:#fff; color:var(--text); box-shadow:0 1px 3px rgba(20,20,43,.1); }
+  .tab-btn.active{ background:var(--raised); color:var(--text); box-shadow:0 1px 3px rgba(20,20,43,.1); }
   .tab-count{
     background:var(--accent-soft); color:var(--accent); font-size:.68rem; font-weight:700;
     border-radius:999px; padding:.05rem .4rem; min-width:1.2rem; text-align:center;
@@ -147,14 +163,14 @@
   .db-chip i{ font-size:.7rem; color:var(--muted); }
   .db-chip.switched{ background:var(--accent-soft); color:var(--accent); font-weight:600; }
   .db-chip.switched i{ color:var(--accent); }
-  .conn-row.selected .db-chip:not(.switched){ background:#fff; }
+  .conn-row.selected .db-chip:not(.switched){ background:var(--raised); }
   .db-reset{ padding:.05rem .3rem; font-size:.75rem; line-height:1; color:var(--muted); border:1px solid transparent; flex-shrink:0; }
-  .db-reset:hover{ color:var(--accent); border-color:#d7dafc; background:#fff; }
+  .db-reset:hover{ color:var(--accent); border-color:var(--border); background:var(--raised); }
 
-  .run-tab{ display:flex; align-items:center; gap:.4rem; border:1px solid var(--border); border-radius:8px; padding:.2rem .5rem; font-size:.78rem; cursor:pointer; background:#fff; }
+  .run-tab{ display:flex; align-items:center; gap:.4rem; border:1px solid var(--border); border-radius:8px; padding:.2rem .5rem; font-size:.78rem; cursor:pointer; background:var(--raised); }
   .run-tab.active{ border-color:var(--accent, #4f46e5); box-shadow:0 0 0 1px var(--accent, #4f46e5) inset; }
   .run-tab .bi-x:hover{ color:#dc2626; }
-  .stmt-block{ border:1px solid var(--border); border-radius:9px; padding:.5rem .65rem; background:#fbfbfc; }
+  .stmt-block{ border:1px solid var(--border); border-radius:9px; padding:.5rem .65rem; background:var(--surface-2); }
   .stmt-block code.sql-preview{ background:transparent; padding:0; }
   .selection-badge{
     background:var(--accent-soft); color:var(--accent); font-size:.72rem; font-weight:600;
@@ -162,9 +178,9 @@
   }
 
   .definition-block{
-    background:#fbfbfc; border:1px solid var(--border); border-radius:9px; padding:.75rem;
+    background:var(--surface-2); border:1px solid var(--border); border-radius:9px; padding:.75rem;
     font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size:.8rem;
-    white-space:pre; overflow:auto; max-height:480px; margin:0; color:#2b3040;
+    white-space:pre; overflow:auto; max-height:480px; margin:0; color:var(--code-text);
   }
   .index-chip{
     display:inline-flex; align-items:center; gap:.3rem; background:var(--bg);
@@ -190,13 +206,13 @@
   .index-kind{ font-size:.68rem; font-weight:700; letter-spacing:.03em; border-radius:999px; padding:.12rem .5rem; background:var(--bg); color:var(--muted); }
   .index-kind.kind-primary{ background:var(--accent-soft); color:var(--accent); }
   .index-kind.kind-unique{ background:#e7f8f1; color:var(--success); }
-  .index-kind.kind-fulltext, .index-kind.kind-spatial{ background:#fff4e5; color:#a35a00; }
+  .index-kind.kind-fulltext, .index-kind.kind-spatial{ background:var(--warn-soft, #fff4e5); color:#a35a00; }
 
   /* ---- Small dropdown menu ---- */
   .dropdown-lite{ position:relative; display:inline-block; }
   .dropdown-lite-menu{
     position:absolute; top:calc(100% + 4px); left:0; z-index:20; min-width:180px;
-    background:#fff; border:1px solid var(--border); border-radius:10px; padding:.3rem;
+    background:var(--raised); border:1px solid var(--border); border-radius:10px; padding:.3rem;
     box-shadow:0 8px 24px rgba(20,20,43,.12);
   }
   .dropdown-lite-menu a{ display:flex; align-items:center; gap:.5rem; padding:.35rem .55rem; border-radius:6px; font-size:.83rem; color:var(--text); cursor:pointer; text-decoration:none; }
@@ -207,14 +223,14 @@
   .col-editor td{ padding:.25rem .3rem; vertical-align:middle; }
   .col-editor .form-control, .col-editor .form-select{ font-size:.8rem; padding:.2rem .4rem; }
   .col-editor th{ font-size:.66rem; text-transform:uppercase; color:var(--muted); font-weight:600; padding:.25rem .3rem; white-space:nowrap; }
-  .col-editor tr.col-new td{ background:#f3fbf7; }
-  .col-editor tr.col-changed td{ background:#fffaf0; }
+  .col-editor tr.col-new td{ background:var(--new-bg, #f3fbf7); }
+  .col-editor tr.col-changed td{ background:var(--changed-bg, #fffaf0); }
 
   /* ---- Connection row picker ---- */
   .conn-row{
     display:flex; align-items:center; gap:.55rem;
     border:1px solid var(--border); border-radius:9px; padding:.4rem .55rem;
-    cursor:pointer; transition:.12s; background:#fff;
+    cursor:pointer; transition:.12s; background:var(--raised);
   }
   .conn-row:hover{ border-color:#c7ccff; }
   .conn-row.selected{ border-color:var(--accent); background:var(--accent-soft); }
@@ -239,28 +255,28 @@
 
   code.sql-preview{
     background:var(--bg); padding:.15rem .4rem; border-radius:6px; font-size:.78rem;
-    color:#4a4f5e; display:inline-block; max-width:420px; overflow:hidden;
+    color:var(--code-text); display:inline-block; max-width:420px; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; vertical-align:middle;
   }
 
   textarea.sql-editor{
     font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
     font-size:.87rem; border-radius:12px; border:1px solid var(--border);
-    background:#fbfbfc;
+    background:var(--surface-2);
   }
   .CodeMirror{
-    height:auto; min-height:150px; border:1px solid var(--border); border-radius:12px; background:#fbfbfc;
+    height:auto; min-height:150px; border:1px solid var(--border); border-radius:12px; background:var(--surface-2);
     font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size:.87rem;
   }
   .CodeMirror-scroll{ min-height:150px; max-height:420px; }
-  .CodeMirror-focused{ border-color:var(--accent); box-shadow:0 0 0 .2rem rgba(74,93,249,.12); background:#fff; }
+  .CodeMirror-focused{ border-color:var(--accent); box-shadow:0 0 0 .2rem rgba(74,93,249,.12); background:var(--input-bg); }
   .CodeMirror-gutters{ background:transparent; border-right:1px solid var(--border); border-radius:12px 0 0 12px; }
   .CodeMirror-placeholder{ color:var(--muted)!important; }
   .CodeMirror-hints{ z-index:1100; font-family:'SFMono-Regular',Consolas,monospace; font-size:.8rem; }
-  textarea.sql-editor:focus{ border-color:var(--accent); box-shadow:0 0 0 .2rem rgba(74,93,249,.12); background:#fff; }
+  textarea.sql-editor:focus{ border-color:var(--accent); box-shadow:0 0 0 .2rem rgba(74,93,249,.12); background:var(--input-bg); }
 
   .badge-soft-success{ background:#e7f8f1; color:var(--success); font-weight:600; }
-  .badge-soft-danger{ background:#fdecec; color:var(--danger); font-weight:600; }
+  .badge-soft-danger{ background:var(--danger-soft); color:var(--danger); font-weight:600; }
 
   /* ---- Modal (custom, no bootstrap JS needed) ---- */
   .modal-backdrop-custom{
@@ -268,7 +284,7 @@
     display:flex; align-items:flex-start; justify-content:center; padding:4vh 1rem; overflow-y:auto;
   }
   .modal-panel{
-    background:#fff; border-radius:16px; width:100%; max-width:480px;
+    background:var(--card); border-radius:16px; width:100%; max-width:480px;
     box-shadow:0 20px 60px rgba(20,20,43,.25);
   }
   .modal-panel-lg{ max-width:640px; }
@@ -314,7 +330,7 @@
   .console-out .ok{ color:#7fe0b4; }
 
   /* ---- Confirm dialog (reuses modal-backdrop-custom) ---- */
-  .confirm-panel{ background:#fff; border-radius:14px; width:100%; max-width:360px; box-shadow:0 20px 60px rgba(20,20,43,.25); padding:1.25rem; }
+  .confirm-panel{ background:var(--card); border-radius:14px; width:100%; max-width:360px; box-shadow:0 20px 60px rgba(20,20,43,.25); padding:1.25rem; }
   /* Database analysis */
   .sev-dot{ width:.65rem; height:.65rem; border-radius:50%; flex:none; margin-top:.35rem; display:inline-block; }
   .sev-error{ background:var(--danger); } .sev-warning{ background:#f0a020; } .sev-info{ background:#4a8df9; }
@@ -362,10 +378,69 @@
   .diagram-col.pk{ font-weight:600; }
   .diagram-col.pk .bi{ color:#d4a017; }
   .diagram-type{ margin-left:auto; color:var(--muted); font-size:.68rem; white-space:nowrap; max-width:90px; overflow:hidden; text-overflow:ellipsis; }
+
+  /* ---- Dark theme: the same variables, other values. html[data-theme] is set before first paint (see <head>). ---- */
+  html[data-theme="dark"]{
+    --bg:#0f1218; --card:#171b24; --border:#2a3040; --text:#e4e7ee; --muted:#9aa2b5;
+    --accent:#7d8cff; --accent-hover:#95a1ff; --accent-soft:#222a52;
+    --surface-2:#1c212c; --input-bg:#1c212c; --raised:#212736; --danger-soft:#3a1f25; --code-text:#c9cfdd;
+    --shadow-rgb:0,0,0; --danger:#ff6b70; --success:#3ac58b;
+    --new-bg:#15281f; --changed-bg:#2c2616; --warn-soft:#3a2d12;
+    color-scheme:dark;
+  }
+  html[data-theme="dark"] .conn-row:hover{ border-color:#4a56a8; }
+  html[data-theme="dark"] .btn-accent, html[data-theme="dark"] .brand-icon{ color:#0f1218; }
+  html[data-theme="dark"] .diagram-col.pk .bi{ color:#e6b422; }
+  html[data-theme="dark"] .modal-backdrop-custom{ background:rgba(0,0,0,.6); }
+  html[data-theme="dark"] .toast-item, html[data-theme="dark"] .chart-tip{ background:#2b3347; }
+  html[data-theme="dark"] .badge-soft-success{ background:#12301f; color:#4fd6a0; }
+  html[data-theme="dark"] .CodeMirror{ background:var(--input-bg); color:#d6dbe8; border-color:var(--border); }
+  html[data-theme="dark"] .CodeMirror-gutters{ background:var(--surface-2); border-right:1px solid var(--border); }
+  html[data-theme="dark"] .CodeMirror-linenumber{ color:#6f778c; }
+  html[data-theme="dark"] .CodeMirror-cursor{ border-left-color:#e4e7ee; }
+  html[data-theme="dark"] .CodeMirror-selected, html[data-theme="dark"] .CodeMirror-focused .CodeMirror-selected{ background:#2d3a6e; }
+  html[data-theme="dark"] .cm-s-default .cm-keyword{ color:#8fa2ff; }
+  html[data-theme="dark"] .cm-s-default .cm-atom, html[data-theme="dark"] .cm-s-default .cm-number{ color:#f0a36b; }
+  html[data-theme="dark"] .cm-s-default .cm-string, html[data-theme="dark"] .cm-s-default .cm-string-2{ color:#7fd6a4; }
+  html[data-theme="dark"] .cm-s-default .cm-comment{ color:#7c8499; }
+  html[data-theme="dark"] .cm-s-default .cm-variable-2, html[data-theme="dark"] .cm-s-default .cm-variable-3, html[data-theme="dark"] .cm-s-default .cm-builtin{ color:#7fc3ff; }
+  html[data-theme="dark"] .cm-s-default .cm-operator, html[data-theme="dark"] .cm-s-default .cm-punctuation{ color:#c9cfdd; }
+  html[data-theme="dark"] .CodeMirror-hints{ background:var(--raised); border-color:var(--border); }
+  html[data-theme="dark"] .CodeMirror-hint{ color:var(--text); }
+  html[data-theme="dark"] .CodeMirror-hint-active{ background:var(--accent-soft); color:var(--text); }
+  html[data-theme="dark"] .table-modern, html[data-theme="dark"] .table{ --bs-table-bg:transparent; --bs-table-color:var(--text); --bs-table-hover-bg:rgba(255,255,255,.03); }
+  html[data-theme="dark"] .form-control, html[data-theme="dark"] .form-select{ background-color:var(--input-bg); border-color:var(--border); color:var(--text); }
+  html[data-theme="dark"] .form-control::placeholder{ color:#6f778c; }
+  html[data-theme="dark"] code{ color:#e6a3c2; }
+  html[data-theme="dark"] .sev-info{ background:#6aa7ff; }
+  html[data-theme="dark"] img[alt="QR code"]{ background:#fff; padding:6px; border-radius:6px; }
+
+  /* ---- Phones and small tablets: the sidebar becomes a drawer ---- */
+  .nav-toggle{ display:none; }
+  @media (max-width: 767.98px){
+    .nav-toggle{ display:inline-flex; margin-right:.5rem; }
+    .sidebar, .sidebar.explore-mode{ width:min(86vw, 300px); transform:translateX(-102%); box-shadow:none; transition:transform .22s ease; z-index:1040; }
+    body.nav-open .sidebar{ transform:none; box-shadow:0 0 40px rgba(var(--shadow-rgb),.35); }
+    .nav-scrim{ display:none; }
+    body.nav-open .nav-scrim{ display:block; position:fixed; inset:0; background:rgba(var(--shadow-rgb),.4); z-index:1035; }
+    .main, body.explore-mode .main{ margin-left:0; }
+    .topbar{ padding:.55rem .75rem; gap:.5rem; }
+    .topbar > div:first-child{ min-width:0; display:flex; align-items:center; }
+    .topbar .text-muted-sm{ display:none; }
+    .content{ padding:.75rem .6rem; }
+    .modal-panel, .modal-panel-lg{ max-width:100% !important; width:100%; margin:0; border-radius:14px 14px 0 0; max-height:92vh; }
+    .modal-backdrop-custom{ align-items:flex-end !important; padding:0 !important; }
+    .modal-body-custom{ max-height:70vh !important; }
+    .table-responsive{ -webkit-overflow-scrolling:touch; }
+    .diagram-wrap{ height:calc(100vh - 260px); }
+    .tab-switch{ max-width:100%; overflow-x:auto; }
+    .share-perm-grid{ grid-template-columns:1fr 1fr; }
+  }
 </style>
 </head>
-<body x-data="app()" x-cloak :class="exploreSidebarActive() && 'explore-mode'">
+<body x-data="app()" x-cloak :class="[exploreSidebarActive() && 'explore-mode', navOpen && 'nav-open']">
 
+<div class="nav-scrim" @click="navOpen = false"></div>
 <aside class="sidebar" :class="exploreSidebarActive() && 'explore-mode'">
   <!-- Explore navigator: replaces the menu while browsing a database -->
   <div class="sidebar-panel sidebar-explore" :inert="!exploreSidebarActive()">
@@ -502,6 +577,12 @@
       </div>
       <span class="role-badge" :class="role === 'admin' && 'admin'" x-text="role"></span>
     </div>
+    <a class="nav-link-custom" @click="cycleTheme()" :title="'Theme: ' + theme + ' (click to change)'">
+      <i class="bi" :class="theme === 'dark' ? 'bi-moon-stars' : theme === 'light' ? 'bi-sun' : 'bi-circle-half'"></i> Theme: <span x-text="theme"></span>
+    </a>
+    <a class="nav-link-custom" @click="shortcutsOpen = true">
+      <i class="bi bi-keyboard"></i> Keyboard shortcuts <kbd class="ms-auto" style="font-size:.65rem">?</kbd>
+    </a>
     <a class="nav-link-custom" @click="openTwoFa()">
       <i class="bi bi-shield-lock"></i> Two-factor auth <span class="badge rounded-pill badge-soft-success ms-1" x-show="totpEnabled">on</span>
     </a>
@@ -518,8 +599,11 @@
 <div class="main">
   <div class="topbar">
     <div>
-      <h1 class="h6 mb-0 fw-semibold" x-text="pageTitle()"></h1>
-      <div class="text-muted-sm" x-text="pageSubtitle()"></div>
+      <button class="btn btn-sm btn-outline-soft nav-toggle" @click="navOpen = !navOpen" aria-label="Menu"><i class="bi bi-list"></i></button>
+      <div>
+        <h1 class="h6 mb-0 fw-semibold" x-text="pageTitle()"></h1>
+        <div class="text-muted-sm" x-text="pageSubtitle()"></div>
+      </div>
     </div>
     <div>
       <button class="btn btn-accent btn-sm" x-show="activeTab==='connections'" @click="openConnModal()">
@@ -1529,7 +1613,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <div class="px-2 py-2" style="border-bottom:1px solid var(--border)">
                     <div class="d-flex flex-wrap align-items-center gap-2">
                       <div class="input-group input-group-sm" style="max-width:320px">
-                        <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+                        <span class="input-group-text bg-body"><i class="bi bi-search"></i></span>
                         <input type="search" class="form-control" placeholder="Search all columns…" x-model="exploreSearch"
                                @input.debounce.400ms="applyExploreFilters()" @keydown.enter="applyExploreFilters()">
                       </div>
@@ -2722,6 +2806,41 @@ Separate multiple statements with ; — highlight text to run just that part."
     <div class="modal-footer-custom">
       <button class="btn btn-outline-soft" @click="replaceModal.open = false">Close</button>
       <button class="btn btn-danger" x-show="replaceModal.result && replaceModal.result.preview && replaceModal.result.found.length" @click="applyReplace()" :disabled="replaceModal.running">Replace everything shown</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Keyboard shortcuts ===== -->
+<div class="modal-backdrop-custom" x-show="shortcutsOpen" x-cloak @click.self="shortcutsOpen = false">
+  <div class="modal-panel">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">Keyboard shortcuts</h2><button class="btn btn-sm btn-outline-soft" @click="shortcutsOpen = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom">
+      <template x-for="grp in shortcutList" :key="grp[0]">
+        <div class="mb-3">
+          <div class="section-title mb-1" x-text="grp[0]"></div>
+          <template x-for="k in grp[1]" :key="k[0]"><div class="d-flex justify-content-between small py-1" style="border-bottom:1px solid var(--border)"><span x-text="k[1]"></span><span><template x-for="part in k[0].split(' ')" :key="part"><kbd class="me-1" x-text="part"></kbd></template></span></div></template>
+        </div>
+      </template>
+      <div class="text-muted-sm">On a Mac, use ⌘ where it says Ctrl.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Go to… ===== -->
+<div class="modal-backdrop-custom" x-show="palette.open" x-cloak @click.self="palette.open = false" style="align-items:flex-start; padding-top:12vh">
+  <div class="modal-panel" style="max-width:560px">
+    <div class="p-2">
+      <input class="form-control" x-ref="paletteInput" placeholder="Go to a page, connection or table…" x-model="palette.q" @input="palette.i = 0"
+             @keydown.arrow-down.prevent="palette.i = Math.min(palette.i + 1, paletteItems().length - 1)" @keydown.arrow-up.prevent="palette.i = Math.max(palette.i - 1, 0)"
+             @keydown.enter.prevent="runPalette(paletteItems()[palette.i])" @keydown.escape.prevent="palette.open = false">
+    </div>
+    <div style="max-height:50vh; overflow-y:auto" class="px-2 pb-2">
+      <template x-for="(it, i) in paletteItems()" :key="it.id">
+        <div class="d-flex align-items-center gap-2 px-2 py-1 rounded-2" style="cursor:pointer" :style="i === palette.i ? 'background:var(--accent-soft)' : ''" @mouseenter="palette.i = i" @click="runPalette(it)">
+          <i class="bi" :class="it.icon" style="width:1.2rem; color:var(--muted)"></i><span class="small flex-grow-1 text-truncate" x-text="it.label"></span><span class="text-muted-sm" x-text="it.hint"></span>
+        </div>
+      </template>
+      <div class="text-muted-sm px-2 py-2" x-show="!paletteItems().length">Nothing matches.</div>
     </div>
   </div>
 </div>
@@ -4492,6 +4611,12 @@ function app() {
     profileModal: { open: false, loading: false, error: '', data: null, column: '' },
     replaceModal: { open: false, find: '', replace: '', running: false, error: '', result: null },
     approvals: { view: 'toApprove', toApprove: [], mine: [], pending: 0, busy: false },
+    theme: 'system', navOpen: false, shortcutsOpen: false, palette: { open: false, q: '', i: 0 },
+    shortcutList: [
+      ['Anywhere', [['Ctrl K', 'Go to a page, connection or table'], ['?', 'Show this list'], ['Esc', 'Close the open dialog'], ['/', 'Focus the search box of the current list']]],
+      ['Query Runner', [['Ctrl Enter', 'Run the SQL (or the selection)'], ['Ctrl Shift F', 'Format the SQL'], ['Ctrl S', 'Save the SQL as a query'], ['Ctrl /', 'Comment / uncomment the lines'], ['Ctrl Space', 'Autocomplete tables and columns']]],
+      ['Pages', [['g r', 'Query Runner'], ['g e', 'Explore'], ['g c', 'Connections'], ['g q', 'Saved Queries'], ['g l', 'Query Log'], ['g s', 'Schedules'], ['g a', 'Approvals']]]
+    ],
     totpEnabled: false,
     twoFa: { open: false, forced: false, enabled: false, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false },
     dismissModal: { open: false, finding: null, reason: '', saving: false },
@@ -4629,6 +4754,7 @@ function app() {
     restoreModal: { open: false, file: null, running: false, done: false, progress: { executed: 0, failed: 0 }, errors: [], error: '', onError: 'stop', noFkChecks: true, xhr: null },
 
     async init() {
+      this.initUx();
       const sess = await fetch('/api/session').then(r => r.json());
       if (!sess.authenticated) { this.goLogin(); return; }
       this.username = sess.username;
@@ -4981,7 +5107,10 @@ function app() {
       sqlCm = window.CodeMirror.fromTextArea(textarea, {
         mode: 'text/x-mariadb', lineNumbers: true, lineWrapping: true, indentWithTabs: false, tabSize: 2,
         placeholder: textarea.getAttribute('placeholder'),
-        extraKeys: { 'Ctrl-Enter': run, 'Cmd-Enter': run, 'Ctrl-Space': 'autocomplete', Tab: (cm) => cm.replaceSelection('  ') },
+        extraKeys: {
+          'Ctrl-Enter': run, 'Cmd-Enter': run, 'Ctrl-Space': 'autocomplete', Tab: (cm) => cm.replaceSelection('  '),
+          'Ctrl-/': (cm) => this.toggleSqlComment(cm), 'Cmd-/': (cm) => this.toggleSqlComment(cm)
+        },
         hintOptions: { tables: this.hintTables(), completeSingle: false }
       });
       sqlCm.setValue(this.sql);
@@ -4996,6 +5125,19 @@ function app() {
       });
       this.editorReady = true;
       this.loadHintTables();
+    },
+    // Ctrl+/ : comment or uncomment the selected lines with --
+    toggleSqlComment(cm) {
+      const from = cm.getCursor('from').line; let to = cm.getCursor('to').line;
+      if (to > from && cm.getCursor('to').ch === 0) to--;
+      const lines = []; for (let i = from; i <= to; i++) lines.push(cm.getLine(i));
+      const allCommented = lines.every(l => /^\s*--(\s|$)/.test(l) || !l.trim());
+      cm.operation(() => {
+        lines.forEach((l, k) => {
+          if (!l.trim()) return;
+          cm.replaceRange(allCommented ? l.replace(/^(\s*)--\s?/, '$1') : l.replace(/^(\s*)/, '$1-- '), { line: from + k, ch: 0 }, { line: from + k, ch: l.length });
+        });
+      });
     },
     hintTables() {
       return this.sqlHintTables ? JSON.parse(JSON.stringify(this.sqlHintTables)) : {};
@@ -5544,6 +5686,86 @@ function app() {
       this.activeTab = 'runner';
       this.$nextTick(() => { if (sqlCm) sqlCm.setValue(f.fix); });
     },
+    // ---- Theme, shortcuts, phone menu ----
+    applyTheme() {
+      let dark = this.theme === 'dark';
+      if (this.theme === 'system') dark = Boolean(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-bs-theme', dark ? 'dark' : 'light');
+      if (window.Chart) { window.Chart.defaults.color = dark ? '#9aa2b5' : '#666'; window.Chart.defaults.borderColor = dark ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.1)'; }
+    },
+    cycleTheme() {
+      this.theme = { system: 'light', light: 'dark', dark: 'system' }[this.theme] || 'system';
+      try { localStorage.setItem('dbc.theme', this.theme); } catch (e) { /* ignore */ }
+      this.applyTheme();
+    },
+    initUx() {
+      try { this.theme = localStorage.getItem('dbc.theme') || 'system'; } catch (e) { this.theme = 'system'; }
+      this.applyTheme();
+      if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (this.theme === 'system') this.applyTheme(); });
+      // the phone menu closes when you go somewhere
+      for (const k of ['activeTab', 'exploreTable', 'exploreDatabase', 'exploreServer']) this.$watch(k, () => { this.navOpen = false; });
+      let gPending = 0;
+      window.addEventListener('keydown', (e) => this.onKey(e, () => gPending, (v) => { gPending = v; }));
+    },
+    openPalette() {
+      this.palette = { open: true, q: '', i: 0 };
+      this.$nextTick(() => this.$refs.paletteInput && this.$refs.paletteInput.focus());
+    },
+    paletteItems() {
+      const q = this.palette.q.trim().toLowerCase();
+      const tabs = [['runner', 'Query Runner', 'bi-terminal'], ['explore', 'Explore', 'bi-compass'], ['connections', 'Connections', 'bi-hdd-stack'], ['queries', 'Saved Queries', 'bi-bookmark-star'], ['logs', 'Query Log', 'bi-journal-text'], ['analytics', 'Analytics', 'bi-bar-chart-line'], ['schedules', 'Schedules', 'bi-alarm'], ['approvals', 'Approvals', 'bi-patch-check']];
+      if (this.isAdmin()) tabs.push(['users', 'Users', 'bi-people'], ['system', 'Update & Restart', 'bi-arrow-repeat']);
+      const items = tabs.map(([tab, label, icon]) => ({ id: 'tab:' + tab, label, icon, hint: 'page', tab }));
+      for (const c of this.connections) items.push({ id: 'conn:' + c.key, label: c.label, icon: 'bi-hdd-network', hint: 'open in Explore', conn: c.key });
+      if (this.activeTab === 'explore' && this.exploreConnKey && this.exploreDatabase) {
+        for (const t of this.exploreTables.slice(0, 500)) items.push({ id: 'table:' + t.name, label: t.name, icon: 'bi-table', hint: this.exploreDatabase, table: t.name });
+      }
+      items.push({ id: 'act:theme', label: 'Change theme', icon: 'bi-circle-half', hint: this.theme, action: 'theme' }, { id: 'act:help', label: 'Keyboard shortcuts', icon: 'bi-keyboard', hint: '?', action: 'help' });
+      return (q ? items.filter(i => i.label.toLowerCase().includes(q)) : items).slice(0, 40);
+    },
+    async runPalette(it) {
+      if (!it) return;
+      this.palette.open = false;
+      if (it.tab) this.openTab(it.tab);
+      else if (it.conn) { this.activeTab = 'explore'; await this.selectExploreConnection(it.conn); }
+      else if (it.table) await this.selectExploreTable(it.table);
+      else if (it.action === 'theme') this.cycleTheme();
+      else if (it.action === 'help') this.shortcutsOpen = true;
+    },
+    onKey(e, getG, setG) {
+      if (!this.username) return;
+      const el = e.target;
+      const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable || (el.closest && el.closest('.CodeMirror')));
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); this.openPalette(); return; }
+      if (e.key === 'Escape') {
+        if (this.palette.open) { this.palette.open = false; return; }
+        const closeBtn = [...document.querySelectorAll('.modal-backdrop-custom')].filter(m => getComputedStyle(m).display !== 'none').pop();
+        const x = closeBtn && closeBtn.querySelector('.modal-header-custom .bi-x-lg');
+        if (x) { e.preventDefault(); x.closest('button').click(); }
+        else if (this.navOpen) this.navOpen = false;
+        return;
+      }
+      if (this.activeTab === 'runner' && mod && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); if (this.sql.trim()) this.openQueryModal(null, this.sql); return; }
+      if (this.activeTab === 'runner' && mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); this.formatSql(); return; }
+      if (typing) return;
+      if (e.key === '?' && !mod) { e.preventDefault(); this.shortcutsOpen = true; return; }
+      if (e.key === '/' && !mod) {
+        const box = document.querySelector('input[type=search]:not([hidden])');
+        if (box && box.offsetParent !== null) { e.preventDefault(); box.focus(); }
+        return;
+      }
+      if (mod || e.altKey) return;
+      if (getG() && Date.now() - getG() < 1200) {
+        setG(0);
+        const go = { r: 'runner', e: 'explore', c: 'connections', q: 'queries', l: 'logs', s: 'schedules', a: 'approvals' }[e.key.toLowerCase()];
+        if (go) { e.preventDefault(); this.openTab(go); }
+        return;
+      }
+      if (e.key === 'g') setG(Date.now());
+    },
+
     // ---- Approvals ----
     async loadApprovals() {
       try {
