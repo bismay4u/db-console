@@ -354,6 +354,7 @@
   /* Shared with limited permissions: hide what the user can't do (see permClasses) */
   .no-insert .perm-insert, .no-update .perm-update, .no-delete .perm-delete, .no-create .perm-create, .no-alter .perm-alter,
   .no-index .perm-index, .no-drop .perm-drop, .no-truncate .perm-truncate, .no-restore .perm-restore{ display:none!important; }
+  .engine-other .mysql-only{ display:none!important; }
   /* shown while at least one of these is allowed */
   .no-alter.no-create.no-truncate.no-drop .perm-ddl{ display:none!important; }
   .no-update.no-delete .perm-rows{ display:none!important; }
@@ -665,7 +666,8 @@
                                 :title="isSwitched(c) ? 'Current database (switched with USE) — default is ' + c.database : 'Current database'">
                             <i class="bi bi-database"></i><span x-text="currentDb(c)"></span>
                           </span>
-                          <span class="text-truncate" x-text="c.host + ':' + c.port"></span>
+                          <span class="badge rounded-pill badge-soft-success" x-show="c.engine && c.engine !== 'mysql'" x-text="engineName(c.engine)"></span>
+                          <span class="text-truncate" x-text="c.engine === 'sqlite' ? c.database : c.host + ':' + c.port"></span>
                         </div>
                       </div>
                       <button class="btn btn-sm db-reset" x-show="isSwitched(c)" :title="'Back to the default database (' + c.database + ')'"
@@ -977,7 +979,7 @@ Separate multiple statements with ; — highlight text to run just that part."
 
     <!-- ================= EXPLORE ================= -->
     <template x-if="activeTab === 'explore'">
-      <div :class="permClasses()">
+      <div :class="permClasses() + (exploreEngine() !== 'mysql' ? ' engine-other' : '')">
         <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-center gap-3">
           <div class="d-flex align-items-center gap-2">
             <label class="text-muted-sm mb-0">Connection</label>
@@ -1004,7 +1006,7 @@ Separate multiple statements with ; — highlight text to run just that part."
           <span class="text-muted-sm" x-show="!exploreConnKey">
             <i class="bi bi-info-circle me-1"></i>Pick a connection to browse its databases.
           </span>
-          <button class="btn btn-sm" :class="exploreServer ? 'btn-accent' : 'btn-outline-soft'" x-show="exploreConnKey && exploreConnCanManage()"
+          <button class="mysql-only btn btn-sm" :class="exploreServer ? 'btn-accent' : 'btn-outline-soft'" x-show="exploreConnKey && exploreConnCanManage()"
                   @click="openServerView()" title="Process list, variables, status, users & privileges">
             <i class="bi bi-hdd-rack me-1"></i>Server
           </button>
@@ -1013,7 +1015,7 @@ Separate multiple statements with ; — highlight text to run just that part."
             <button class="btn btn-outline-soft btn-sm" x-show="exploreSidebarHidden" @click="exploreSidebarHidden = false" title="Show the tables & views list">
               <i class="bi bi-layout-sidebar me-1"></i>Tables
             </button>
-            <button class="btn btn-outline-soft btn-sm" @click="openExportModal()">
+            <button class="mysql-only btn btn-outline-soft btn-sm" @click="openExportModal()">
               <i class="bi bi-cloud-arrow-down me-1"></i>Export
             </button>
             <button class="perm-restore btn btn-outline-soft btn-sm" @click="openRestoreModal">
@@ -1190,16 +1192,16 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <button class="tab-btn" :class="overviewTab==='tables' && 'active'" @click="overviewTab='tables'">
                         Tables <span class="tab-count" x-text="exploreTables.length"></span>
                       </button>
-                      <button class="tab-btn" :class="overviewTab==='search' && 'active'" @click="overviewTab='search'">Search</button>
+                      <button class="tab-btn mysql-only" :class="overviewTab==='search' && 'active'" @click="overviewTab='search'">Search</button>
                       <button class="tab-btn" :class="overviewTab==='diagram' && 'active'" @click="openDiagram()">Diagram</button>
-                      <button class="tab-btn" :class="overviewTab==='compare' && 'active'" @click="openCompare()">Compare</button>
-                      <button class="tab-btn" :class="overviewTab==='analysis' && 'active'" @click="openAnalysis()">
+                      <button class="tab-btn mysql-only" :class="overviewTab==='compare' && 'active'" @click="openCompare()">Compare</button>
+                      <button class="tab-btn mysql-only" :class="overviewTab==='analysis' && 'active'" @click="openAnalysis()">
                         Analysis <span class="tab-count" :class="analysisBadgeClass()" x-show="analysisHere() && analysis.result" x-text="analysis.result ? analysis.result.summary.total : ''"></span>
                       </button>
                     </div>
                   </div>
                   <div class="d-flex align-items-center gap-2">
-                    <button class="btn btn-outline-soft btn-sm" @click="openAnalysis(true)" title="Check this database for missing indexes and other anomalies"><i class="bi bi-heart-pulse me-1"></i>Analyze</button>
+                    <button class="mysql-only btn btn-outline-soft btn-sm" @click="openAnalysis(true)" title="Check this database for missing indexes and other anomalies"><i class="bi bi-heart-pulse me-1"></i>Analyze</button>
                     <button class="perm-create btn btn-accent btn-sm" @click="openTableEditor('create')"><i class="bi bi-plus-lg me-1"></i>Create table</button>
                     <div class="perm-create dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
                       <button class="btn btn-outline-soft btn-sm" @click="open = !open"><i class="bi bi-plus-lg me-1"></i>New <i class="bi bi-chevron-down ms-1" style="font-size:.7rem"></i></button>
@@ -1601,7 +1603,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <div class="d-flex align-items-center gap-2" x-show="exploreView==='data'">
                   <button class="btn btn-outline-soft btn-sm" @click="loadExploreRows" title="Reload"><i class="bi bi-arrow-clockwise"></i></button>
                   <a class="btn btn-outline-soft btn-sm" :href="tableExportUrl()" target="_blank" :title="exploreFiltersActive() ? 'Exports the rows matching the current search/filters' : 'Exports the whole table'"><i class="bi bi-download me-1"></i>Export CSV</a>
-                  <button class="perm-insert btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal" title="CSV, TSV, Excel or JSON"><i class="bi bi-upload me-1"></i>Import</button>
+                  <button class="mysql-only perm-insert btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal" title="CSV, TSV, Excel or JSON"><i class="bi bi-upload me-1"></i>Import</button>
                   <button class="perm-insert btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow()"><i class="bi bi-plus-lg me-1"></i>Add row</button>
                 </div>
               </div>
@@ -1633,7 +1635,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                         </div>
                       </div>
                       <button class="btn btn-link btn-sm text-decoration-none" x-show="exploreFilters.length || exploreSearch" @click="clearExploreFilters()">Clear all</button>
-                      <button class="perm-update btn btn-sm btn-outline-soft ms-auto" x-show="!exploreIsView() && exploreRows.length" @click="openBulkEdit()"
+                      <button class="mysql-only perm-update btn btn-sm btn-outline-soft ms-auto" x-show="!exploreIsView() && exploreRows.length" @click="openBulkEdit()"
                               :title="exploreSelected.length ? 'Change a column in the selected rows' : 'Change a column in every row matching the filters'">
                         <i class="bi bi-pencil-square me-1"></i><span x-text="exploreSelected.length ? 'Edit selected (' + exploreSelected.length + ')' : 'Bulk edit…'"></span>
                       </button>
@@ -2551,19 +2553,38 @@ Separate multiple statements with ; — highlight text to run just that part."
           <label class="form-label small fw-medium">Label</label>
           <input type="text" class="form-control" x-model="connModal.form.label" placeholder="Production DB">
         </div>
-        <div class="col-8">
+        <div class="col-12" x-show="!connModal.key">
+          <label class="form-label small fw-medium">Type</label>
+          <select class="form-select" x-model="connModal.form.engine" @change="connModal.form.port = ({ postgres: 5432, sqlite: '', mysql: 3306 })[connModal.form.engine]">
+            <option value="mysql">MySQL / MariaDB</option>
+            <option value="postgres">PostgreSQL</option>
+            <option value="sqlite" x-show="isAdmin()">SQLite (a file on this server)</option>
+          </select>
+          <div class="form-text" x-show="connModal.form.engine !== 'mysql'">Browsing, editing rows, the Query Runner, downloads and scheduled queries work; schema editing, backups, analysis and the server tools are MySQL / MariaDB only for now.</div>
+        </div>
+        <template x-if="connModal.form.engine === 'sqlite'">
+          <div class="col-12">
+            <label class="form-label small fw-medium">File path</label>
+            <input type="text" class="form-control" x-model="connModal.form.database" placeholder="/data/app.db" :disabled="connModal.key && !isAdmin()">
+            <div class="d-flex gap-3 mt-1">
+              <label class="form-check-label small" x-show="!connModal.key"><input type="checkbox" class="form-check-input me-1" x-model="connModal.form.sqliteCreate">Create it if missing</label>
+              <label class="form-check-label small"><input type="checkbox" class="form-check-input me-1" x-model="connModal.form.sqliteReadOnly">Open read-only</label>
+            </div>
+          </div>
+        </template>
+        <div class="col-8" x-show="connModal.form.engine !== 'sqlite'">
           <label class="form-label small fw-medium">Host</label>
           <input type="text" class="form-control" x-model="connModal.form.host" placeholder="localhost">
         </div>
-        <div class="col-4">
+        <div class="col-4" x-show="connModal.form.engine !== 'sqlite'">
           <label class="form-label small fw-medium">Port</label>
           <input type="number" class="form-control" x-model="connModal.form.port" placeholder="3306">
         </div>
-        <div class="col-6">
+        <div class="col-6" x-show="connModal.form.engine !== 'sqlite'">
           <label class="form-label small fw-medium">User</label>
           <input type="text" class="form-control" x-model="connModal.form.user">
         </div>
-        <div class="col-6">
+        <div class="col-6" x-show="connModal.form.engine !== 'sqlite'">
           <label class="form-label small fw-medium">
             Password
             <span class="text-muted-sm" x-show="connModal.key">(leave blank to keep current)</span>
@@ -2572,14 +2593,14 @@ Separate multiple statements with ; — highlight text to run just that part."
           </label>
           <input type="password" class="form-control" x-model="connModal.form.password">
         </div>
-        <div class="col-12">
+        <div class="col-12" x-show="connModal.form.engine !== 'sqlite'">
           <label class="form-label small fw-medium">Database</label>
           <input type="text" class="form-control" x-model="connModal.form.database">
         </div>
       </div>
 
       <!-- TLS and SSH tunnel -->
-      <div class="mt-3">
+      <div class="mt-3" x-show="connModal.form.engine !== 'sqlite'">
         <a href="#" class="small text-decoration-none" @click.prevent="connModal.showNet = !connModal.showNet">
           <i class="bi" :class="connModal.showNet ? 'bi-chevron-down' : 'bi-chevron-right'"></i> Encryption &amp; SSH tunnel
           <span class="badge rounded-pill badge-soft-success ms-1" x-show="connModal.form.sslMode" x-text="connModal.form.sslMode === 'verify' ? 'TLS verified' : 'TLS'"></span>
@@ -5453,10 +5474,10 @@ function app() {
     // means "reuse the original's password" (the browser never has it).
     openConnModal(conn, clone = false) {
       const fromConn = conn
-        ? { label: conn.label, host: conn.host, port: conn.port, user: conn.user, password: '', database: conn.database,
+        ? { engine: conn.engine || 'mysql', sqliteCreate: false, sqliteReadOnly: Boolean(conn.sqliteReadOnly), label: conn.label, host: conn.host, port: conn.port, user: conn.user, password: '', database: conn.database,
             sslMode: conn.sslMode || '', sslCa: conn.sslCa || '', sslCert: conn.sslCert || '', sslKey: '',
             sshHost: conn.sshHost || '', sshPort: conn.sshPort || 22, sshUser: conn.sshUser || '', sshPassword: '', sshPrivateKey: '', sshPassphrase: '', sshHostKey: conn.sshHostKey || '' }
-        : { label: '', host: '', port: 3306, user: '', password: '', database: '',
+        : { engine: 'mysql', sqliteCreate: false, sqliteReadOnly: false, label: '', host: '', port: 3306, user: '', password: '', database: '',
             sslMode: '', sslCa: '', sslCert: '', sslKey: '', sshHost: '', sshPort: 22, sshUser: '', sshPassword: '', sshPrivateKey: '', sshPassphrase: '', sshHostKey: '' };
       if (conn && clone) fromConn.label = conn.label + ' (copy)';
       this.connModal = {
@@ -6507,8 +6528,15 @@ function app() {
     // Permissions on the connection open in Explore (the owner and admins have all).
     explorePermissions() {
       const c = this.connections.find((x) => x.key === this.exploreConnKey);
-      return c && Array.isArray(c.permissions) ? c.permissions : this.allPermissionKeys();
+      const all = c && Array.isArray(c.permissions) ? c.permissions : this.allPermissionKeys();
+      // PostgreSQL and SQLite connections browse and edit rows; schema editing is not available for them yet.
+      return this.exploreEngine() === 'mysql' ? all : all.filter((x) => !['create', 'alter', 'index', 'drop', 'truncate', 'restore'].includes(x));
     },
+    exploreEngine() {
+      const c = this.connections.find((x) => x.key === this.exploreConnKey);
+      return (c && c.engine) || 'mysql';
+    },
+    engineName(e) { return { postgres: 'PostgreSQL', sqlite: 'SQLite' }[e] || 'MySQL / MariaDB'; },
     allPermissionKeys() {
       return (this.permissionList.length ? this.permissionList : [{ key: 'insert' }, { key: 'update' }, { key: 'delete' }, { key: 'create' }, { key: 'alter' }, { key: 'index' }, { key: 'drop' }, { key: 'truncate' }, { key: 'restore' }, { key: 'sql' }]).map((p) => p.key);
     },

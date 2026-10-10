@@ -25,6 +25,15 @@ jobs:
         options: >-
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=5s --health-timeout=5s --health-retries=20
+      pg:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dbc
+          POSTGRES_PASSWORD: dbcpass
+          POSTGRES_DB: dbc_pg
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd="pg_isready -U dbc" --health-interval=5s --health-timeout=5s --health-retries=20
     env:
       TEST_DB_HOST: 127.0.0.1
       TEST_DB_PORT: 3306

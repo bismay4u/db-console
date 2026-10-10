@@ -734,6 +734,19 @@ Only the owner or an admin can edit, delete or share a connection.
 
 ---
 
+## PostgreSQL and SQLite
+
+Besides MySQL / MariaDB, a connection can point at a **PostgreSQL** server or a **SQLite** file. Choose the type when you create the connection.
+
+- **PostgreSQL**: host, port (5432), user, password and database as usual. TLS and the SSH tunnel work the same way as for MySQL. Schemas appear where MySQL has databases (system schemas are hidden).
+- **SQLite**: the path of a file on the machine DB Console runs on. Only administrators may create or change these (the path is a file on the server). *Create it if missing* creates an empty file; *Open read-only* refuses every write.
+
+What works on both: the connection test, Explore (tables, views, triggers and routines, structure, indexes, foreign keys, the diagram, browsing with sorting, paging, filters and search, adding, editing and deleting rows), the Query Runner (multi-statement scripts, Explain, parameters, history, charts, Stop), query and table downloads, saved queries, sharing, per-connection permissions (read-only shares), the query log, and scheduled **query** and **connection check** jobs.
+
+Not available yet for these connections (the page says so instead of failing): creating or altering tables, databases, indexes and foreign keys, Import, bulk edit, Backup / Restore, Analysis, Search and replace, Compare, the Server tools, scheduled analysis and backup jobs, and database-level access restrictions in the Query Runner (those users can still use Explore).
+
+Notes: Stop on SQLite abandons the running statement (a statement inside SQLite's own code cannot be interrupted from Node), so a runaway query may keep a CPU busy until it ends; the connection itself is usable again at once. Big integers and `bytea` / `BLOB` values are shown exactly (as text and hex). The test suite runs the PostgreSQL tests only when a server is reachable (`TEST_PG_HOST`, `TEST_PG_PORT`, `TEST_PG_USER`, `TEST_PG_PASS`, `TEST_PG_DB`, default `127.0.0.1:5432`, `dbc` / `dbcpass`, database `dbc_pg`).
+
 ## Saved Queries
 
 ```http
