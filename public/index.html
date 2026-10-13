@@ -5,6 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DB Console</title>
 <script>
+  // The app can live in a sub-folder (https://host/tools/db/): BASE is that folder ('' at the root) and every
+  // absolute path the page asks for (/api/..., /login, downloads) gets it in front.
+  window.BASE = location.pathname.replace(/\/(?:index\.html|login(?:\.html)?)?\/?$/, '');
+  window.U = function (u) { return typeof u === 'string' && u.charAt(0) === '/' && u.charAt(1) !== '/' ? window.BASE + u : u; };
+  (function () {
+    var f = window.fetch;
+    window.fetch = function (u, o) { return f.call(this, typeof u === 'string' ? window.U(u) : u, o); };
+    var open = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (m, u) { var a = Array.prototype.slice.call(arguments); a[1] = window.U(u); return open.apply(this, a); };
+  })();
+</script>
+<script>
   // Light / dark / follow the system, applied before the first paint so there is no flash.
   (function () {
     var mode = 'system';
@@ -1618,7 +1630,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                 </div>
                 <div class="d-flex align-items-center gap-2" x-show="exploreView==='data'">
                   <button class="btn btn-outline-soft btn-sm" @click="loadExploreRows" title="Reload"><i class="bi bi-arrow-clockwise"></i></button>
-                  <a class="btn btn-outline-soft btn-sm" :href="tableExportUrl()" target="_blank" :title="exploreFiltersActive() ? 'Exports the rows matching the current search/filters' : 'Exports the whole table'"><i class="bi bi-download me-1"></i>Export CSV</a>
+                  <a class="btn btn-outline-soft btn-sm" :href="U(tableExportUrl())" target="_blank" :title="exploreFiltersActive() ? 'Exports the rows matching the current search/filters' : 'Exports the whole table'"><i class="bi bi-download me-1"></i>Export CSV</a>
                   <button class="mysql-only perm-insert btn btn-outline-soft btn-sm" x-show="!exploreIsView()" @click="openImportModal" title="CSV, TSV, Excel or JSON"><i class="bi bi-upload me-1"></i>Import</button>
                   <button class="perm-insert btn btn-accent btn-sm" x-show="!exploreIsView()" @click="openInsertRow()"><i class="bi bi-plus-lg me-1"></i>Add row</button>
                 </div>
@@ -2099,7 +2111,7 @@ Separate multiple statements with ; — highlight text to run just that part."
             <label class="text-muted-sm d-block mb-1">Search</label>
             <input type="search" class="form-control form-control-sm" placeholder="SQL, error or connection…" x-model="logFilters.q" @input.debounce.400ms="loadLogs(true)">
           </div>
-          <a class="btn btn-outline-soft btn-sm" :href="logCsvUrl()" title="Download every matching entry as CSV (for audits)"><i class="bi bi-download me-1"></i>CSV</a>
+          <a class="btn btn-outline-soft btn-sm" :href="U(logCsvUrl())" title="Download every matching entry as CSV (for audits)"><i class="bi bi-download me-1"></i>CSV</a>
           <button class="btn btn-outline-soft btn-sm" @click="resetLogFilters" title="Reset filters"><i class="bi bi-x-circle"></i></button>
           <button class="btn btn-outline-soft btn-sm" @click="loadLogs()" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
         </div>
@@ -2424,7 +2436,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <button class="btn btn-outline-soft btn-sm" :disabled="authLog.page * authLog.size >= authLog.total" @click="authLog.page++; loadAuthLog()"><i class="bi bi-chevron-right"></i></button>
                 </div>
               </template>
-              <a class="btn btn-outline-soft btn-sm" :href="authCsvUrl()"><i class="bi bi-download me-1"></i>CSV</a>
+              <a class="btn btn-outline-soft btn-sm" :href="U(authCsvUrl())"><i class="bi bi-download me-1"></i>CSV</a>
             </div>
           </div>
           <div class="table-responsive">
@@ -3190,7 +3202,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <div class="text-danger small" x-show="r.notifyErrors" x-text="(r.notifyErrors || []).join('; ')"></div></td>
                 <td class="text-muted-sm text-nowrap" x-text="r.durationMs !== undefined ? (r.durationMs / 1000).toFixed(1) + ' s' : ''"></td>
                 <td class="text-muted-sm" x-text="(r.notified || []).join(' + ')"></td>
-                <td class="text-end"><a class="btn btn-sm btn-outline-soft" x-show="r.file" :href="`/api/jobs/${jobRuns.job.id}/runs/${r.id}/file`" title="Download"><i class="bi bi-download"></i></a></td>
+                <td class="text-end"><a class="btn btn-sm btn-outline-soft" x-show="r.file" :href="U(`/api/jobs/${jobRuns.job.id}/runs/${r.id}/file`)" title="Download"><i class="bi bi-download"></i></a></td>
               </tr>
             </template>
             <tr x-show="!jobRuns.runs.length"><td colspan="5" class="text-center text-muted-sm py-3">No runs yet.</td></tr>
@@ -3716,7 +3728,7 @@ Separate multiple statements with ; — highlight text to run just that part."
     </div>
     <div class="modal-footer-custom">
       <button class="btn btn-outline-soft" @click="exportModal.open = false">Cancel</button>
-      <a class="btn btn-accent" :class="!exportModal.tables.length && 'disabled'" :href="exportUrl()" @click="exportModal.open = false; showToast('Export started — the download will begin shortly')">
+      <a class="btn btn-accent" :class="!exportModal.tables.length && 'disabled'" :href="U(exportUrl())" @click="exportModal.open = false; showToast('Export started — the download will begin shortly')">
         <i class="bi bi-download me-1"></i>Export
       </a>
     </div>
@@ -3769,7 +3781,7 @@ Separate multiple statements with ; — highlight text to run just that part."
     </div>
   </div>
 </div>
-<form x-ref="downloadForm" method="POST" action="/api/query/export" target="downloadFrame" style="display:none"></form>
+<form x-ref="downloadForm" method="POST" :action="U('/api/query/export')" target="downloadFrame" style="display:none"></form>
 <iframe name="downloadFrame" title="download" style="display:none" @load="downloadFrameLoaded($event)"></iframe>
 
 <!-- ===== Explore: Analysis rules ===== -->
@@ -5008,7 +5020,7 @@ function app() {
     // Sends the browser to the login page, remembering where it was going.
     goLogin() {
       try { if (location.hash) sessionStorage.setItem('dbc.afterLogin', location.hash); } catch (e) { /* no sessionStorage */ }
-      window.location.href = '/login';
+      window.location.href = window.BASE + '/login';
     },
 
     // ---- URL ↔ UI state ----
@@ -6778,7 +6790,7 @@ function app() {
     downloadCell(row, col) {
       const where = this.rowWhere(row);
       const params = new URLSearchParams({ where: JSON.stringify(where), col });
-      window.open(`${this.tableBase()}/cell?${params}`, '_blank');
+      window.open(window.U(`${this.tableBase()}/cell?${params}`), '_blank');
     },
 
     // ---- Inline cell editing (double-click a cell) ----
@@ -8811,7 +8823,7 @@ function app() {
 
     async logout() {
       await fetch('/api/logout', { method: 'POST' });
-      window.location.href = '/login';
+      window.location.href = window.BASE + '/login';
     }
   };
 }

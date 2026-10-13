@@ -71,11 +71,29 @@ app.get('/health', (req, res) => {
 const SESSION_MINUTES = Number(process.env.SESSION_MINUTES || config.sessionMinutes) || 240;
 const IDLE_MINUTES = Number(process.env.IDLE_MINUTES || config.idleMinutes) || 0;
 
+// ---- Running in a sub-folder (https://host/tools/db/) ----
+// Behind a reverse proxy that strips the folder, nothing special is needed except that redirects must put it back:
+// the proxy sends it as X-Forwarded-Prefix, or set BASE_PATH (or `basePath` in config.json). When the proxy keeps the
+// folder in the URL, BASE_PATH also makes the app accept it.
+function normalizeBase(p) {
+  const t = String(p || '').trim().replace(/^\/+|\/+$/g, '');
+  return t && /^[\w.~%\-]+(\/[\w.~%\-]+)*$/.test(t) ? '/' + t : '';
+}
+const BASE_PATH = normalizeBase(process.env.BASE_PATH || config.basePath);
+const baseOf = (req) => BASE_PATH || normalizeBase(req.get('x-forwarded-prefix'));
+if (BASE_PATH) {
+  app.use((req, res, next) => {
+    if (req.url === BASE_PATH) return res.redirect(301, BASE_PATH + '/');
+    if (req.url.startsWith(BASE_PATH + '/') || req.url.startsWith(BASE_PATH + '?')) req.url = req.url.slice(BASE_PATH.length) || '/';
+    return next();
+  });
+}
+
 // Large enough for long SQL in the Query Runner and big bulk edits. File
 // uploads (import, restore) are streamed as raw bodies and don't go through
 // this parser.
 app.use(express.json({ limit: '20mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), { index: false })); // '/' is answered by the page route below (signed out: the login page)
 
 // Sessions are stored as files in the data directory, so every PM2 cluster
 // worker sees the same sessions and a restart doesn't sign anyone out.
@@ -93,6 +111,20 @@ app.use(
     }
   })
 );
+
+// The session cookie belongs to the folder, so two apps on one host do not share (or overwrite) it.
+app.use((req, res, next) => {
+  const b = baseOf(req);
+  if (b && req.session) {
+    req.session.cookie.path = b;
+    // Signing in replaces the session object; the new one needs the same path.
+    const regenerate = req.session.regenerate;
+    req.session.regenerate = function (cb) {
+      return regenerate.call(this, (err) => { if (!err && req.session) req.session.cookie.path = b; cb(err); });
+    };
+  }
+  next();
+});
 
 // Idle timeout: a session unused for IDLE_MINUTES is ended.
 app.use((req, res, next) => {
@@ -556,8 +588,8 @@ app.get('/api/auth-config', (req, res) => {
   res.json({ oidc: oidcClient ? { label: oidcSettings.label } : null, ldap: ldapClient ? { label: ldapSettings.label } : null });
 });
 
-const oidcRedirectUri = (req) => oidcSettings.redirectUri || `${req.protocol}://${req.get('host')}/auth/oidc/callback`;
-const loginError = (res, message) => res.redirect('/login?error=' + encodeURIComponent(message));
+const oidcRedirectUri = (req) => oidcSettings.redirectUri || `${req.protocol}://${req.get('host')}${baseOf(req)}/auth/oidc/callback`;
+const loginError = (res, message) => res.redirect(baseOf(res.req) + '/login?error=' + encodeURIComponent(message));
 
 app.get('/auth/oidc/login', async (req, res) => {
   if (!oidcClient) return loginError(res, 'Single sign-on is not set up');
@@ -579,7 +611,7 @@ app.get('/auth/oidc/callback', async (req, res) => {
     const profile = await oidcClient.finish(req.query, saved);
     const user = provisionSsoUser(profile);
     recordLoginAttempt(req, '*sso', true);
-    return completeLogin(req, res, user, { method: 'SSO', redirect: '/' });
+    return completeLogin(req, res, user, { method: 'SSO', redirect: baseOf(req) + '/' });
   } catch (e) {
     authlog.record({ ...who, username: '(sso)', event: 'login_failed', detail: `SSO: ${e.message}` });
     recordLoginAttempt(req, '*sso', false);
@@ -2042,12 +2074,12 @@ app.get('/', (req, res) => {
   if (req.user) {
     return res.sendFile(path.join(__dirname, 'public', 'index.html'));
   }
-  return res.redirect('/login');
+  return res.redirect(baseOf(req) + '/login');
 });
 
 app.get('/login', (req, res) => {
   if (req.user) {
-    return res.redirect('/');
+    return res.redirect(baseOf(req) + '/');
   }
   return res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });

@@ -5,6 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in · DB Console</title>
 <script>
+  // The app can live in a sub-folder (https://host/tools/db/): BASE is that folder ('' at the root) and every
+  // absolute path the page asks for (/api/..., /login, downloads) gets it in front.
+  window.BASE = location.pathname.replace(/\/(?:index\.html|login(?:\.html)?)?\/?$/, '');
+  window.U = function (u) { return typeof u === 'string' && u.charAt(0) === '/' && u.charAt(1) !== '/' ? window.BASE + u : u; };
+  (function () {
+    var f = window.fetch;
+    window.fetch = function (u, o) { return f.call(this, typeof u === 'string' ? window.U(u) : u, o); };
+    var open = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (m, u) { var a = Array.prototype.slice.call(arguments); a[1] = window.U(u); return open.apply(this, a); };
+  })();
+</script>
+<script>
   (function () {
     var mode = 'system';
     try { mode = localStorage.getItem('dbc.theme') || 'system'; } catch (e) { /* storage unavailable */ }
@@ -81,7 +93,7 @@
   <div class="alert alert-danger py-2 small" x-show="error" x-text="error" x-cloak></div>
 
   <div x-show="step === 'password' && sso" x-cloak class="mb-3">
-    <a href="/auth/oidc/login" class="btn btn-outline-secondary w-100"><i class="bi bi-box-arrow-in-right me-1"></i>Sign in with <span x-text="sso && sso.label"></span></a>
+    <a :href="U('/auth/oidc/login')" class="btn btn-outline-secondary w-100"><i class="bi bi-box-arrow-in-right me-1"></i>Sign in with <span x-text="sso && sso.label"></span></a>
     <div class="text-center text-muted small my-3">or with a password</div>
   </div>
 
@@ -146,7 +158,7 @@ function loginForm() {
           this.step = 'code'; this.password = '';
           this.$nextTick(() => this.$refs.code && this.$refs.code.focus());
         } else {
-          window.location.href = '/';
+          window.location.href = window.BASE + '/';
         }
       } catch (e) {
         this.error = 'Network error, please try again';
@@ -164,7 +176,7 @@ function loginForm() {
           this.error = data.error || 'Verification failed';
           if (data.expired) this.step = 'password';
           this.code = '';
-        } else window.location.href = '/';
+        } else window.location.href = window.BASE + '/';
       } catch (e) {
         this.error = 'Network error, please try again';
       } finally {

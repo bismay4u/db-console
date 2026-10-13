@@ -1023,6 +1023,15 @@ It can execute arbitrary SQL using the credentials supplied through its database
 
 Treat it accordingly.
 
+### Running in a sub-folder (`https://host/tools/db/`)
+
+The app works at the root of a domain or subdomain and in a folder of one. Pages and API calls follow the folder they were opened from, so the only thing the server needs to know is the folder, for redirects and the session cookie. Either way it is one of:
+
+* **The proxy strips the folder** (the usual `location /tools/db/ { proxy_pass http://127.0.0.1:3000/; }`): send the folder along, `proxy_set_header X-Forwarded-Prefix /tools/db;`, or set `BASE_PATH=/tools/db`. Without either, everything still works except that a redirect (for example from the front page to the login page) can land on the site root.
+* **The proxy keeps the folder** (`proxy_pass http://127.0.0.1:3000;`): set `BASE_PATH=/tools/db` (or `"basePath"` in `config.json`). The app then accepts URLs under that folder, and a request for `/tools/db` is sent to `/tools/db/`.
+
+The session cookie is limited to the folder, so two copies on one host do not share it. For single sign-on, register `https://host/tools/db/auth/oidc/callback` with the provider (or set `OIDC_REDIRECT_URI`), and put the full address, folder included, in the notification settings' base URL.
+
 ## Recommended deployment
 
 Do **not** expose DB Console directly to the public Internet.
