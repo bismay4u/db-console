@@ -81,6 +81,14 @@ function normalizeBase(p) {
 }
 const BASE_PATH = normalizeBase(process.env.BASE_PATH || config.basePath);
 const baseOf = (req) => BASE_PATH || normalizeBase(req.get('x-forwarded-prefix'));
+// A redirect to another page of the app. When the folder is known it is put in front; when it is not (a proxy that
+// strips the folder and says nothing), the address is relative to the one requested, which stays inside the folder.
+function appUrl(req, target = '') {
+  const b = baseOf(req);
+  if (b) return b + '/' + target;
+  const depth = req.path.split('/').filter(Boolean).length;
+  return (depth > 1 ? '../'.repeat(depth - 1) : './') + target;
+}
 if (BASE_PATH) {
   app.use((req, res, next) => {
     if (req.url === BASE_PATH) return res.redirect(301, BASE_PATH + '/');
@@ -589,7 +597,7 @@ app.get('/api/auth-config', (req, res) => {
 });
 
 const oidcRedirectUri = (req) => oidcSettings.redirectUri || `${req.protocol}://${req.get('host')}${baseOf(req)}/auth/oidc/callback`;
-const loginError = (res, message) => res.redirect(baseOf(res.req) + '/login?error=' + encodeURIComponent(message));
+const loginError = (res, message) => res.redirect(appUrl(res.req, 'login?error=' + encodeURIComponent(message)));
 
 app.get('/auth/oidc/login', async (req, res) => {
   if (!oidcClient) return loginError(res, 'Single sign-on is not set up');
@@ -611,7 +619,7 @@ app.get('/auth/oidc/callback', async (req, res) => {
     const profile = await oidcClient.finish(req.query, saved);
     const user = provisionSsoUser(profile);
     recordLoginAttempt(req, '*sso', true);
-    return completeLogin(req, res, user, { method: 'SSO', redirect: baseOf(req) + '/' });
+    return completeLogin(req, res, user, { method: 'SSO', redirect: appUrl(req) });
   } catch (e) {
     authlog.record({ ...who, username: '(sso)', event: 'login_failed', detail: `SSO: ${e.message}` });
     recordLoginAttempt(req, '*sso', false);
@@ -2074,12 +2082,13 @@ app.get('/', (req, res) => {
   if (req.user) {
     return res.sendFile(path.join(__dirname, 'public', 'index.html'));
   }
-  return res.redirect(baseOf(req) + '/login');
+  // Signed out: the login page is answered right here, so the address stays whatever the proxy made it.
+  return res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
 app.get('/login', (req, res) => {
   if (req.user) {
-    return res.redirect(baseOf(req) + '/');
+    return res.redirect(appUrl(req));
   }
   return res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
