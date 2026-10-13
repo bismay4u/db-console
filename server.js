@@ -20,7 +20,6 @@ const metrics = require('./api/metrics');
 const totp = require('./api/totp');
 const secrets = require('./api/secrets');
 const oidcMod = require('./api/oidc');
-const ldapMod = require('./api/ldap');
 const approvals = require('./api/approvals');
 const engines = require('./api/engines');
 const engineExplore = require('./api/engine-explore');
@@ -108,6 +107,9 @@ app.use(express.static(path.join(__dirname, 'public'), { index: false })); // '/
 app.use(
   session({
     store: new FileSessionStore(),
+    // Path stays '/' (a proxy that rewrites cookie paths would otherwise lose the login); copies in different
+    // folders of one host get different cookie names instead.
+    name: BASE_PATH ? 'dbc.sid.' + BASE_PATH.slice(1).replace(/[^\w]+/g, '_') : 'connect.sid',
     secret: config.sessionSecret,
     resave: false,
     saveUninitialized: false,
@@ -119,20 +121,6 @@ app.use(
     }
   })
 );
-
-// The session cookie belongs to the folder, so two apps on one host do not share (or overwrite) it.
-app.use((req, res, next) => {
-  const b = baseOf(req);
-  if (b && req.session) {
-    req.session.cookie.path = b;
-    // Signing in replaces the session object; the new one needs the same path.
-    const regenerate = req.session.regenerate;
-    req.session.regenerate = function (cb) {
-      return regenerate.call(this, (err) => { if (!err && req.session) req.session.cookie.path = b; cb(err); });
-    };
-  }
-  next();
-});
 
 // Idle timeout: a session unused for IDLE_MINUTES is ended.
 app.use((req, res, next) => {
@@ -461,28 +449,9 @@ app.post('/api/login', async (req, res) => {
 
   const local = store.getUser(String(username || ''));
   let user = local;
-  let valid;
-  if (ldapClient && (!local || local.sso === 'ldap')) {
-    // A directory account (or a name no local account has): the directory checks the password.
-    // A local account is never handed to the directory, so a directory user cannot take over a local name.
-    valid = false;
-    try {
-      const found = await ldapClient.authenticate(username, password);
-      if (found) {
-        valid = true;
-        user = provisionLdapUser(found);
-      }
-    } catch (e) {
-      authlog.record({ ...who, event: 'login_failed', detail: `LDAP: ${e.message}`.slice(0, 160) });
-      recordLoginAttempt(req, username, false);
-      return res.status(e.refused ? 401 : 503).json({ error: e.refused ? e.message : 'The directory server could not be reached' });
-    }
-    if (!valid) user = null;
-  } else {
-    // Always verify (against a dummy hash for unknown users) so response
-    // time doesn't reveal which usernames exist.
-    valid = store.verifyPassword(password, user ? user.passwordHash : null) && !(user && user.sso);
-  }
+  // Always verify (against a dummy hash for unknown users) so response
+  // time doesn't reveal which usernames exist.
+  const valid = store.verifyPassword(password, user ? user.passwordHash : null) && !(user && user.sso);
   if (!user || !valid || user.disabled) {
     authlog.record({ ...who, event: 'login_failed', detail: !user ? 'unknown user' : user.disabled ? 'account disabled' : 'wrong password' });
     recordLoginAttempt(req, username, false);
@@ -501,7 +470,7 @@ app.post('/api/login', async (req, res) => {
   return completeLogin(req, res, user, { defaultPassword: password === DEFAULT_ADMIN_PASSWORD, method: 'password' });
 });
 
-// Starts the signed-in session. Shared by every way of signing in (password, 2FA, SSO, LDAP).
+// Starts the signed-in session. Shared by every way of signing in (password, 2FA, SSO).
 function completeLogin(req, res, user, { defaultPassword = false, method = 'password', redirect = null } = {}) {
   authlog.record({ username: user.username, ip: req.ip, agent: req.get('user-agent'), event: 'login_ok', detail: method === 'password' ? undefined : `via ${method}` });
   req.session.regenerate((err) => {
@@ -568,32 +537,13 @@ app.get('/api/session', (req, res) => {
   });
 });
 
-// --- Directory sign-in (LDAP / Active Directory) ---
-const ldapSettings = ldapMod.load(config);
-const ldapClient = ldapSettings.enabled ? ldapMod.create(ldapSettings) : null;
-
-// The local user for a directory account, created on first sign-in when allowed. The directory entry (its DN)
-// is the identity; the admin role follows the admin group on every sign-in.
-function provisionLdapUser(found) {
-  const subject = `ldap|${found.dn.toLowerCase()}`;
-  let user = store.listUsers().find((u) => u.ssoSub === subject);
-  const role = found.admin ? 'admin' : (store.ROLES.includes(ldapSettings.defaultRole) ? ldapSettings.defaultRole : 'user');
-  if (!user) {
-    if (!ldapSettings.autoCreate) { const e = new Error('You have no account here yet — ask an administrator to let you in'); e.refused = true; throw e; }
-    user = store.createExternalUser({ preferred: found.username, displayName: found.name, role, sso: 'ldap', ssoSub: subject, email: found.email });
-  } else if (ldapSettings.adminGroupDn && user.role !== role && (user.role === 'admin' || role === 'admin')) {
-    user = store.updateUser(user.username, { role });
-  }
-  return user;
-}
-
 // --- Single sign-on (OpenID Connect) ---
 const oidcSettings = oidcMod.load(config);
 const oidcClient = oidcSettings.enabled ? oidcMod.create(oidcSettings) : null;
 
 // What the login page needs to know before anyone is signed in.
 app.get('/api/auth-config', (req, res) => {
-  res.json({ oidc: oidcClient ? { label: oidcSettings.label } : null, ldap: ldapClient ? { label: ldapSettings.label } : null });
+  res.json({ oidc: oidcClient ? { label: oidcSettings.label } : null });
 });
 
 const oidcRedirectUri = (req) => oidcSettings.redirectUri || `${req.protocol}://${req.get('host')}${baseOf(req)}/auth/oidc/callback`;

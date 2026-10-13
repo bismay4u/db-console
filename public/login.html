@@ -111,7 +111,6 @@
       Sign in
     </button>
   </form>
-  <div class="text-muted small text-center mt-3" x-show="ldap && step === 'password'" x-cloak>Directory users: sign in with your <span x-text="ldap && ldap.label"></span> username and password.</div>
 
   <form @submit.prevent="submitCode" x-show="step === 'code'" x-cloak>
     <p class="small text-muted">Enter the 6-digit code from your authenticator app, or one of your recovery codes.</p>
@@ -132,7 +131,6 @@ function loginForm() {
     username: '',
     password: '',
     sso: null,
-    ldap: null,
     code: '',
     step: 'password',
     error: '',
@@ -140,7 +138,7 @@ function loginForm() {
     async init() {
       const q = new URLSearchParams(location.search);
       if (q.get('error')) this.error = q.get('error');
-      try { const cfg = await (await fetch('/api/auth-config')).json(); this.sso = cfg.oidc; this.ldap = cfg.ldap; } catch (e) { /* password sign-in still works */ }
+      try { const cfg = await (await fetch('/api/auth-config')).json(); this.sso = cfg.oidc; } catch (e) { /* password sign-in still works */ }
     },
     async submit() {
       this.error = '';

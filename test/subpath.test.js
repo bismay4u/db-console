@@ -18,7 +18,7 @@ test('app in a sub-folder, folder kept in the URL (BASE_PATH)', { timeout: 60000
     check(r.status === 200 && /window\.BASE/.test(html), 'the login page is served with the URL shim');
     r = await raw(B, '/tools/db/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'admin123!' }) });
     const setCookie = r.headers.get('set-cookie') || '';
-    check(r.status === 200 && /Path=\/tools\/db(;|$)/i.test(setCookie), 'the session cookie belongs to the folder', setCookie);
+    check(r.status === 200 && /^dbc\.sid\.tools_db=/.test(setCookie) && /Path=\/(;|$)/i.test(setCookie), 'the session cookie keeps Path=/ and is named after the folder', setCookie);
     const cookie = setCookie.split(';')[0];
     r = await raw(B, '/tools/db/', { headers: { cookie } });
     check(r.status === 200 && /window\.BASE/.test(await r.text()), 'signed in: the app is served under the folder');
@@ -44,7 +44,7 @@ test('app in a sub-folder, folder stripped by the proxy (X-Forwarded-Prefix)', {
     r = await raw(B, '/auth/oidc/login', { headers: { 'x-forwarded-prefix': '//evil.example.com' } });
     check(r.status === 302 && /^\/[^/]/.test(r.headers.get('location')), 'a malformed prefix can never make an off-site redirect', r.headers.get('location'));
     r = await raw(B, '/api/login', { method: 'POST', headers: { ...h, 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'admin123!' }) });
-    check(/Path=\/apps\/dbc(;|$)/i.test(r.headers.get('set-cookie') || ''), 'the cookie path follows the prefix', r.headers.get('set-cookie'));
+    check(/Path=\/(;|$)/i.test(r.headers.get('set-cookie') || ''), 'the cookie path stays / so a proxy rewriting cookie paths cannot lose it', r.headers.get('set-cookie'));
     const cookie = (r.headers.get('set-cookie') || '').split(';')[0];
     r = await raw(B, '/login', { headers: { ...h, cookie } });
     check(r.status === 302 && r.headers.get('location') === '/apps/dbc/', 'signed in: /login goes back to the app', r.headers.get('location'));

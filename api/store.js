@@ -408,7 +408,7 @@ function createUser(data) {
   return user;
 }
 
-// A user who signs in through SSO/LDAP: no password anyone could know, a free username derived from `preferred`.
+// A user who signs in through SSO: no password anyone could know, a free username derived from `preferred`.
 function createExternalUser({ preferred, displayName, role, sso, ssoSub, email }) {
   const users = listUsers();
   const clean = (t) => String(t).toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 28) || 'user';
