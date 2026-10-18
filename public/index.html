@@ -128,6 +128,11 @@
   .nav-link-custom:hover{ background:var(--bg); color:var(--text); }
   .nav-link-custom.active{ background:var(--accent-soft); color:var(--accent); }
   .sidebar-footer{ margin-top:auto; border-top:1px solid var(--border); padding-top:.6rem; }
+  .foot-actions{ display:grid; grid-template-columns:repeat(4, 1fr); gap:.2rem; }
+  .foot-btn{ position:relative; display:flex; flex-direction:column; align-items:center; gap:.1rem; padding:.35rem 0; border-radius:8px; color:var(--muted); font-size:.64rem; cursor:pointer; text-decoration:none; }
+  .foot-btn i{ font-size:1rem; }
+  .foot-btn:hover, .foot-btn.active{ background:var(--accent-soft); color:var(--accent); }
+  .foot-dot{ position:absolute; top:.3rem; right:calc(50% - 1.05rem); width:7px; height:7px; border-radius:50%; background:var(--warning, #f59e0b); }
 
   /* ---- Cards / surfaces ---- */
   .card-surface{
@@ -596,21 +601,20 @@
       </div>
       <span class="role-badge" :class="role === 'admin' && 'admin'" x-text="role"></span>
     </div>
-    <a class="nav-link-custom" @click="cycleTheme()" :title="'Theme: ' + theme + ' (click to change)'">
-      <i class="bi" :class="theme === 'dark' ? 'bi-moon-stars' : theme === 'light' ? 'bi-sun' : 'bi-circle-half'"></i> Theme: <span x-text="theme"></span>
-    </a>
-    <a class="nav-link-custom" @click="shortcutsOpen = true">
-      <i class="bi bi-keyboard"></i> Keyboard shortcuts <kbd class="ms-auto" style="font-size:.65rem">?</kbd>
-    </a>
-    <a class="nav-link-custom" @click="openTwoFa()">
-      <i class="bi bi-shield-lock"></i> Two-factor auth <span class="badge rounded-pill badge-soft-success ms-1" x-show="totpEnabled">on</span>
-    </a>
-    <a class="nav-link-custom" @click="openPasswordModal">
-      <i class="bi bi-key"></i> Change password
-    </a>
-    <a class="nav-link-custom" @click="logout">
-      <i class="bi bi-box-arrow-left"></i> Logout
-    </a>
+    <div class="foot-actions">
+      <a class="foot-btn" @click="cycleTheme()" :title="'Theme: ' + theme + ' — click to change'">
+        <i class="bi" :class="theme === 'dark' ? 'bi-moon-stars' : theme === 'light' ? 'bi-sun' : 'bi-circle-half'"></i><span>Theme</span>
+      </a>
+      <a class="foot-btn" @click="shortcutsOpen = true" title="Help and keyboard shortcuts (?)">
+        <i class="bi bi-question-circle"></i><span>Help</span>
+      </a>
+      <a class="foot-btn" :class="activeTab === 'account' && 'active'" @click="openAccount()" title="Your password and two-factor authentication">
+        <i class="bi bi-key"></i><span>Password</span><b class="foot-dot" x-show="!totpEnabled" title="Two-factor authentication is off"></b>
+      </a>
+      <a class="foot-btn" @click="logout" title="Sign out">
+        <i class="bi bi-box-arrow-left"></i><span>Logout</span>
+      </a>
+    </div>
   </div>
   </div>
 </aside>
@@ -644,10 +648,10 @@
   </div>
 
   <div class="content">
-    <div class="alert alert-warning py-2 small d-flex align-items-center gap-2" x-show="usingDefaultPassword">
+    <div class="alert alert-warning py-2 small d-flex align-items-center gap-2" x-show="usingDefaultPassword && activeTab !== 'account'">
       <i class="bi bi-shield-exclamation"></i>
       <span>You're signed in with the default password. Anyone who knows it can sign in as you.</span>
-      <button class="btn btn-sm btn-outline-soft ms-auto" @click="openPasswordModal">Change password</button>
+      <button class="btn btn-sm btn-outline-soft ms-auto" @click="openAccount()">Change password</button>
     </div>
 
     <!-- ================= QUERY RUNNER ================= -->
@@ -2103,6 +2107,76 @@ Separate multiple statements with ; — highlight text to run just that part."
       </div>
     </template>
 
+    <!-- ================= ACCOUNT (password + two-factor) ================= -->
+    <template x-if="activeTab === 'account'">
+      <div class="row g-3">
+        <div class="col-lg-6">
+          <div class="card-surface p-3 h-100">
+            <h2 class="h6 fw-semibold mb-1"><i class="bi bi-key me-1"></i>Password</h2>
+            <div class="text-muted-sm mb-3">Signed in as <strong x-text="displayName || username"></strong> (<span x-text="username"></span>). Your other signed-in sessions are signed out when you change it.</div>
+            <div class="alert alert-danger py-2 small" x-show="passwordModal.error" x-text="passwordModal.error"></div>
+            <label class="form-label small fw-medium">Current password</label>
+            <input type="password" class="form-control mb-2" x-model="passwordModal.current" autocomplete="current-password">
+            <label class="form-label small fw-medium">New password</label>
+            <input type="password" class="form-control mb-2" x-model="passwordModal.next" autocomplete="new-password" placeholder="At least 8 characters">
+            <label class="form-label small fw-medium">Confirm new password</label>
+            <input type="password" class="form-control mb-3" x-model="passwordModal.confirm" autocomplete="new-password" @keydown.enter="savePassword">
+            <button class="btn btn-accent" @click="savePassword" :disabled="passwordModal.saving || !passwordModal.current || !passwordModal.next">
+              <span x-show="passwordModal.saving" class="spinner-border spinner-border-sm me-1"></span>Change password
+            </button>
+          </div>
+        </div>
+
+        <div class="col-lg-6">
+          <div class="card-surface p-3 h-100">
+            <h2 class="h6 fw-semibold mb-1"><i class="bi bi-shield-lock me-1"></i>Two-factor authentication <span class="badge rounded-pill badge-soft-success ms-1" x-show="twoFa.enabled">on</span><span class="badge rounded-pill badge-soft-danger ms-1" x-show="!twoFa.enabled">off</span></h2>
+            <div class="alert alert-warning py-2 small mt-2" x-show="twoFa.forced">This server requires two-factor authentication. Set it up to continue.</div>
+            <div class="alert alert-danger py-2 small mt-2" x-show="twoFa.error" x-text="twoFa.error"></div>
+
+            <!-- recovery codes, shown once -->
+            <template x-if="twoFa.codes.length">
+              <div class="mt-2">
+                <div class="alert alert-success py-2 small">Two-factor authentication is on. Keep these recovery codes somewhere safe: each works once if you lose your phone. They are not shown again.</div>
+                <pre class="definition-block" style="columns:2" x-text="twoFa.codes.join('\n')"></pre>
+                <button class="btn btn-outline-soft btn-sm me-2" @click="copyText(twoFa.codes.join('\n'))"><i class="bi bi-clipboard me-1"></i>Copy</button>
+                <button class="btn btn-accent btn-sm" @click="twoFa.codes = []; twoFa.forced = false">I have saved them</button>
+              </div>
+            </template>
+
+            <template x-if="!twoFa.codes.length && !twoFa.enabled && !twoFa.secret">
+              <div class="mt-2">
+                <p class="small">Sign-in will ask for a 6-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password…) in addition to your password.</p>
+                <button class="btn btn-accent" @click="startTwoFa()" :disabled="twoFa.busy">Set it up</button>
+              </div>
+            </template>
+            <template x-if="!twoFa.codes.length && !twoFa.enabled && twoFa.secret">
+              <div class="mt-2">
+                <p class="small mb-2">1. Scan this with your authenticator app (or type the key in).</p>
+                <div class="text-center mb-2"><img :src="twoFa.qr" alt="QR code" style="width:180px;height:180px" x-show="twoFa.qr"></div>
+                <div class="text-center mb-3"><code class="user-select-all" x-text="twoFa.secret"></code></div>
+                <p class="small mb-1">2. Enter the code the app shows now.</p>
+                <div class="d-flex gap-2"><input class="form-control" style="max-width:10rem; letter-spacing:.2em" x-model="twoFa.code" placeholder="123456" inputmode="numeric" @keydown.enter="enableTwoFa()"><button class="btn btn-accent" @click="enableTwoFa()" :disabled="twoFa.busy">Turn on</button></div>
+              </div>
+            </template>
+            <template x-if="!twoFa.codes.length && twoFa.enabled">
+              <div class="mt-2">
+                <p class="small"><i class="bi bi-shield-check text-success me-1"></i>Two-factor authentication is <strong>on</strong>. <span x-text="twoFa.recoveryLeft + ' recovery code(s) left.'"></span></p>
+                <div class="mb-3">
+                  <label class="form-label small fw-medium">Current code from your app</label>
+                  <input class="form-control" style="max-width:10rem; letter-spacing:.2em" x-model="twoFa.code" placeholder="123456" inputmode="numeric">
+                </div>
+                <button class="btn btn-outline-soft btn-sm me-2" @click="newRecoveryCodes()" :disabled="twoFa.busy || !twoFa.code">New recovery codes</button>
+                <div class="mt-3" x-show="!twoFa.required && !twoFa.sso">
+                  <label class="form-label small fw-medium">To turn it off, also enter your password</label>
+                  <div class="d-flex gap-2"><input type="password" class="form-control" style="max-width:14rem" x-model="twoFa.password" autocomplete="current-password"><button class="btn btn-ghost-danger btn-sm" @click="disableTwoFa()" :disabled="twoFa.busy || !twoFa.code || !twoFa.password">Turn off</button></div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </template>
+
     <!-- ================= MANAGED QUERIES ================= -->
     <template x-if="activeTab === 'managed'">
       <div>
@@ -3080,57 +3154,6 @@ Separate multiple statements with ; — highlight text to run just that part."
       </template>
       <div class="text-muted-sm px-2 py-2" x-show="!paletteItems().length">Nothing matches.</div>
     </div>
-  </div>
-</div>
-
-<!-- ===== Two-factor authentication ===== -->
-<div class="modal-backdrop-custom" x-show="twoFa.open" x-cloak @click.self="!twoFa.forced && (twoFa.open = false)">
-  <div class="modal-panel" style="max-width:520px">
-    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">Two-factor authentication</h2><button class="btn btn-sm btn-outline-soft" x-show="!twoFa.forced" @click="twoFa.open = false"><i class="bi bi-x-lg"></i></button></div>
-    <div class="modal-body-custom">
-      <div class="alert alert-warning py-2 small" x-show="twoFa.forced">This server requires two-factor authentication. Set it up to continue.</div>
-      <div class="alert alert-danger py-2 small" x-show="twoFa.error" x-text="twoFa.error"></div>
-
-      <!-- recovery codes, shown once -->
-      <template x-if="twoFa.codes.length">
-        <div>
-          <div class="alert alert-success py-2 small">Two-factor authentication is on. Keep these recovery codes somewhere safe: each works once if you lose your phone. They are not shown again.</div>
-          <pre class="definition-block" style="columns:2" x-text="twoFa.codes.join('\n')"></pre>
-          <button class="btn btn-outline-soft btn-sm" @click="copyText(twoFa.codes.join('\n'))"><i class="bi bi-clipboard me-1"></i>Copy</button>
-        </div>
-      </template>
-
-      <template x-if="!twoFa.codes.length && !twoFa.enabled && !twoFa.secret">
-        <div>
-          <p class="small">Sign-in will ask for a 6-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password…) in addition to your password.</p>
-          <button class="btn btn-accent" @click="startTwoFa()" :disabled="twoFa.busy">Set it up</button>
-        </div>
-      </template>
-      <template x-if="!twoFa.codes.length && !twoFa.enabled && twoFa.secret">
-        <div>
-          <p class="small mb-2">1. Scan this with your authenticator app (or type the key in).</p>
-          <div class="text-center mb-2"><img :src="twoFa.qr" alt="QR code" style="width:180px;height:180px" x-show="twoFa.qr"></div>
-          <div class="text-center mb-3"><code class="user-select-all" x-text="twoFa.secret"></code></div>
-          <p class="small mb-1">2. Enter the code the app shows now.</p>
-          <div class="d-flex gap-2"><input class="form-control" style="max-width:10rem; letter-spacing:.2em" x-model="twoFa.code" placeholder="123456" inputmode="numeric" @keydown.enter="enableTwoFa()"><button class="btn btn-accent" @click="enableTwoFa()" :disabled="twoFa.busy">Turn on</button></div>
-        </div>
-      </template>
-      <template x-if="!twoFa.codes.length && twoFa.enabled">
-        <div>
-          <p class="small"><i class="bi bi-shield-check text-success me-1"></i>Two-factor authentication is <strong>on</strong>. <span x-text="twoFa.recoveryLeft + ' recovery code(s) left.'"></span></p>
-          <div class="mb-3">
-            <label class="form-label small fw-medium">Current code from your app</label>
-            <input class="form-control" style="max-width:10rem; letter-spacing:.2em" x-model="twoFa.code" placeholder="123456" inputmode="numeric">
-          </div>
-          <button class="btn btn-outline-soft btn-sm me-2" @click="newRecoveryCodes()" :disabled="twoFa.busy || !twoFa.code">New recovery codes</button>
-          <div class="mt-3" x-show="!twoFa.required && !twoFa.sso">
-            <label class="form-label small fw-medium">To turn it off, also enter your password</label>
-            <div class="d-flex gap-2"><input type="password" class="form-control" style="max-width:14rem" x-model="twoFa.password" autocomplete="current-password"><button class="btn btn-ghost-danger btn-sm" @click="disableTwoFa()" :disabled="twoFa.busy || !twoFa.code || !twoFa.password">Turn off</button></div>
-          </div>
-        </div>
-      </template>
-    </div>
-    <div class="modal-footer-custom" x-show="twoFa.codes.length"><button class="btn btn-accent" @click="twoFa.open = false; twoFa.codes = []; twoFa.forced = false">I have saved them</button></div>
   </div>
 </div>
 
@@ -4929,33 +4952,6 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
-<!-- ===== Change Password Modal ===== -->
-<div class="modal-backdrop-custom" x-show="passwordModal.open" x-cloak @click.self="passwordModal.open = false">
-  <div class="modal-panel">
-    <div class="modal-header-custom">
-      <h2 class="h6 mb-0 fw-semibold">Change your password</h2>
-      <button class="btn btn-sm btn-outline-soft" @click="passwordModal.open = false"><i class="bi bi-x-lg"></i></button>
-    </div>
-    <div class="modal-body-custom">
-      <div class="alert alert-danger py-2 small" x-show="passwordModal.error" x-text="passwordModal.error"></div>
-      <label class="form-label small fw-medium">Current password</label>
-      <input type="password" class="form-control mb-2" x-model="passwordModal.current" autocomplete="current-password">
-      <label class="form-label small fw-medium">New password</label>
-      <input type="password" class="form-control mb-2" x-model="passwordModal.next" autocomplete="new-password" placeholder="At least 8 characters">
-      <label class="form-label small fw-medium">Confirm new password</label>
-      <input type="password" class="form-control" x-model="passwordModal.confirm" autocomplete="new-password" @keydown.enter="savePassword">
-      <div class="text-muted-sm mt-2">Your other signed-in sessions will be signed out.</div>
-    </div>
-    <div class="modal-footer-custom">
-      <button class="btn btn-outline-soft" @click="passwordModal.open = false">Cancel</button>
-      <button class="btn btn-accent" @click="savePassword" :disabled="passwordModal.saving">
-        <span x-show="passwordModal.saving" class="spinner-border spinner-border-sm me-1"></span>
-        Change password
-      </button>
-    </div>
-  </div>
-</div>
-
 <!-- ===== Toasts ===== -->
 <div class="toast-stack">
   <template x-for="t in toasts" :key="t.id">
@@ -5303,7 +5299,7 @@ function app() {
       const [path, query = ''] = raw.split('?');
       const segs = path.split('/').filter(Boolean).map((x) => { try { return decodeURIComponent(x); } catch (e) { return x; } });
       const q = new URLSearchParams(query);
-      const tabs = ['runner', 'explore', 'connections', 'queries', 'managed', 'logs', 'analytics', 'schedules', 'approvals'].concat(this.isAdmin() ? ['users', 'system'] : []);
+      const tabs = ['runner', 'explore', 'connections', 'queries', 'managed', 'logs', 'analytics', 'schedules', 'approvals', 'account'].concat(this.isAdmin() ? ['users', 'system'] : []);
       const tab = tabs.includes(segs[0]) ? segs[0] : 'runner';
       this.routing = true;
       try {
@@ -5395,7 +5391,7 @@ function app() {
 
     pageTitle() {
       return {
-        runner: 'Query Runner', explore: 'Explore', connections: 'Connections', queries: 'Saved Queries', managed: 'Managed Queries',
+        runner: 'Query Runner', explore: 'Explore', connections: 'Connections', queries: 'Saved Queries', managed: 'Managed Queries', account: 'Password & security',
         logs: 'Query Log', analytics: 'Analytics', schedules: 'Schedules', approvals: 'Approvals', users: 'Users', system: 'Update & Restart'
       }[this.activeTab];
     },
@@ -5405,6 +5401,7 @@ function app() {
         explore: 'Browse databases, tables and rows with clicks — writing SQL is a last resort here',
         connections: 'Manage the databases this tool can connect to',
         queries: 'Reusable SQL — yours, plus queries others have shared with you',
+        account: 'Change your password and set up two-factor authentication',
         managed: 'Ready-made queries for the everyday jobs: what is running, what is big, what is missing an index. Open one in the Query Runner, or save a copy of your own',
         logs: this.isAdmin() ? 'Everything run against a database, by every user' : 'Everything you have run against a database',
         analytics: this.isAdmin() ? 'Usage across all users and connections' : 'Your usage over time',
@@ -6244,14 +6241,7 @@ function app() {
     },
 
     // ---- Two-factor authentication ----
-    async openTwoFa(forced = false) {
-      this.twoFa = { open: true, forced, enabled: false, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false };
-      try {
-        const st = await this.apiJson('GET', '/api/2fa');
-        Object.assign(this.twoFa, { enabled: st.enabled, required: st.required, recoveryLeft: st.recoveryLeft, sso: Boolean(st.sso) });
-        if (!st.enabled && forced) await this.startTwoFa();
-      } catch (e) { this.twoFa.error = e.message; }
-    },
+    openTwoFa(forced = false) { return this.openAccount(forced); },
     async startTwoFa() {
       const t = this.twoFa;
       t.busy = true; t.error = '';
@@ -6284,7 +6274,7 @@ function app() {
       t.busy = true; t.error = '';
       try {
         await this.apiJson('POST', '/api/2fa/disable', { password: t.password, code: t.code });
-        this.totpEnabled = false; t.open = false;
+        this.totpEnabled = false; t.enabled = false; t.code = ''; t.password = ''; t.secret = '';
         this.showToast('Two-factor authentication is off');
       } catch (e) { t.error = e.message; } finally { t.busy = false; }
     },
@@ -8751,9 +8741,20 @@ function app() {
     },
 
     // ---- Own password ----
-    openPasswordModal() {
-      this.passwordModal = { open: true, current: '', next: '', confirm: '', saving: false, error: '' };
+    // One page for the password and two-factor authentication.
+    async openAccount(forced = false) {
+      this.activeTab = 'account';
+      this.navOpen = false;
+      this.passwordModal = { current: '', next: '', confirm: '', saving: false, error: '' };
+      this.twoFa = { open: false, forced, enabled: this.totpEnabled, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false };
+      try {
+        const st = await this.apiJson('GET', '/api/2fa');
+        Object.assign(this.twoFa, { enabled: st.enabled, required: st.required, recoveryLeft: st.recoveryLeft, sso: Boolean(st.sso) });
+        this.totpEnabled = st.enabled;
+        if (!st.enabled && forced) await this.startTwoFa();
+      } catch (e) { this.twoFa.error = e.message; }
     },
+    openPasswordModal() { return this.openAccount(); },
     async savePassword() {
       const m = this.passwordModal;
       if (m.next !== m.confirm) { m.error = 'The new passwords do not match'; return; }
@@ -8765,7 +8766,7 @@ function app() {
         });
         const data = await res.json();
         if (!res.ok) { m.error = data.error || 'Failed to change password'; return; }
-        m.open = false;
+        m.current = ''; m.next = ''; m.confirm = '';
         this.usingDefaultPassword = false;
         this.showToast('Password changed');
       } catch (e) {

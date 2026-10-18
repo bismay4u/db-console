@@ -73,7 +73,7 @@ const IDLE_MINUTES = Number(process.env.IDLE_MINUTES || config.idleMinutes) || 0
 
 // ---- Running in a sub-folder (https://host/tools/db/) ----
 // Behind a reverse proxy that strips the folder, nothing special is needed except that redirects must put it back:
-// the proxy sends it as X-Forwarded-Prefix, or set BASE_PATH (or `basePath` in config.json). When the proxy keeps the
+// the proxy sends it as X-Forwarded-Prefix, or set BASE_PATH (or `basePath` in config.js). When the proxy keeps the
 // folder in the URL, BASE_PATH also makes the app accept it.
 function normalizeBase(p) {
   const t = String(p || '').trim().replace(/^\/+|\/+$/g, '');

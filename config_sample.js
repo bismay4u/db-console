@@ -13,6 +13,9 @@ module.exports = {
     password: process.env.APP_PASS || 'admin123!'
   },
 
+  // --- Running in a sub-folder (https://host/tools/db/)? Say which folder (or set BASE_PATH).
+  // basePath: '/tools/db',
+
   // --- Where runtime data lives (default ./data). Also settable with the
   // DATA_DIR environment variable. All PM2 instances must share it. ---
   // dataDir: './data',
