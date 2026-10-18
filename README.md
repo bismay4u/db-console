@@ -734,6 +734,10 @@ Only the owner or an admin can edit, delete or share a connection.
 ---
 
 
+### Filters
+
+The Connections list shows **active** connections by default. Filter it by status (active, inactive or all), database type, owner (me, others, or one person), access (private, shared by me, shared with me, shared with everyone, read-only for me, limited for me, I can manage) and settings (asks before risky statements, health recording, SSH tunnel, TLS), or search the label, host, database and user. The header shows how many of the connections match. The checkbox in the header selects only what the filters show, and the bulk bar says how many selected connections the filters are hiding. **Inactive connections do not appear** in the Query Runner, Explore, Compare or the pickers for new schedules; they are listed only here.
+
 ### Bulk actions
 
 Tick connections in **Connections** (or the checkbox in the header to select all) and a bar appears with:

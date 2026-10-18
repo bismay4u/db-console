@@ -672,15 +672,13 @@
 
             <template x-if="leftTab === 'databases'">
               <div>
-                <div class="d-flex align-items-center justify-content-end mb-2" x-show="connections.length">
+                <div class="d-flex align-items-center justify-content-end mb-2" x-show="activeConnections().length">
                   <button class="btn btn-link btn-sm p-0 me-2 text-decoration-none" style="font-size:.78rem" @click="selectedKeys = connections.filter(c => !c.inactive).map(c => c.key)">All</button>
                   <button class="btn btn-link btn-sm p-0 text-decoration-none" style="font-size:.78rem" @click="selectedKeys = []">None</button>
                 </div>
-                <div class="text-muted-sm mb-2" x-show="connections.length === 0">
-                  No connections yet — add one in the Connections tab.
-                </div>
+                <div class="text-muted-sm mb-2" x-show="activeConnections().length === 0" x-text="connections.length ? 'Every connection is inactive — make one active in the Connections tab.' : 'No connections yet — add one in the Connections tab.'"></div>
                 <div class="d-flex flex-column gap-1">
-                  <template x-for="c in connections" :key="c.key">
+                  <template x-for="c in activeConnections()" :key="c.key">
                     <div class="conn-row" :class="selectedKeys.includes(c.key) && 'selected'" :style="c.inactive && 'opacity:.5'" @click="toggleKey(c.key)" :title="c.inactive ? 'Inactive — its owner or an administrator can make it active' : ''">
                       <input type="checkbox" class="form-check-input" :checked="selectedKeys.includes(c.key)" :disabled="c.inactive" @click.stop="toggleKey(c.key)">
                       <div class="conn-meta">
@@ -700,7 +698,7 @@
                     </div>
                   </template>
                 </div>
-                <div class="text-muted-sm mt-2" x-show="connections.length">
+                <div class="text-muted-sm mt-2" x-show="activeConnections().length">
                   <i class="bi bi-info-circle me-1"></i>Run <code>USE database_name</code> to switch the selected connections' database; it stays for your next runs.
                 </div>
               </div>
@@ -1038,8 +1036,8 @@ Separate multiple statements with ; — highlight text to run just that part."
             <label class="text-muted-sm mb-0">Connection</label>
             <select class="form-select form-select-sm" style="width:auto" x-model="exploreConnKey" @change="selectExploreConnection(exploreConnKey)">
               <option value="" disabled>Select…</option>
-              <template x-for="c in connections" :key="c.key">
-                <option :value="c.key" :disabled="c.inactive" x-text="c.label + (c.inactive ? ' (inactive)' : '')"></option>
+              <template x-for="c in activeConnections()" :key="c.key">
+                <option :value="c.key" x-text="c.label"></option>
               </template>
             </select>
           </div>
@@ -1496,7 +1494,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <div>
                         <div class="text-muted-sm">Source — the model to copy</div>
                         <div class="d-flex gap-1">
-                          <select class="form-select form-select-sm" style="width:auto" x-model="dbDiff.srcKey" @change="diffSideChanged('src')"><template x-for="c in connections" :key="c.key"><option :value="c.key" x-text="c.label"></option></template></select>
+                          <select class="form-select form-select-sm" style="width:auto" x-model="dbDiff.srcKey" @change="diffSideChanged('src')"><template x-for="c in activeConnections()" :key="c.key"><option :value="c.key" x-text="c.label"></option></template></select>
                           <select class="form-select form-select-sm" style="width:auto" x-model="dbDiff.srcDb" @change="diffDbChanged('src')"><template x-for="d in dbDiff.srcDbs" :key="d"><option :value="d" x-text="d"></option></template></select>
                         </div>
                       </div>
@@ -1504,7 +1502,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                       <div>
                         <div class="text-muted-sm">Target — gets changed</div>
                         <div class="d-flex gap-1">
-                          <select class="form-select form-select-sm" style="width:auto" x-model="dbDiff.tgtKey" @change="diffSideChanged('tgt')"><template x-for="c in connections" :key="c.key"><option :value="c.key" x-text="c.label"></option></template></select>
+                          <select class="form-select form-select-sm" style="width:auto" x-model="dbDiff.tgtKey" @change="diffSideChanged('tgt')"><template x-for="c in activeConnections()" :key="c.key"><option :value="c.key" x-text="c.label"></option></template></select>
                           <select class="form-select form-select-sm" style="width:auto" x-model="dbDiff.tgtDb" @change="diffDbChanged('tgt')"><template x-for="d in dbDiff.tgtDbs" :key="d"><option :value="d" x-text="d"></option></template></select>
                         </div>
                       </div>
@@ -2014,8 +2012,30 @@ Separate multiple statements with ; — highlight text to run just that part."
     <!-- ================= CONNECTIONS ================= -->
     <template x-if="activeTab === 'connections'">
       <div class="card-surface">
+        <div class="d-flex flex-wrap align-items-center gap-2 px-3 py-2" style="border-bottom:1px solid var(--border)">
+          <input type="search" class="form-control form-control-sm" style="width:200px" placeholder="Search label, host, database…" x-model="connFilter.q">
+          <select class="form-select form-select-sm" style="width:auto" x-model="connFilter.status" title="Status">
+            <option value="active">Active</option><option value="inactive">Inactive</option><option value="">All statuses</option>
+          </select>
+          <select class="form-select form-select-sm" style="width:auto" x-model="connFilter.engine" title="Database type">
+            <option value="">All types</option><option value="mysql">MySQL / MariaDB</option><option value="postgres">PostgreSQL</option><option value="sqlite">SQLite</option>
+          </select>
+          <select class="form-select form-select-sm" style="width:auto" x-model="connFilter.owner" title="Owner">
+            <option value="">All owners</option><option value="__me">Owned by me</option><option value="__others">Owned by others</option>
+            <template x-for="o in connOwners()" :key="o"><option :value="o" x-text="userLabel(o)"></option></template>
+          </select>
+          <select class="form-select form-select-sm" style="width:auto" x-model="connFilter.access" title="Access">
+            <option value="">Any access</option><option value="private">Private (not shared)</option><option value="shared-by-me">Shared by me</option><option value="shared-with-me">Shared with me</option>
+            <option value="everyone">Shared with everyone</option><option value="read-only">Read-only for me</option><option value="limited">Limited for me</option><option value="manage">I can manage</option>
+          </select>
+          <select class="form-select form-select-sm" style="width:auto" x-model="connFilter.feature" title="Settings">
+            <option value="">Any settings</option><option value="approval">Asks before risky statements</option><option value="monitor">Health recording on</option><option value="ssh">Uses an SSH tunnel</option><option value="tls">Uses TLS</option>
+          </select>
+          <button class="btn btn-sm btn-link text-decoration-none" x-show="connFiltersActive()" @click="clearConnFilters()">Reset filters</button>
+          <span class="text-muted-sm ms-auto" x-text="connectionsShown().length + ' of ' + connections.length + ' connections'"></span>
+        </div>
         <div class="d-flex flex-wrap align-items-center gap-2 px-3 py-2" style="border-bottom:1px solid var(--accent); background:var(--accent-soft)" x-show="connSelected.length" x-cloak>
-          <strong class="small"><span x-text="connSelected.length"></span> selected</strong>
+          <strong class="small"><span x-text="connSelected.length"></span> selected<span class="text-muted-sm fw-normal" x-show="connSelected.length > connSelectedShown()" x-text="' (' + (connSelected.length - connSelectedShown()) + ' hidden by the filters)'"></span></strong>
           <button class="btn btn-sm btn-outline-soft" @click="openBulkShare()"><i class="bi bi-share me-1"></i>Share…</button>
           <button class="btn btn-sm btn-outline-soft" @click="openBulkUnshare()"><i class="bi bi-person-dash me-1"></i>Stop sharing…</button>
           <button class="btn btn-sm btn-outline-soft" @click="runBulk('deactivate')"><i class="bi bi-pause-circle me-1"></i>Make inactive</button>
@@ -2037,12 +2057,12 @@ Separate multiple statements with ; — highlight text to run just that part."
           <table class="table table-modern mb-0">
             <thead>
               <tr>
-                <th style="width:1%"><input type="checkbox" class="form-check-input" :checked="connections.length && connSelected.length === connections.length" :indeterminate.prop="connSelected.length > 0 && connSelected.length < connections.length" @change="connSelected = $event.target.checked ? connections.map(c => c.key) : []" title="Select all"></th>
+                <th style="width:1%"><input type="checkbox" class="form-check-input" :checked="connectionsShown().length && connSelectedShown() === connectionsShown().length" :indeterminate.prop="connSelectedShown() > 0 && connSelectedShown() < connectionsShown().length" @change="toggleAllShownConnections($event.target.checked)" title="Select all that match the filters"></th>
                 <th>Label</th><th>Host</th><th>Database</th><th>User</th><th>Owner</th><th>Access</th><th class="text-end">Actions</th>
               </tr>
             </thead>
             <tbody>
-              <template x-for="c in connections" :key="c.key">
+              <template x-for="c in connectionsShown()" :key="c.key">
                 <tr :class="connSelected.includes(c.key) && 'row-selected'" :style="c.inactive && 'opacity:.6'">
                   <td><input type="checkbox" class="form-check-input" :value="c.key" x-model="connSelected"></td>
                   <td class="fw-medium"><span x-text="c.label"></span>
@@ -2073,6 +2093,9 @@ Separate multiple statements with ; — highlight text to run just that part."
               </template>
               <tr x-show="connections.length === 0">
                 <td colspan="8" class="text-center text-muted-sm py-4">No connections yet. Click "New connection" to add one.</td>
+              </tr>
+              <tr x-show="connections.length > 0 && connectionsShown().length === 0">
+                <td colspan="8" class="text-center text-muted-sm py-4">No connections match the filters. <a href="#" @click.prevent="clearConnFilters(true)">Show all</a></td>
               </tr>
             </tbody>
           </table>
@@ -3175,7 +3198,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                 <label class="form-label small fw-medium">Connection</label>
                 <select class="form-select" x-model="jobModal.form.connKey" @change="loadJobDatabases()">
                   <option value="" disabled>Select…</option>
-                  <template x-for="c in connections.filter(c => jobModal.form.type !== 'backup' || c.canManage)" :key="c.key"><option :value="c.key" x-text="c.label"></option></template>
+                  <template x-for="c in connections.filter(c => (!c.inactive || c.key === jobModal.form.connKey) && (jobModal.form.type !== 'backup' || c.canManage))" :key="c.key"><option :value="c.key" x-text="c.label"></option></template>
                 </select>
               </div>
               <div class="col-md-6">
@@ -3184,6 +3207,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                   <option value="" disabled>Select…</option>
                   <template x-for="d in jobModal.databases" :key="d"><option :value="d" x-text="d"></option></template>
                 </select>
+                <div class="small text-warning mt-1" x-show="jobModal.dbError"><i class="bi bi-exclamation-triangle me-1"></i>Could not list the databases: <span x-text="jobModal.dbError"></span>. Pick another connection, or check this one under Connections → Test.</div>
               </div>
             </div>
           </div>
@@ -3192,7 +3216,7 @@ Separate multiple statements with ; — highlight text to run just that part."
           <div class="col-12">
             <label class="form-label small fw-medium">Connections to check <span class="text-muted-sm">(none ticked = all of yours)</span></label>
             <div class="d-flex flex-wrap gap-3">
-              <template x-for="c in connections" :key="c.key">
+              <template x-for="c in connections.filter(c => !c.inactive || jobModal.form.connKeys.includes(c.key))" :key="c.key">
                 <label class="small d-flex align-items-center gap-1"><input type="checkbox" class="form-check-input mt-0" :checked="jobModal.form.connKeys.includes(c.key)" @change="toggleJobConn(c.key)"><span x-text="c.label"></span></label>
               </template>
             </div>
@@ -5030,6 +5054,7 @@ function app() {
     twoFa: { open: false, forced: false, enabled: false, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false },
     dismissModal: { open: false, finding: null, reason: '', saving: false },
     connSelected: [], bulkBusy: false,
+    connFilter: { q: '', status: 'active', engine: '', owner: '', access: '', feature: '' },
     unshareModal: { open: false, people: [], picked: [], all: false },
     bulkResult: { open: false, title: '', results: [], done: 0, failed: 0 },
     managed: [], managedEngine: '', managedCategory: '', managedQuery: '', managedOpen: {}, runnerManagedQuery: '',
@@ -5285,7 +5310,7 @@ function app() {
         if (tab !== 'explore') {
           if (tab === 'runner' && q.get('c')) {
             const wanted = q.get('c').split(',').filter(Boolean);
-            const usable = wanted.filter((k) => this.connections.some((c) => c.key === k));
+            const usable = wanted.filter((k) => this.connections.some((c) => c.key === k && !c.inactive));
             if (usable.length < wanted.length) this.showToast("Some of the connections in this link aren't available to you", 'error');
             if (usable.length) this.selectedKeys = usable;
           }
@@ -5305,7 +5330,13 @@ function app() {
     async applyExploreRoute(segs, q) {
       const [key, second, third, fourth] = segs;
       if (!key) { if (this.exploreConnKey) await this.selectExploreConnection(''); return; }
-      if (!this.connections.some((c) => c.key === key)) {
+      const wanted = this.connections.find((c) => c.key === key);
+      if (wanted && wanted.inactive) {
+        this.showToast(`${wanted.label} is inactive`, 'error');
+        if (this.exploreConnKey) await this.selectExploreConnection('');
+        return;
+      }
+      if (!wanted) {
         this.showToast(`You don't have access to the connection "${key}", or it no longer exists`, 'error');
         if (this.exploreConnKey) await this.selectExploreConnection('');
         return;
@@ -6458,6 +6489,46 @@ function app() {
         if (this.exploreTable) this.loadExploreTables();
       } catch (e) { m.error = e.message; } finally { m.running = false; }
     },
+
+    // ---- Which connections are shown ----
+    activeConnections() { return this.connections.filter((c) => !c.inactive); },
+    connOwners() { return [...new Set(this.connections.map((c) => c.owner).filter((o) => o && o !== this.username))].sort(); },
+    connMatches(c) {
+      const f = this.connFilter;
+      const q = f.q.trim().toLowerCase();
+      if (q && !`${c.label} ${c.host || ''} ${c.database || ''} ${c.user || ''}`.toLowerCase().includes(q)) return false;
+      if (f.status === 'active' && c.inactive) return false;
+      if (f.status === 'inactive' && !c.inactive) return false;
+      if (f.engine && (c.engine || 'mysql') !== f.engine) return false;
+      if (f.owner === '__me' ? c.owner !== this.username : f.owner === '__others' ? c.owner === this.username : f.owner && c.owner !== f.owner) return false;
+      const shared = (c.sharedWith || []).length > 0;
+      switch (f.access) {
+        case 'private': if (c.sharedWithMe || shared) return false; break;
+        case 'shared-by-me': if (c.owner !== this.username || !shared) return false; break;
+        case 'shared-with-me': if (!c.sharedWithMe) return false; break;
+        case 'everyone': if (!(c.sharedWith || []).includes('*')) return false; break;
+        case 'read-only': if ((c.permissions || []).length) return false; break;
+        case 'limited': if (!c.limited) return false; break;
+        case 'manage': if (!c.canManage) return false; break;
+        default: break;
+      }
+      switch (f.feature) {
+        case 'approval': if (!c.requireApproval) return false; break;
+        case 'monitor': if (!c.monitor) return false; break;
+        case 'ssh': if (!c.sshHost) return false; break;
+        case 'tls': if (!c.sslMode) return false; break;
+        default: break;
+      }
+      return true;
+    },
+    connectionsShown() { return this.connections.filter((c) => this.connMatches(c)); },
+    connSelectedShown() { const shown = new Set(this.connectionsShown().map((c) => c.key)); return this.connSelected.filter((k) => shown.has(k)).length; },
+    toggleAllShownConnections(on) {
+      const shown = this.connectionsShown().map((c) => c.key);
+      this.connSelected = on ? [...new Set([...this.connSelected, ...shown])] : this.connSelected.filter((k) => !shown.includes(k));
+    },
+    connFiltersActive() { const f = this.connFilter; return Boolean(f.q || f.status !== 'active' || f.engine || f.owner || f.access || f.feature); },
+    clearConnFilters(all = false) { this.connFilter = { q: '', status: all ? '' : 'active', engine: '', owner: '', access: '', feature: '' }; },
 
     // ---- Several connections at once ----
     async bulkCall(action, extra = {}) {
@@ -8826,23 +8897,31 @@ function app() {
         form.backup = Object.assign({ keep: 7, restoreTest: false, schemaOnly: false }, form.backup || {});
         form.backup.upload = form.backup.upload || { type: '' };
       } else {
-        const c = this.selectedConnections()[0] || this.connections[0];
+        // Start from the connection ticked in the Query Runner, or the only active one; never guess among several (the
+        // first in the list may be one that cannot be reached, and opening the dialog would then fail).
+        const active = this.activeConnections();
+        const c = this.selectedConnections()[0] || (active.length === 1 ? active[0] : null);
         if (c) { form.connKey = c.key; form.database = this.currentDb(c); }
       }
-      this.jobModal = { open: true, id: job ? job.id : null, form, databases: [], error: '', saving: false, preview: [], previewError: '' };
+      this.jobModal = { open: true, id: job ? job.id : null, form, databases: [], dbError: '', error: '', saving: false, preview: [], previewError: '' };
       if (form.connKey) this.loadJobDatabases(true);
       this.previewSchedule();
     },
     async loadJobDatabases(keep = false) {
       const f = this.jobModal.form;
       if (!keep) f.database = '';
+      this.jobModal.dbError = '';
       if (!f.connKey) { this.jobModal.databases = []; return; }
       try {
         const list = await this.apiJson('GET', `/api/explore/${f.connKey}/databases`);
         this.jobModal.databases = list;
         if (!f.database && list.length) { const c = this.connections.find(x => x.key === f.connKey); f.database = list.includes(c && c.database) ? c.database : list[0]; }
         else if (f.database && !list.includes(f.database)) this.jobModal.databases = [f.database, ...list];
-      } catch (e) { this.jobModal.error = e.message; }
+      } catch (e) {
+        // Not a reason to block the dialog: say what happened next to the field and keep whatever database was set.
+        this.jobModal.databases = f.database ? [f.database] : [];
+        this.jobModal.dbError = e.message;
+      }
     },
     toggleJobConn(key) {
       const k = this.jobModal.form.connKeys;
