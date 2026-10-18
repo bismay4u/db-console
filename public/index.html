@@ -559,6 +559,9 @@
     <a class="nav-link-custom" :class="activeTab === 'queries' && 'active'" @click="activeTab = 'queries'">
       <i class="bi bi-bookmark-star"></i> Saved Queries
     </a>
+    <a class="nav-link-custom" :class="activeTab === 'managed' && 'active'" @click="activeTab = 'managed'">
+      <i class="bi bi-magic"></i> Managed Queries
+    </a>
     <a class="nav-link-custom" :class="activeTab === 'logs' && 'active'" @click="openTab('logs')">
       <i class="bi bi-journal-text"></i> Query Log
     </a>
@@ -628,6 +631,9 @@
       <button class="btn btn-accent btn-sm" x-show="activeTab==='queries'" @click="openQueryModal()">
         <i class="bi bi-plus-lg me-1"></i> New saved query
       </button>
+      <button class="btn btn-accent btn-sm" x-show="activeTab==='managed' && isAdmin()" @click="openManagedModal()">
+        <i class="bi bi-plus-lg me-1"></i> New managed query
+      </button>
       <button class="btn btn-accent btn-sm" x-show="activeTab==='schedules'" @click="openJobModal()">
         <i class="bi bi-plus-lg me-1"></i> New job
       </button>
@@ -655,6 +661,9 @@
               </button>
               <button class="tab-btn" :class="leftTab==='saved' && 'active'" @click="leftTab='saved'">
                 Saved <span class="tab-count" x-show="queries.length" x-text="queries.length"></span>
+              </button>
+              <button class="tab-btn" :class="leftTab==='managed' && 'active'" @click="leftTab='managed'">
+                Managed
               </button>
               <button class="tab-btn" :class="leftTab==='history' && 'active'" @click="leftTab='history'">
                 History <span class="tab-count" x-show="history.length" x-text="history.length"></span>
@@ -716,6 +725,34 @@
                     </div>
                   </template>
                 </div>
+              </div>
+            </template>
+
+            <template x-if="leftTab === 'managed'">
+              <div>
+                <input type="search" class="form-control form-control-sm mb-2" placeholder="Search managed queries…" x-model="runnerManagedQuery">
+                <div class="text-muted-sm mb-1" x-show="selectedEngines().size">Showing queries for <span x-text="[...selectedEngines()].map(engineName).join(' and ')"></span>.</div>
+                <div class="text-muted-sm mb-1" x-show="!selectedEngines().size">Tick a connection to see the queries for its database type.</div>
+                <div style="max-height:420px; overflow-y:auto;">
+                  <template x-for="g in managedGroups(managedFiltered({ engines: selectedEngines(), text: runnerManagedQuery }))" :key="g.category">
+                    <div class="mb-2">
+                      <div class="section-title mb-1" x-text="g.category"></div>
+                      <template x-for="q in g.items" :key="q.id">
+                        <div class="saved-query-row px-2 py-1 rounded-2 d-flex align-items-center justify-content-between" @click="useManaged(q)" :title="q.description">
+                          <div class="text-truncate me-2">
+                            <span class="fw-medium" style="font-size:.83rem" x-text="q.title"></span>
+                            <span class="badge rounded-pill badge-soft-success ms-1" x-show="q.template">template</span>
+                            <span class="text-muted-sm ms-1" x-show="!selectedEngines().size" x-text="({ mysql: 'MySQL', postgres: 'PostgreSQL', sqlite: 'SQLite' })[q.engine]"></span>
+                            <i class="bi bi-eye-slash text-muted ms-1" x-show="q.hidden" title="Hidden from users"></i>
+                          </div>
+                          <i class="bi bi-arrow-right-circle text-muted"></i>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                  <div class="text-muted-sm" x-show="!managedFiltered({ engines: selectedEngines(), text: runnerManagedQuery }).length">Nothing matches.</div>
+                </div>
+                <a href="#" class="small text-decoration-none" @click.prevent="activeTab = 'managed'">Browse all managed queries →</a>
               </div>
             </template>
 
@@ -2015,6 +2052,64 @@ Separate multiple statements with ; — highlight text to run just that part."
             </tbody>
           </table>
         </div>
+      </div>
+    </template>
+
+    <!-- ================= MANAGED QUERIES ================= -->
+    <template x-if="activeTab === 'managed'">
+      <div>
+        <div class="card-surface p-2 mb-2 d-flex flex-wrap align-items-center gap-2">
+          <input type="search" class="form-control form-control-sm" style="width:260px" placeholder="Search by title, description or SQL…" x-model="managedQuery">
+          <select class="form-select form-select-sm" style="width:auto" x-model="managedEngine">
+            <option value="">All database types</option>
+            <option value="mysql">MySQL / MariaDB</option>
+            <option value="postgres">PostgreSQL</option>
+            <option value="sqlite">SQLite</option>
+          </select>
+          <select class="form-select form-select-sm" style="width:auto" x-model="managedCategory">
+            <option value="">All categories</option>
+            <template x-for="c in managedCategories()" :key="c"><option :value="c" x-text="c"></option></template>
+          </select>
+          <span class="text-muted-sm ms-auto" x-text="managedFiltered({ engine: managedEngine, text: managedQuery, category: managedCategory }).length + ' queries'"></span>
+        </div>
+        <div class="text-muted-sm py-4 text-center" x-show="!managedFiltered({ engine: managedEngine, text: managedQuery, category: managedCategory }).length">Nothing matches.</div>
+        <template x-for="g in managedGroups(managedFiltered({ engine: managedEngine, text: managedQuery, category: managedCategory }))" :key="g.category">
+          <div class="card-surface mb-3">
+            <div class="px-3 py-2 fw-semibold" style="border-bottom:1px solid var(--border)"><span x-text="g.category"></span> <span class="tab-count" x-text="g.items.length"></span></div>
+            <template x-for="q in g.items" :key="q.id">
+              <div class="analysis-item" :style="q.hidden && 'opacity:.6'">
+                <div class="d-flex gap-2 align-items-start">
+                  <div class="flex-grow-1" style="min-width:0">
+                    <div class="d-flex flex-wrap align-items-center gap-1">
+                      <a href="#" class="fw-medium text-decoration-none" @click.prevent="managedOpen[q.id] = !managedOpen[q.id]" x-text="q.title"></a>
+                      <span class="badge rounded-pill badge-soft-success" x-text="engineName(q.engine)"></span>
+                      <span class="badge rounded-pill badge-soft-success" x-show="q.template">template</span>
+                      <span class="badge rounded-pill badge-soft-danger" x-show="q.hidden">hidden from users</span>
+                      <span class="text-muted-sm" x-show="!q.builtin" x-text="'added by ' + userLabel(q.createdBy)"></span>
+                    </div>
+                    <div class="small text-muted" x-text="q.description"></div>
+                    <div class="mt-2" x-show="managedOpen[q.id]">
+                      <pre class="definition-block mb-2" style="white-space:pre-wrap" x-text="q.sql"></pre>
+                    </div>
+                  </div>
+                  <div class="text-nowrap">
+                    <button class="btn btn-sm btn-outline-soft" title="Show the SQL" @click="managedOpen[q.id] = !managedOpen[q.id]"><i class="bi" :class="managedOpen[q.id] ? 'bi-chevron-up' : 'bi-code-slash'"></i></button>
+                    <button class="btn btn-sm btn-outline-soft" title="Copy the SQL" @click="copyText(q.sql)"><i class="bi bi-clipboard"></i></button>
+                    <button class="btn btn-sm btn-outline-soft" title="Save a copy to your own saved queries" @click="openQueryModal(null, q.sql, q.title)"><i class="bi bi-bookmark-plus"></i></button>
+                    <button class="btn btn-sm btn-accent" @click="useManaged(q)"><i class="bi bi-terminal me-1"></i>Open in Runner</button>
+                    <template x-if="isAdmin()">
+                      <span>
+                        <button class="btn btn-sm btn-outline-soft" :title="q.hidden ? 'Show to users again' : 'Hide from users'" @click="toggleManagedHidden(q)"><i class="bi" :class="q.hidden ? 'bi-eye' : 'bi-eye-slash'"></i></button>
+                        <button class="btn btn-sm btn-outline-soft" x-show="!q.builtin" title="Edit" @click="openManagedModal(q)"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-ghost-danger" x-show="!q.builtin" title="Delete" @click="deleteManaged(q)"><i class="bi bi-trash"></i></button>
+                      </span>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
       </div>
     </template>
 
@@ -3944,6 +4039,31 @@ Separate multiple statements with ; — highlight text to run just that part."
   </div>
 </div>
 
+<!-- ===== Managed query editor (admins) ===== -->
+<div class="modal-backdrop-custom" x-show="managedModal.open" x-cloak @click.self="managedModal.open = false">
+  <div class="modal-panel" style="max-width:720px">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold" x-text="managedModal.id ? 'Edit managed query' : 'New managed query'"></h2><button class="btn btn-sm btn-outline-soft" @click="managedModal.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom">
+      <div class="alert alert-danger py-2 small" x-show="managedModal.error" x-text="managedModal.error"></div>
+      <div class="text-muted-sm mb-2">Everyone who can sign in sees a managed query and can open it in the Query Runner or save a copy. Only administrators change it.</div>
+      <div class="row g-2">
+        <div class="col-8"><label class="form-label small fw-medium">Title</label><input type="text" class="form-control" x-model="managedModal.form.title"></div>
+        <div class="col-4"><label class="form-label small fw-medium">Database type</label>
+          <select class="form-select" x-model="managedModal.form.engine"><option value="mysql">MySQL / MariaDB</option><option value="postgres">PostgreSQL</option><option value="sqlite">SQLite</option></select></div>
+        <div class="col-12"><label class="form-label small fw-medium">Category</label><input type="text" class="form-control" list="managedCategoryList" x-model="managedModal.form.category" placeholder="Custom">
+          <datalist id="managedCategoryList"><template x-for="c in managedCategories()" :key="c"><option :value="c"></option></template></datalist></div>
+        <div class="col-12"><label class="form-label small fw-medium">What it is for</label><textarea class="form-control" rows="2" x-model="managedModal.form.description"></textarea></div>
+        <div class="col-12"><label class="form-label small fw-medium">SQL</label><textarea class="form-control" rows="9" style="font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.8rem" x-model="managedModal.form.sql" placeholder="SELECT …  — use {{name}} or {{name=default}} for values people fill in"></textarea></div>
+        <div class="col-12"><label class="form-check-label small"><input type="checkbox" class="form-check-input me-1" x-model="managedModal.form.template">This is a template: people replace names in it before running</label></div>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="managedModal.open = false">Cancel</button>
+      <button class="btn btn-accent" @click="saveManaged()" :disabled="managedModal.saving">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Analysis: apply several fixes ===== -->
 <div class="modal-backdrop-custom" x-show="bulkModal.open" x-cloak @click.self="!bulkModal.running && (bulkModal.open = false)">
   <div class="modal-panel" style="max-width:760px">
@@ -4837,6 +4957,8 @@ function app() {
     totpEnabled: false,
     twoFa: { open: false, forced: false, enabled: false, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false },
     dismissModal: { open: false, finding: null, reason: '', saving: false },
+    managed: [], managedEngine: '', managedCategory: '', managedQuery: '', managedOpen: {}, runnerManagedQuery: '',
+    managedModal: { open: false, id: '', saving: false, error: '', form: { title: '', engine: 'mysql', category: '', description: '', sql: '', template: false } },
     noteCounts: {}, queryNoteCounts: {},
     tableNotes: { list: [], loading: false, error: '', text: '', shared: false, saving: false, editId: '', editText: '', editShared: false },
     queryNotes: { open: false, id: '', name: '', canManage: false, list: [], loading: false, error: '', text: '', saving: false, editId: '', editText: '' },
@@ -4998,7 +5120,7 @@ function app() {
       } catch (e) {
         this.currentDbs = {};
       }
-      await Promise.all([this.loadConnections(), this.loadQueries(), this.loadDirectory(), this.loadPermissionList()]);
+      await Promise.all([this.loadConnections(), this.loadQueries(), this.loadManaged(), this.loadDirectory(), this.loadPermissionList()]);
       this.loadApprovals();
       setInterval(() => { if (!document.hidden) this.loadApprovals(); }, 60000);
       // Text set from elsewhere (saved query, history, log) goes into the editor.
@@ -5081,7 +5203,7 @@ function app() {
       const [path, query = ''] = raw.split('?');
       const segs = path.split('/').filter(Boolean).map((x) => { try { return decodeURIComponent(x); } catch (e) { return x; } });
       const q = new URLSearchParams(query);
-      const tabs = ['runner', 'explore', 'connections', 'queries', 'logs', 'analytics', 'schedules', 'approvals'].concat(this.isAdmin() ? ['users', 'system'] : []);
+      const tabs = ['runner', 'explore', 'connections', 'queries', 'managed', 'logs', 'analytics', 'schedules', 'approvals'].concat(this.isAdmin() ? ['users', 'system'] : []);
       const tab = tabs.includes(segs[0]) ? segs[0] : 'runner';
       this.routing = true;
       try {
@@ -5167,7 +5289,7 @@ function app() {
 
     pageTitle() {
       return {
-        runner: 'Query Runner', explore: 'Explore', connections: 'Connections', queries: 'Saved Queries',
+        runner: 'Query Runner', explore: 'Explore', connections: 'Connections', queries: 'Saved Queries', managed: 'Managed Queries',
         logs: 'Query Log', analytics: 'Analytics', schedules: 'Schedules', approvals: 'Approvals', users: 'Users', system: 'Update & Restart'
       }[this.activeTab];
     },
@@ -5177,6 +5299,7 @@ function app() {
         explore: 'Browse databases, tables and rows with clicks — writing SQL is a last resort here',
         connections: 'Manage the databases this tool can connect to',
         queries: 'Reusable SQL — yours, plus queries others have shared with you',
+        managed: 'Ready-made queries for the everyday jobs: what is running, what is big, what is missing an index. Open one in the Query Runner, or save a copy of your own',
         logs: this.isAdmin() ? 'Everything run against a database, by every user' : 'Everything you have run against a database',
         analytics: this.isAdmin() ? 'Usage across all users and connections' : 'Your usage over time',
         schedules: 'Run queries, analyses, backups and connection checks on a timetable — and get told when something is wrong',
@@ -5937,7 +6060,7 @@ function app() {
     },
     paletteItems() {
       const q = this.palette.q.trim().toLowerCase();
-      const tabs = [['runner', 'Query Runner', 'bi-terminal'], ['explore', 'Explore', 'bi-compass'], ['connections', 'Connections', 'bi-hdd-stack'], ['queries', 'Saved Queries', 'bi-bookmark-star'], ['logs', 'Query Log', 'bi-journal-text'], ['analytics', 'Analytics', 'bi-bar-chart-line'], ['schedules', 'Schedules', 'bi-alarm'], ['approvals', 'Approvals', 'bi-patch-check']];
+      const tabs = [['runner', 'Query Runner', 'bi-terminal'], ['explore', 'Explore', 'bi-compass'], ['connections', 'Connections', 'bi-hdd-stack'], ['queries', 'Saved Queries', 'bi-bookmark-star'], ['managed', 'Managed Queries', 'bi-magic'], ['logs', 'Query Log', 'bi-journal-text'], ['analytics', 'Analytics', 'bi-bar-chart-line'], ['schedules', 'Schedules', 'bi-alarm'], ['approvals', 'Approvals', 'bi-patch-check']];
       if (this.isAdmin()) tabs.push(['users', 'Users', 'bi-people'], ['system', 'Update & Restart', 'bi-arrow-repeat']);
       const items = tabs.map(([tab, label, icon]) => ({ id: 'tab:' + tab, label, icon, hint: 'page', tab }));
       for (const c of this.connections) items.push({ id: 'conn:' + c.key, label: c.label, icon: 'bi-hdd-network', hint: 'open in Explore', conn: c.key });
@@ -5982,7 +6105,7 @@ function app() {
       if (mod || e.altKey) return;
       if (getG() && Date.now() - getG() < 1200) {
         setG(0);
-        const go = { r: 'runner', e: 'explore', c: 'connections', q: 'queries', l: 'logs', s: 'schedules', a: 'approvals' }[e.key.toLowerCase()];
+        const go = { r: 'runner', e: 'explore', c: 'connections', q: 'queries', m: 'managed', l: 'logs', s: 'schedules', a: 'approvals' }[e.key.toLowerCase()];
         if (go) { e.preventDefault(); this.openTab(go); }
         return;
       }
@@ -6257,6 +6380,58 @@ function app() {
         await this.runAnalysis();
         if (this.exploreTable) this.loadExploreTables();
       } catch (e) { m.error = e.message; } finally { m.running = false; }
+    },
+
+    // ---- Managed queries ----
+    async loadManaged() {
+      try { this.managed = await this.apiJson('GET', '/api/managed-queries'); } catch (e) { this.managed = []; }
+    },
+    selectedEngines() {
+      return new Set(this.connections.filter((c) => this.selectedKeys.includes(c.key)).map((c) => c.engine || 'mysql'));
+    },
+    // { engine } shows one database type, { engines } a set of them; text matches title, description, category and SQL.
+    managedFiltered({ engine = '', engines = null, text = '', category = '' } = {}) {
+      const t = String(text || '').trim().toLowerCase();
+      return this.managed.filter((q) => (!engine || q.engine === engine) && (!engines || !engines.size || engines.has(q.engine))
+        && (!category || q.category === category)
+        && (!t || `${q.title} ${q.description} ${q.category} ${q.sql}`.toLowerCase().includes(t)));
+    },
+    managedGroups(list) {
+      const groups = new Map();
+      for (const q of list) { if (!groups.has(q.category)) groups.set(q.category, { category: q.category, items: [] }); groups.get(q.category).items.push(q); }
+      return [...groups.values()];
+    },
+    managedCategories() { return [...new Set(this.managed.map((q) => q.category))].sort(); },
+    useManaged(q) {
+      this.sql = q.sql;
+      this.activeTab = 'runner';
+      const engines = this.selectedEngines();
+      if (q.template) this.showToast('This is a template: replace the names in capitals before running');
+      else if (engines.size && !engines.has(q.engine)) this.showToast(`This query is for ${this.engineName(q.engine)}; tick a ${this.engineName(q.engine)} connection to run it`, 'error');
+      else if (!engines.size) this.showToast('Tick a connection to run it on');
+    },
+    openManagedModal(q) {
+      this.managedModal = { open: true, id: q ? q.id : '', saving: false, error: '',
+        form: q ? { title: q.title, engine: q.engine, category: q.category, description: q.description, sql: q.sql, template: q.template }
+                : { title: '', engine: this.selectedEngines().values().next().value || 'mysql', category: '', description: '', sql: '', template: false } };
+    },
+    async saveManaged() {
+      const m = this.managedModal;
+      m.saving = true; m.error = '';
+      try {
+        await (m.id ? this.apiJson('PUT', `/api/managed-queries/${m.id}`, m.form) : this.apiJson('POST', '/api/managed-queries', m.form));
+        m.open = false;
+        await this.loadManaged();
+        this.showToast('Saved');
+      } catch (e) { m.error = e.message; } finally { m.saving = false; }
+    },
+    async deleteManaged(q) {
+      const ok = await this.askConfirm('Delete this managed query?', q.title, { confirmLabel: 'Delete', danger: true });
+      if (!ok) return;
+      try { await this.apiJson('DELETE', `/api/managed-queries/${q.id}`); await this.loadManaged(); } catch (e) { this.showToast(e.message, 'error'); }
+    },
+    async toggleManagedHidden(q) {
+      try { await this.apiJson('PUT', `/api/managed-queries/${q.id}/hidden`, { hidden: !q.hidden }); await this.loadManaged(); } catch (e) { this.showToast(e.message, 'error'); }
     },
 
     // ---- Fixing several findings at once ----

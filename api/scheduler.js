@@ -94,7 +94,7 @@ function connectionFor(job, user, { manage = false } = {}) {
 async function runQueryJob(job) {
   const user = ownerOf(job);
   const conn = connectionFor(job, user);
-  const sql = params.apply(job.sql, job.params || {});
+  const sql = params.apply(job.sql, job.params || {}, require('./engines').engineOf(conn));
   const allowed = access.restrictionsFor(user, conn);
   const sc = access.scopeOf(user, conn);
   if (sc) {

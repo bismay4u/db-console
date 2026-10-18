@@ -50,3 +50,15 @@ test('the runner substitutes parameters server-side', { timeout: 60000 }, async 
   } finally { await srv.stop(); }
   finish();
 });
+
+test('PostgreSQL and SQLite values only double their quotes (a backslash does not escape)', () => {
+  for (const d of ['postgres', 'sqlite']) {
+    assert.strictEqual(params.apply("SELECT {{v}}", { v: "x'; DROP TABLE t; --" }, d), "SELECT 'x''; DROP TABLE t; --'");
+    assert.strictEqual(params.apply("SELECT {{v}}", { v: "a\\b" }, d), "SELECT 'a\\b'");
+    assert.strictEqual(params.apply("SELECT '%{{v}}%'", { v: "it's" }, d), "SELECT '%it''s%'");
+    assert.strictEqual(params.apply("SELECT {{n}}, {{z}}", { n: '5', z: 'null' }, d), 'SELECT 5, NULL');
+    // a backslash before a closing quote does not hide that quote from the scanner
+    assert.strictEqual(params.apply("SELECT 'a\\' || {{v}}", { v: 'x' }, d), "SELECT 'a\\' || 'x'");
+  }
+  assert.strictEqual(params.apply("SELECT 'a\\' || {{v}}", { v: 'x' }, 'mysql'), "SELECT 'a\\' || x", 'MySQL still reads \\ as an escape, so the parameter is inside the string');
+});

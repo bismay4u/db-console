@@ -22,7 +22,8 @@ const pools = new Map(); // connection key -> { sig, pool }
 function poolConfig(conn) {
   const cfg = {
     host: conn.host, port: Number(conn.port) || 5432, user: conn.user, password: conn.password, database: conn.database,
-    max: 5, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000, application_name: 'DB Console'
+    max: 5, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000, application_name: 'DB Console',
+    options: '-c standard_conforming_strings=on' // a backslash in a string is just a backslash (query parameters rely on it)
   };
   if (conn.sslMode) cfg.ssl = { rejectUnauthorized: conn.sslMode === 'verify', ...(conn.sslCa ? { ca: conn.sslCa } : {}), ...(conn.sslCert ? { cert: conn.sslCert } : {}), ...(conn.sslKey ? { key: conn.sslKey } : {}) };
   if (conn.sshHost) cfg.stream = () => tunnel.createStream(conn.key, conn);

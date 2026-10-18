@@ -15,20 +15,20 @@ const TOKEN = new RegExp(`\\{\\{\\s*(${NAME})\\s*(?:=([^}]*))?\\}\\}`, 'y');
 
 // Calls fn(index, length, name, defaultValue, quote) for every parameter token
 // outside comments. `quote` is the quote character it sits inside, or ''.
-function scan(sql, fn) {
+function scan(sql, fn, dialect = 'mysql') {
   let i = 0;
   let quote = '';
   while (i < sql.length) {
     const c = sql[i];
     const n = sql[i + 1];
     if (quote) {
-      if (c === '\\' && quote !== '`') { i += 2; continue; }
+      if (c === '\\' && quote !== '`' && dialect === 'mysql') { i += 2; continue; } // only MySQL treats \\ as an escape
       if (c === quote) { if (n === quote) { i += 2; continue; } quote = ''; }
     } else if (c === "'" || c === '"' || c === '`') {
       quote = c;
     } else if (c === '-' && n === '-' && /[\s]/.test(sql[i + 2] || ' ')) {
       const e = sql.indexOf('\n', i); i = e === -1 ? sql.length : e; continue;
-    } else if (c === '#') {
+    } else if (c === '#' && dialect === 'mysql') {
       const e = sql.indexOf('\n', i); i = e === -1 ? sql.length : e; continue;
     } else if (c === '/' && n === '*') {
       const e = sql.indexOf('*/', i + 2); i = e === -1 ? sql.length : e + 2; continue;
@@ -43,37 +43,45 @@ function scan(sql, fn) {
 }
 
 // [{ name, default }] in order of first appearance.
-function extract(sql) {
+function extract(sql, dialect = 'mysql') {
   const seen = new Map();
   scan(String(sql), (idx, len, name, def) => {
     if (!seen.has(name)) seen.set(name, { name, default: def });
     else if (seen.get(name).default === undefined && def !== undefined) seen.get(name).default = def;
-  });
+  }, dialect);
   return [...seen.values()];
 }
 
 const NUMBER = /^-?(0|[1-9]\d*)(\.\d+)?$/;
 
-function literal(value, quote) {
+// PostgreSQL and SQLite strings end at a quote that is not doubled and give a backslash no meaning (the PostgreSQL
+// connection pins standard_conforming_strings on), so for them only the quote is escaped: MySQL's \' would end the string.
+function quoteFor(dialect, s) {
+  if (dialect === 'mysql') return mysql.escape(s);
+  if (s.includes('\0')) throw new Error('A parameter value cannot contain a NUL character');
+  return "'" + s.replace(/'/g, "''") + "'";
+}
+
+function literal(value, quote, dialect) {
   const s = String(value);
-  if (quote) return mysql.escape(s).slice(1, -1); // escaped, without the surrounding quotes
+  if (quote) return quoteFor(dialect, s).slice(1, -1); // escaped, without the surrounding quotes
   if (NUMBER.test(s)) return s;
   if (/^null$/i.test(s)) return 'NULL';
-  return mysql.escape(s);
+  return quoteFor(dialect, s);
 }
 
 // Returns the SQL with every parameter replaced. Throws if one has no value.
-function apply(sql, values = {}) {
+function apply(sql, values = {}, dialect = 'mysql') {
   sql = String(sql);
-  const defaults = Object.fromEntries(extract(sql).map((p) => [p.name, p.default]));
+  const defaults = Object.fromEntries(extract(sql, dialect).map((p) => [p.name, p.default]));
   const missing = new Set();
   const spans = [];
   scan(sql, (idx, len, name, def, quote) => {
     let v = values[name];
     if (v === undefined || v === null || v === '') v = defaults[name];
     if (v === undefined) { missing.add(name); return; }
-    spans.push([idx, len, literal(v, quote)]);
-  });
+    spans.push([idx, len, literal(v, quote, dialect)]);
+  }, dialect);
   if (missing.size) throw new Error(`Missing value for parameter ${[...missing].map((m) => `{{${m}}}`).join(', ')}`);
   let out = '';
   let pos = 0;

@@ -7,6 +7,7 @@ const session = require('express-session');
 const config = require('./api/appconfig');
 const store = require('./api/store');
 const notes = require('./api/notes');
+const managed = require('./api/managed-queries');
 const db = require('./api/db');
 const querylog = require('./api/querylog');
 const params = require('./api/params');
@@ -880,6 +881,32 @@ app.delete('/api/queries/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Managed queries ---
+// Ready-made queries for everybody (built in, plus the ones an administrator adds). Read-only for users: they open one
+// in the Query Runner or save a copy of their own. Administrators add, change, hide and delete.
+app.get('/api/managed-queries', requireAuth, (req, res) => {
+  const engine = managed.ENGINES.includes(req.query.engine) ? req.query.engine : undefined;
+  res.json(managed.list({ engine, includeHidden: isAdmin(req.user) }));
+});
+app.post('/api/managed-queries', requireAdmin, (req, res) => {
+  try { res.status(201).json(managed.create(req.body || {}, req.user.username)); } catch (err) { res.status(400).json({ error: err.message }); }
+});
+app.put('/api/managed-queries/:id', requireAdmin, (req, res) => {
+  if (!req.params.id.startsWith('custom-')) return res.status(400).json({ error: 'Built-in queries cannot be edited. Hide them, or add your own.' });
+  try {
+    const q = managed.update(req.params.id, req.body || {});
+    return q ? res.json(q) : res.status(404).json({ error: 'Managed query not found' });
+  } catch (err) { return res.status(400).json({ error: err.message }); }
+});
+app.put('/api/managed-queries/:id/hidden', requireAdmin, (req, res) => {
+  const r = managed.setHidden(req.params.id, (req.body || {}).hidden !== false);
+  return r ? res.json(r) : res.status(404).json({ error: 'Managed query not found' });
+});
+app.delete('/api/managed-queries/:id', requireAdmin, (req, res) => {
+  if (!req.params.id.startsWith('custom-')) return res.status(400).json({ error: 'Built-in queries cannot be deleted. Hide them instead.' });
+  return managed.remove(req.params.id) ? res.json({ ok: true }) : res.status(404).json({ error: 'Managed query not found' });
+});
+
 // --- Notes ---
 // Table notes: your own, plus the ones others shared with everyone who can open the connection.
 // Query notes: everyone who can see a saved query sees its notes and may add one.
@@ -1575,22 +1602,25 @@ app.post('/api/query', requireAuth, async (req, res) => {
   // databases: { [connKey]: dbName } — where each connection currently is
   // in the Query Runner (after an earlier USE); defaults to its database.
   const { dbKeys, databases, explain, runId } = req.body || {};
-  let sql = (req.body || {}).sql;
+  const rawSql = (req.body || {}).sql;
 
   if (!Array.isArray(dbKeys) || dbKeys.length === 0) {
     return res.status(400).json({ error: 'dbKeys must be a non-empty array' });
   }
-  if (!sql || typeof sql !== 'string' || !sql.trim()) {
+  if (!rawSql || typeof rawSql !== 'string' || !rawSql.trim()) {
     return res.status(400).json({ error: 'sql must be a non-empty string' });
   }
-  // {{name}} placeholders become escaped literals; the log and the results show the SQL that actually ran.
-  try { sql = params.apply(sql, (req.body || {}).params || {}); } catch (err) { return res.status(400).json({ error: err.message }); }
 
   const conns = dbKeys.map((key) => store.getConnection(key));
   const denied = dbKeys.filter((key, i) => !conns[i] || !canUse(req.user, conns[i]));
   if (denied.length) {
     return res.status(403).json({ error: `No access to connection(s): ${denied.join(', ')}` });
   }
+
+  // {{name}} placeholders become escaped literals (escaped the way each connection's database needs it); the log and
+  // the results show the SQL that actually ran.
+  const sqlFor = {};
+  try { dbKeys.forEach((key, i) => { sqlFor[key] = params.apply(rawSql, (req.body || {}).params || {}, engines.engineOf(conns[i])); }); } catch (err) { return res.status(400).json({ error: err.message }); }
 
   const startDb = (key, i) => {
     const d = databases && databases[key];
@@ -1603,6 +1633,7 @@ app.post('/api/query', requireAuth, async (req, res) => {
   const results = await Promise.all(
     dbKeys.map(async (key, i) => {
       let result;
+      const sql = sqlFor[key];
       const outOfScope = await scopeError(req.user, conns[i], sql, startDb(key, i));
       if (outOfScope) return { key, ok: false, statements: [{ sql, ok: false, error: outOfScope }] };
       // A shared user on a connection that wants a second pair of eyes: dangerous statements wait for approval.

@@ -96,6 +96,9 @@ INSERT INTO dbc_t.people (name, age, born) VALUES ('ann', 30, '2000-01-02'), ('b
     r = await call(admin, 'POST', '/api/query/cancel', { runId });
     const res = await slow;
     check(r.data.stopped === 1 && !res.data.results[0].ok, 'Stop ends a long query', { r: r.data, e: res.data.results[0].statements[0].error });
+    const evil = "x'; DROP TABLE people; --";
+    r = await run('SELECT {{v}} AS v, {{w}} AS w', { params: { v: evil, w: 'a\\b' } });
+    check(st(r).rows[0].v === evil && st(r).rows[0].w === "a\\b", 'parameter values stay data on PostgreSQL (a quote cannot end the string)', st(r));
     r = await run('SELECT 1 AS n');
     check(st(r).rows[0].n === 1, 'and the connection works again');
 

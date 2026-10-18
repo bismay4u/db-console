@@ -43,6 +43,9 @@ INSERT INTO people (name, age) VALUES ('ann', 30), ('ben', 15), ('cy; semi', 41)
     check(!r.data.results[0].ok && /no such column/.test(st(r).error), 'errors are reported');
     r = await run(admin, 'SELECT * FROM people', { explain: true });
     check(r.data.results[0].ok && /SCAN|SEARCH/i.test(JSON.stringify(st(r).rows)), 'Explain shows the query plan');
+    const evil = "x'; DROP TABLE people; --";
+    r = await run(admin, 'SELECT {{v}} AS v, {{w}} AS w', { params: { v: evil, w: 'a\\b' } });
+    check(st(r).rows[0].v === evil && st(r).rows[0].w === 'a\\b', 'parameter values stay data on SQLite (a quote cannot end the string)', st(r));
     r = await run(admin, 'INSERT INTO people (name) VALUES (\'dee\')');
     check(st(r).insertId > 0, 'INSERT reports the new id', st(r));
     r = await run(admin, "INSERT INTO pets VALUES (100, 999, 'orphan')");

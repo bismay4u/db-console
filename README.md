@@ -746,6 +746,21 @@ Not available yet for these connections (the page says so instead of failing): c
 
 Notes: Stop on SQLite abandons the running statement (a statement inside SQLite's own code cannot be interrupted from Node), so a runaway query may keep a CPU busy until it ends; the connection itself is usable again at once. Big integers and `bytea` / `BLOB` values are shown exactly (as text and hex). The test suite runs the PostgreSQL tests only when a server is reachable (`TEST_PG_HOST`, `TEST_PG_PORT`, `TEST_PG_USER`, `TEST_PG_PASS`, `TEST_PG_DB`, default `127.0.0.1:5432`, `dbc` / `dbcpass`, database `dbc_pg`).
 
+## Managed Queries
+
+**Managed Queries** (in the sidebar, and as the **Managed** tab beside Saved and History in the Query Runner) is a library of ready-made queries that come with the app, so people get something useful on day one. They are grouped by category and exist for each database type:
+
+* **Server & health** — what is running right now, long-running queries, open transactions, connections by user, connection limits, key counters, important settings, slow-query-log and replication status (PostgreSQL: blocking locks, idle-in-transaction sessions, cache hit ratio).
+* **Size & storage** — size of every database, the largest tables, tables with reclaimable space, auto-increment columns running out of numbers (MySQL), tables that need vacuuming (PostgreSQL).
+* **Schema** — columns and indexes of a table, find a column by name, foreign keys, tables without a primary key, duplicate and redundant indexes, tables not in utf8mb4 or not InnoDB, views, routines, triggers and events.
+* **Performance** — buffer pool hit rate, who is blocking whom, temporary tables and sorts, unused indexes and tables read mostly by full scans (PostgreSQL), the slowest statements (PostgreSQL with `pg_stat_statements`).
+* **Security & users** — who you are and what you may do, accounts, anonymous and any-host accounts, roles.
+* **Data checks** — templates (find duplicate values, rows that point at nothing, rows per day, how empty a column is, most common values) where you replace the names in capitals.
+
+Some take values — `{{table}}`, `{{text}}`, `{{seconds=5}}` — which the Query Runner asks for before it runs (see *Query parameters*). Everything is read-only, and "this database" means the database the connection is using. **Open in Runner** loads the SQL for the connections you have ticked; **Save a copy** puts it in your own saved queries to edit; nobody but an administrator can change a managed query.
+
+Administrators can **add their own** managed queries (a title, category, database type, description and SQL — everyone sees them), edit or delete them, and **hide** any query, built-in ones included, from everybody else. The built-ins live in `api/managed/`; the ones an administrator adds are in `data/managed-queries.json` and the hidden list in `data/managed-hidden.json`. API: `GET /api/managed-queries[?engine=mysql|postgres|sqlite]` for everyone; `POST`, `PUT /:id`, `PUT /:id/hidden` and `DELETE /:id` for administrators.
+
 ## Saved Queries
 
 ```http
