@@ -318,7 +318,7 @@ function sampleMetrics(now) {
   if (now - lastMetrics < (Number(process.env.METRICS_INTERVAL_MS) || 60000)) return;
   lastMetrics = now;
   for (const c of store.listConnections()) {
-    if (c.monitor && !c.secretError) metrics.record(c.key).catch(() => {});
+    if (c.monitor && !c.secretError && !c.inactive) metrics.record(c.key).catch(() => {});
   }
 }
 

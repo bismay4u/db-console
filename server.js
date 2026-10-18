@@ -259,6 +259,8 @@ app.param('key', (req, res, next, key) => {
   const conn = store.getConnection(key);
   if (!conn || !canUse(req.user, conn)) return res.status(404).json({ error: 'Connection not found' });
   req.conn = conn;
+  // An inactive connection can still be edited, shared, tested and deleted, but nothing else touches it.
+  if (conn.inactive && /^\/api\/(explore|server|notes)\//.test(req.originalUrl)) return res.status(409).json({ error: `${conn.label} is inactive. Its owner or an administrator can make it active again.` });
   return next();
 });
 
@@ -783,6 +785,87 @@ app.put('/api/connections/:key', requireAuth, requireManage, (req, res) => {
 
 // Replace who a connection is shared with: { sharedWith: ['alice', 'bob'] }
 // or { sharedWith: ['*'] } for every user.
+// ---- Several connections at once ----
+// POST /api/connections/bulk { keys: [...], action, ... } — each connection is handled on its own, with the same rules
+// as changing it alone (owner or admin only), and the answer says what happened to every one.
+//   share        { mode: 'add' | 'replace', sharedWith, permissions, scopes }   add: keep today's sharing and add these people
+//   unshare      { users: [...] } or { all: true }
+//   activate / deactivate               an inactive connection stays in the list but nobody can run anything on it
+//   approval     { on: true|false }     require a second pair of eyes for dangerous statements
+//   monitor      { on: true|false }     record server health every minute
+//   test                                try to connect
+//   delete
+app.post('/api/connections/bulk', requireAuth, async (req, res) => {
+  const { keys, action } = req.body || {};
+  const b = req.body || {};
+  if (!Array.isArray(keys) || !keys.length) return res.status(400).json({ error: 'Choose at least one connection' });
+  if (keys.length > 200) return res.status(400).json({ error: 'Choose at most 200 connections at a time' });
+  if (!['share', 'unshare', 'activate', 'deactivate', 'approval', 'monitor', 'test', 'delete'].includes(action)) return res.status(400).json({ error: 'Unknown action' });
+  if (action === 'share' && (!Array.isArray(b.sharedWith) || !['add', 'replace'].includes(b.mode || 'add'))) return res.status(400).json({ error: 'Say who to share with, and whether to add to or replace the current sharing' });
+  if (action === 'unshare' && !b.all && !Array.isArray(b.users)) return res.status(400).json({ error: 'Say whom to stop sharing with' });
+
+  const one = async (key) => {
+    const conn = store.getConnection(key);
+    if (!conn || !canUse(req.user, conn)) return { key, ok: false, error: 'Connection not found' };
+    const label = conn.label;
+    if (action === 'test') {
+      const r = await db.testConnection(conn);
+      return { key, label, ok: Boolean(r.ok), error: r.ok ? undefined : r.error, detail: r.ok ? r.version || 'Connected' : undefined };
+    }
+    if (!canManage(req.user, conn)) return { key, label, ok: false, error: 'Only the owner or an admin can change this connection' };
+    switch (action) {
+      case 'delete':
+        store.deleteConnection(key); db.dropPool(key); notes.removeFor({ connKey: key });
+        return { key, label, ok: true };
+      case 'activate': case 'deactivate':
+        store.updateConnection(key, { inactive: action === 'deactivate' });
+        if (action === 'deactivate') db.dropPool(key); // let go of its open connections
+        return { key, label, ok: true };
+      case 'approval': store.updateConnection(key, { requireApproval: Boolean(b.on) }); return { key, label, ok: true };
+      case 'monitor': store.updateConnection(key, { monitor: Boolean(b.on) }); return { key, label, ok: true };
+      case 'unshare': {
+        const current = conn.sharedWith || [];
+        if (b.all || (current.includes('*') && b.users.includes('*'))) { store.setConnectionSharing(key, [], undefined, undefined, {}); return { key, label, ok: true, detail: current.length ? 'No longer shared' : 'Was not shared' }; }
+        if (current.includes('*')) return { key, label, ok: false, error: 'Shared with every user: stop sharing with everyone, or choose Share → Replace' };
+        const remaining = current.filter((u) => !b.users.includes(u));
+        const permissions = Object.fromEntries(remaining.map((u) => [u, (conn.sharePermissions || {})[u]]).filter(([, p]) => Array.isArray(p)));
+        const scopes = Object.fromEntries(remaining.map((u) => [u, (conn.shareScopes || {})[u]]).filter(([, s]) => s));
+        store.setConnectionSharing(key, remaining, permissions, undefined, scopes);
+        return { key, label, ok: true, detail: `${current.length - remaining.length} removed` };
+      }
+      case 'share': {
+        const given = b.sharedWith.includes('*') ? ['*'] : b.sharedWith;
+        if (!given.length && b.mode === 'add') return { key, label, ok: false, error: 'Nobody to add' };
+        let list = given; let permissions = b.permissions; let scopes = b.scopes;
+        if (b.mode === 'add') {
+          const current = conn.sharedWith || [];
+          list = current.includes('*') || given.includes('*') ? ['*'] : [...new Set([...current, ...given])];
+          const names = list.includes('*') ? ['*'] : list;
+          // the people already on it keep their permissions and limits; the new ones get what was chosen here
+          permissions = {}; scopes = {};
+          for (const n of names) {
+            const isNew = given.includes(n) || (n === '*');
+            const mine = (b.permissions || {})[n]; const had = (conn.sharePermissions || {})[n];
+            if (isNew && mine) permissions[n] = mine; else if (had) permissions[n] = had;
+            const ms = (b.scopes || {})[n]; const hs = (conn.shareScopes || {})[n];
+            if (isNew && ms) scopes[n] = ms; else if (hs) scopes[n] = hs;
+          }
+        }
+        const updated = store.setConnectionSharing(key, list, permissions, undefined, scopes);
+        return { key, label, ok: true, detail: updated.sharedWith.includes('*') ? 'Shared with everyone' : `Shared with ${updated.sharedWith.length} user(s)` };
+      }
+      default: return { key, label, ok: false, error: 'Unknown action' };
+    }
+  };
+
+  const results = [];
+  for (const key of [...new Set(keys.map(String))]) {
+    try { results.push(await one(key)); } catch (err) { results.push({ key, ok: false, error: err.message }); }
+  }
+  querylog.record({ username: req.user.username, source: 'connections', sql: `BULK ${action.toUpperCase()} ${results.length} connection(s)`, type: 'OTHER', ok: results.every((r) => r.ok), durationMs: 0, error: results.find((r) => !r.ok) ? results.find((r) => !r.ok).error : null });
+  return res.json({ action, results, done: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length });
+});
+
 app.put('/api/connections/:key/sharing', requireAuth, requireManage, (req, res) => {
   const { sharedWith, permissions, readOnly, scopes } = req.body || {};
   if (!Array.isArray(sharedWith)) return res.status(400).json({ error: 'sharedWith must be an array' });
@@ -1621,6 +1704,9 @@ app.post('/api/query', requireAuth, async (req, res) => {
   // the results show the SQL that actually ran.
   const sqlFor = {};
   try { dbKeys.forEach((key, i) => { sqlFor[key] = params.apply(rawSql, (req.body || {}).params || {}, engines.engineOf(conns[i])); }); } catch (err) { return res.status(400).json({ error: err.message }); }
+
+  const inactive = conns.filter((c) => c.inactive);
+  if (inactive.length) return res.status(409).json({ error: `Inactive connection(s): ${inactive.map((c) => c.label).join(', ')}. Untick them or ask their owner to make them active.` });
 
   const startDb = (key, i) => {
     const d = databases && databases[key];

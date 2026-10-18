@@ -226,6 +226,7 @@ function updateConnection(key, data) {
   applyNetwork(updated, data, existing);
   if (data.monitor !== undefined) { if (data.monitor) updated.monitor = true; else delete updated.monitor; }
   if (data.requireApproval !== undefined) { if (data.requireApproval) updated.requireApproval = true; else delete updated.requireApproval; }
+  if (data.inactive !== undefined) { if (data.inactive) updated.inactive = true; else delete updated.inactive; } // switched off: kept, but nobody can use it
 
   conns[idx] = updated;
   saveConnections(conns);

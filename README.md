@@ -733,6 +733,20 @@ Only the owner or an admin can edit, delete or share a connection.
 
 ---
 
+
+### Bulk actions
+
+Tick connections in **Connections** (or the checkbox in the header to select all) and a bar appears with:
+
+* **Share…** — the same dialog as for one connection (people, permissions, database and table limits), applied to every selected connection. *Add* keeps each connection's current sharing and adds the new people (those already on it keep their access); *Replace* makes each connection's sharing exactly what you chose.
+* **Stop sharing…** — take chosen people off, or stop sharing completely.
+* **Make inactive / Make active** — an inactive connection stays in the list with its settings and sharing, but nobody can run queries, browse, schedule or export on it until it is made active again (it can still be tested, edited, shared and deleted). It is greyed out in the Query Runner and Explore, and open connections to it are closed.
+* **More** — switch *Ask before risky statements* and *Record server health* on or off for all of them.
+* **Test** — try to connect to each and see the result per connection.
+* **Delete** — after a confirmation; notes on the connections are deleted with them, saved queries are kept.
+
+Each connection is handled on its own, with the same rules as changing it alone (the owner or an administrator), and a result list says what happened to every one. API: `POST /api/connections/bulk` with `{ "keys": [...], "action": "share|unshare|activate|deactivate|approval|monitor|test|delete", ... }`.
+
 ## PostgreSQL and SQLite
 
 Besides MySQL / MariaDB, a connection can point at a **PostgreSQL** server or a **SQLite** file. Choose the type when you create the connection.

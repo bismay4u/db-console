@@ -59,6 +59,7 @@ function getPool(key) {
     throw new Error(`Unknown connection: ${key}`);
   }
   if (conn.secretError) throw new Error(conn.secretError);
+  if (conn.inactive) throw new Error(`The connection ${conn.label} is inactive`);
   if (engines.engineOf(conn) !== 'mysql') throw engines.unsupported(engines.engineOf(conn));
 
   // Only settings that affect the pool count; sharing/ownership changes don't.

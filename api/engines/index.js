@@ -20,6 +20,7 @@ function forKey(key) {
   const engine = engineOf(conn);
   if (!conn || engine === 'mysql') return null;
   if (conn.secretError) throw new Error(conn.secretError);
+  if (conn.inactive) throw new Error(`The connection ${conn.label} is inactive`);
   return { conn, a: adapterOf(engine), engine };
 }
 function forConn(conn) {

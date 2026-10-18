@@ -673,7 +673,7 @@
             <template x-if="leftTab === 'databases'">
               <div>
                 <div class="d-flex align-items-center justify-content-end mb-2" x-show="connections.length">
-                  <button class="btn btn-link btn-sm p-0 me-2 text-decoration-none" style="font-size:.78rem" @click="selectedKeys = connections.map(c => c.key)">All</button>
+                  <button class="btn btn-link btn-sm p-0 me-2 text-decoration-none" style="font-size:.78rem" @click="selectedKeys = connections.filter(c => !c.inactive).map(c => c.key)">All</button>
                   <button class="btn btn-link btn-sm p-0 text-decoration-none" style="font-size:.78rem" @click="selectedKeys = []">None</button>
                 </div>
                 <div class="text-muted-sm mb-2" x-show="connections.length === 0">
@@ -681,10 +681,10 @@
                 </div>
                 <div class="d-flex flex-column gap-1">
                   <template x-for="c in connections" :key="c.key">
-                    <div class="conn-row" :class="selectedKeys.includes(c.key) && 'selected'" @click="toggleKey(c.key)">
-                      <input type="checkbox" class="form-check-input" :checked="selectedKeys.includes(c.key)" @click.stop="toggleKey(c.key)">
+                    <div class="conn-row" :class="selectedKeys.includes(c.key) && 'selected'" :style="c.inactive && 'opacity:.5'" @click="toggleKey(c.key)" :title="c.inactive ? 'Inactive — its owner or an administrator can make it active' : ''">
+                      <input type="checkbox" class="form-check-input" :checked="selectedKeys.includes(c.key)" :disabled="c.inactive" @click.stop="toggleKey(c.key)">
                       <div class="conn-meta">
-                        <div class="conn-label text-truncate" x-text="c.label"></div>
+                        <div class="conn-label text-truncate"><span x-text="c.label"></span> <span class="badge rounded-pill badge-soft-danger" x-show="c.inactive">inactive</span></div>
                         <div class="conn-sub d-flex align-items-center gap-1">
                           <span class="db-chip" :class="isSwitched(c) && 'switched'"
                                 :title="isSwitched(c) ? 'Current database (switched with USE) — default is ' + c.database : 'Current database'">
@@ -1039,7 +1039,7 @@ Separate multiple statements with ; — highlight text to run just that part."
             <select class="form-select form-select-sm" style="width:auto" x-model="exploreConnKey" @change="selectExploreConnection(exploreConnKey)">
               <option value="" disabled>Select…</option>
               <template x-for="c in connections" :key="c.key">
-                <option :value="c.key" x-text="c.label"></option>
+                <option :value="c.key" :disabled="c.inactive" x-text="c.label + (c.inactive ? ' (inactive)' : '')"></option>
               </template>
             </select>
           </div>
@@ -2014,20 +2014,45 @@ Separate multiple statements with ; — highlight text to run just that part."
     <!-- ================= CONNECTIONS ================= -->
     <template x-if="activeTab === 'connections'">
       <div class="card-surface">
+        <div class="d-flex flex-wrap align-items-center gap-2 px-3 py-2" style="border-bottom:1px solid var(--accent); background:var(--accent-soft)" x-show="connSelected.length" x-cloak>
+          <strong class="small"><span x-text="connSelected.length"></span> selected</strong>
+          <button class="btn btn-sm btn-outline-soft" @click="openBulkShare()"><i class="bi bi-share me-1"></i>Share…</button>
+          <button class="btn btn-sm btn-outline-soft" @click="openBulkUnshare()"><i class="bi bi-person-dash me-1"></i>Stop sharing…</button>
+          <button class="btn btn-sm btn-outline-soft" @click="runBulk('deactivate')"><i class="bi bi-pause-circle me-1"></i>Make inactive</button>
+          <button class="btn btn-sm btn-outline-soft" @click="runBulk('activate')"><i class="bi bi-play-circle me-1"></i>Make active</button>
+          <button class="btn btn-sm btn-outline-soft" @click="runBulk('test')" :disabled="bulkBusy"><span x-show="bulkBusy" class="spinner-border spinner-border-sm me-1"></span><i class="bi bi-plug me-1" x-show="!bulkBusy"></i>Test</button>
+          <div class="dropdown-lite" x-data="{ open: false }" @click.outside="open = false">
+            <button class="btn btn-sm btn-outline-soft" @click="open = !open">More <i class="bi bi-chevron-down"></i></button>
+            <div class="dropdown-lite-menu" x-show="open" x-cloak @click="open = false">
+              <a @click="runBulk('approval', { on: true })"><i class="bi bi-patch-check"></i> Ask before risky statements: on</a>
+              <a @click="runBulk('approval', { on: false })"><i class="bi bi-patch-minus"></i> Ask before risky statements: off</a>
+              <a @click="runBulk('monitor', { on: true })"><i class="bi bi-activity"></i> Record server health: on</a>
+              <a @click="runBulk('monitor', { on: false })"><i class="bi bi-activity"></i> Record server health: off</a>
+            </div>
+          </div>
+          <button class="btn btn-sm btn-outline-danger" @click="runBulk('delete')"><i class="bi bi-trash me-1"></i>Delete</button>
+          <button class="btn btn-sm btn-link text-decoration-none ms-auto" @click="connSelected = []">Clear selection</button>
+        </div>
         <div class="table-responsive">
           <table class="table table-modern mb-0">
             <thead>
               <tr>
+                <th style="width:1%"><input type="checkbox" class="form-check-input" :checked="connections.length && connSelected.length === connections.length" :indeterminate.prop="connSelected.length > 0 && connSelected.length < connections.length" @change="connSelected = $event.target.checked ? connections.map(c => c.key) : []" title="Select all"></th>
                 <th>Label</th><th>Host</th><th>Database</th><th>User</th><th>Owner</th><th>Access</th><th class="text-end">Actions</th>
               </tr>
             </thead>
             <tbody>
               <template x-for="c in connections" :key="c.key">
-                <tr>
-                  <td class="fw-medium" x-text="c.label"></td>
-                  <td x-text="c.host + ':' + c.port"></td>
+                <tr :class="connSelected.includes(c.key) && 'row-selected'" :style="c.inactive && 'opacity:.6'">
+                  <td><input type="checkbox" class="form-check-input" :value="c.key" x-model="connSelected"></td>
+                  <td class="fw-medium"><span x-text="c.label"></span>
+                    <span class="badge rounded-pill badge-soft-danger ms-1" x-show="c.inactive">inactive</span>
+                    <span class="badge rounded-pill badge-soft-success ms-1" x-show="c.engine && c.engine !== 'mysql'" x-text="engineName(c.engine)"></span>
+                    <i class="bi bi-patch-check text-muted ms-1" x-show="c.requireApproval" title="Risky statements need approval"></i>
+                  </td>
+                  <td x-text="c.engine === 'sqlite' ? '' : c.host + ':' + c.port"></td>
                   <td x-text="c.database"></td>
-                  <td x-text="c.user"></td>
+                  <td x-text="c.user || ''"></td>
                   <td class="text-muted-sm" x-text="c.owner === username ? 'You' : userLabel(c.owner)"></td>
                   <td><span class="share-chip" :class="c.canManage && 'mine'" x-text="accessLabel(c)"></span></td>
                   <td class="text-end text-nowrap">
@@ -2047,7 +2072,7 @@ Separate multiple statements with ; — highlight text to run just that part."
                 </tr>
               </template>
               <tr x-show="connections.length === 0">
-                <td colspan="7" class="text-center text-muted-sm py-4">No connections yet. Click "New connection" to add one.</td>
+                <td colspan="8" class="text-center text-muted-sm py-4">No connections yet. Click "New connection" to add one.</td>
               </tr>
             </tbody>
           </table>
@@ -4692,6 +4717,10 @@ Separate multiple statements with ; — highlight text to run just that part."
         People you share with can always browse, search, export and run SELECT / SHOW / EXPLAIN queries. Choose what else each person may do.
         They can't see the connection's password, edit it, delete it or share it further.
       </p>
+      <div class="mb-3" x-show="shareModal.kind === 'bulk'">
+        <div class="form-check"><input class="form-check-input" type="radio" id="bulkAdd" value="add" x-model="shareModal.mode"><label class="form-check-label small" for="bulkAdd"><span class="fw-medium">Add</span> these people to each connection's current sharing (people already on it keep their access)</label></div>
+        <div class="form-check"><input class="form-check-input" type="radio" id="bulkReplace" value="replace" x-model="shareModal.mode"><label class="form-check-label small" for="bulkReplace"><span class="fw-medium">Replace</span> each connection's sharing with exactly this</label></div>
+      </div>
       <p class="text-muted-sm" x-show="shareModal.kind === 'query'">
         People you share with see this query under Saved Queries and can load it into the Query Runner or save their own copy.
         They can't edit, delete or share it further, and they still need access to a connection to run it.
@@ -4761,7 +4790,7 @@ Separate multiple statements with ; — highlight text to run just that part."
           <div class="text-muted-sm" x-show="directory.filter(u => u.username !== shareModal.owner).length === 0">There are no other users yet.</div>
         </div>
       </div>
-      <div class="form-check form-switch mt-3" x-show="shareModal.kind !== 'query'">
+      <div class="form-check form-switch mt-3" x-show="shareModal.kind !== 'query' && shareModal.kind !== 'bulk'">
         <input class="form-check-input" type="checkbox" id="reqApproval" x-model="shareModal.requireApproval">
         <label class="form-check-label small" for="reqApproval"><span class="fw-medium">Ask me before they run risky statements</span> — <code>DROP</code>, <code>TRUNCATE</code>, and <code>UPDATE</code> / <code>DELETE</code> without <code>WHERE</code> wait for your (or an admin's) approval. You are never held back yourself.</label>
       </div>
@@ -4776,6 +4805,49 @@ Separate multiple statements with ; — highlight text to run just that part."
         Save
       </button>
     </div>
+  </div>
+</div>
+
+<!-- ===== Bulk: stop sharing ===== -->
+<div class="modal-backdrop-custom" x-show="unshareModal.open" x-cloak @click.self="unshareModal.open = false">
+  <div class="modal-panel" style="max-width:520px">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold">Stop sharing <span x-text="connSelected.length"></span> connection<span x-show="connSelected.length !== 1">s</span></h2><button class="btn btn-sm btn-outline-soft" @click="unshareModal.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom">
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" id="unshareAll" x-model="unshareModal.all">
+        <label class="form-check-label fw-medium small" for="unshareAll">Stop sharing completely (with everybody)</label>
+      </div>
+      <div x-show="!unshareModal.all">
+        <div class="text-muted-sm mb-1">Or take these people off (they are listed because the selected connections are shared with them):</div>
+        <div class="text-muted-sm" x-show="!unshareModal.people.length">None of the selected connections is shared with a named person.</div>
+        <template x-for="u in unshareModal.people" :key="u">
+          <label class="form-check small d-block"><input type="checkbox" class="form-check-input" :value="u" x-model="unshareModal.picked"> <span x-text="u === '*' ? 'Everyone (shared with every user)' : userLabel(u)"></span> <span class="text-muted-sm" x-text="u === '*' ? '' : '(' + u + ')'"></span></label>
+        </template>
+      </div>
+    </div>
+    <div class="modal-footer-custom">
+      <button class="btn btn-outline-soft" @click="unshareModal.open = false">Cancel</button>
+      <button class="btn btn-accent" :disabled="!unshareModal.all && !unshareModal.picked.length" @click="confirmBulkUnshare()">Stop sharing</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Bulk: what happened ===== -->
+<div class="modal-backdrop-custom" x-show="bulkResult.open" x-cloak @click.self="bulkResult.open = false">
+  <div class="modal-panel" style="max-width:620px">
+    <div class="modal-header-custom"><h2 class="h6 mb-0 fw-semibold" x-text="bulkResult.title"></h2><button class="btn btn-sm btn-outline-soft" @click="bulkResult.open = false"><i class="bi bi-x-lg"></i></button></div>
+    <div class="modal-body-custom">
+      <div class="alert py-2 small" :class="bulkResult.failed ? 'alert-warning' : 'alert-success'" x-text="bulkResult.done + ' done' + (bulkResult.failed ? ', ' + bulkResult.failed + ' did not work' : '') + '.'"></div>
+      <div style="max-height:360px; overflow:auto">
+        <template x-for="r in bulkResult.results" :key="r.key">
+          <div class="note-card mb-1 d-flex align-items-start gap-2">
+            <i class="bi mt-1" :class="r.ok ? 'bi-check-circle text-success' : 'bi-x-circle text-danger'"></i>
+            <div class="flex-grow-1 small"><div class="fw-medium" x-text="r.label || r.key"></div><div :class="r.ok ? 'text-muted-sm' : 'text-danger'" x-text="r.ok ? (r.detail || '') : r.error"></div></div>
+          </div>
+        </template>
+      </div>
+    </div>
+    <div class="modal-footer-custom"><button class="btn btn-accent" @click="bulkResult.open = false">Close</button></div>
   </div>
 </div>
 
@@ -4957,6 +5029,9 @@ function app() {
     totpEnabled: false,
     twoFa: { open: false, forced: false, enabled: false, required: false, sso: false, secret: '', qr: '', code: '', password: '', codes: [], recoveryLeft: 0, error: '', busy: false },
     dismissModal: { open: false, finding: null, reason: '', saving: false },
+    connSelected: [], bulkBusy: false,
+    unshareModal: { open: false, people: [], picked: [], all: false },
+    bulkResult: { open: false, title: '', results: [], done: 0, failed: 0 },
     managed: [], managedEngine: '', managedCategory: '', managedQuery: '', managedOpen: {}, runnerManagedQuery: '',
     managedModal: { open: false, id: '', saving: false, error: '', form: { title: '', engine: 'mysql', category: '', description: '', sql: '', template: false } },
     noteCounts: {}, queryNoteCounts: {},
@@ -5312,7 +5387,8 @@ function app() {
     async loadConnections() {
       this.connections = await fetch('/api/connections').then(r => r.json());
       // A connection may have been deleted or unshared since it was selected.
-      this.selectedKeys = this.selectedKeys.filter(k => this.connections.some(c => c.key === k));
+      this.selectedKeys = this.selectedKeys.filter(k => this.connections.some(c => c.key === k && !c.inactive));
+      this.connSelected = this.connSelected.filter(k => this.connections.some(c => c.key === k));
       for (const key of Object.keys(this.currentDbs)) {
         if (!this.connections.some(c => c.key === key)) this.setCurrentDb(key, null);
       }
@@ -5380,6 +5456,7 @@ function app() {
     },
 
     toggleKey(key) {
+      if ((this.connections.find((c) => c.key === key) || {}).inactive) return;
       this.selectedKeys = this.selectedKeys.includes(key)
         ? this.selectedKeys.filter(k => k !== key)
         : [...this.selectedKeys, key];
@@ -6380,6 +6457,53 @@ function app() {
         await this.runAnalysis();
         if (this.exploreTable) this.loadExploreTables();
       } catch (e) { m.error = e.message; } finally { m.running = false; }
+    },
+
+    // ---- Several connections at once ----
+    async bulkCall(action, extra = {}) {
+      return this.apiJson('POST', '/api/connections/bulk', { keys: this.connSelected, action, ...extra });
+    },
+    showBulkResult(title, r) {
+      this.bulkResult = { open: true, title, results: r.results, done: r.done, failed: r.failed };
+    },
+    async runBulk(action, extra = {}) {
+      const n = this.connSelected.length;
+      const what = { deactivate: 'Make inactive', activate: 'Make active', delete: 'Delete', test: 'Test', approval: extra.on ? 'Ask before risky statements: on' : 'Ask before risky statements: off', monitor: extra.on ? 'Record server health: on' : 'Record server health: off' }[action];
+      if (action === 'delete') {
+        const ok = await this.askConfirm(`Delete ${n} connection${n === 1 ? '' : 's'}?`, 'They are removed for everybody they are shared with, together with their notes. Saved queries are kept. This cannot be undone.', { confirmLabel: 'Delete', danger: true });
+        if (!ok) return;
+      } else if (action === 'deactivate') {
+        const ok = await this.askConfirm(`Make ${n} connection${n === 1 ? '' : 's'} inactive?`, 'Nobody can run queries or browse them until they are made active again. Scheduled jobs that use them will fail. Settings and sharing are kept.', { confirmLabel: 'Make inactive' });
+        if (!ok) return;
+      }
+      this.bulkBusy = true;
+      try {
+        const r = await this.bulkCall(action, extra);
+        await this.loadConnections();
+        if (action === 'delete' || action === 'deactivate' || action === 'activate') this.connSelected = this.connSelected.filter((k) => this.connections.some((c) => c.key === k) && r.results.some((x) => x.key === k && !x.ok));
+        if (action === 'test' || r.failed) this.showBulkResult(what, r);
+        else this.showToast(`${what}: ${r.done} connection${r.done === 1 ? '' : 's'}`);
+      } catch (e) { this.showToast(e.message, 'error'); } finally { this.bulkBusy = false; }
+    },
+    openBulkShare() {
+      const n = this.connSelected.length;
+      this.shareModal = { open: true, kind: 'bulk', key: '', label: `${n} connection${n === 1 ? '' : 's'}`, owner: '', mode: 'add',
+        all: false, users: [], perms: {}, open_: {}, scopes: {}, requireApproval: false, wasRequireApproval: false, saving: false, error: '' };
+      this.loadDirectory();
+    },
+    openBulkUnshare() {
+      const people = new Set();
+      for (const c of this.connections) if (this.connSelected.includes(c.key)) for (const u of c.sharedWith || []) people.add(u);
+      this.unshareModal = { open: true, people: [...people].sort(), picked: [], all: false };
+    },
+    async confirmBulkUnshare() {
+      const m = this.unshareModal;
+      m.open = false;
+      try {
+        const r = await this.bulkCall('unshare', m.all ? { all: true } : { users: m.picked });
+        await this.loadConnections();
+        if (r.failed) this.showBulkResult('Stop sharing', r); else this.showToast(`No longer shared: ${r.done} connection${r.done === 1 ? '' : 's'}`);
+      } catch (e) { this.showToast(e.message, 'error'); }
     },
 
     // ---- Managed queries ----
@@ -8519,6 +8643,16 @@ function app() {
     },
     async saveSharing() {
       this.shareModal.saving = true; this.shareModal.error = '';
+      if (this.shareModal.kind === 'bulk') {
+        try {
+          const m = this.shareModal;
+          const r = await this.bulkCall('share', { mode: m.mode, sharedWith: m.all ? ['*'] : m.users, permissions: this.sharePermissionsToSend(), scopes: this.scopesToSend() });
+          m.open = false;
+          await this.loadConnections();
+          if (r.failed) this.showBulkResult('Share', r); else this.showToast(`Sharing updated on ${r.done} connection${r.done === 1 ? '' : 's'}`);
+        } catch (e) { this.shareModal.error = e.message; } finally { this.shareModal.saving = false; }
+        return;
+      }
       try {
         const url = this.shareModal.kind === 'query'
           ? `/api/queries/${encodeURIComponent(this.shareModal.key)}/sharing`
